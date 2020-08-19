@@ -26,6 +26,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.{expressions, InternalRow}
 import org.apache.spark.sql.catalyst.expressions.{And, CreateNamedStruct, Expression, ExprId, GreaterThanOrEqual, InBloomFilter, InSet, LessThanOrEqual, ListQuery, Literal, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.aggregate.BuildBloomFilter
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.TypeUtils
@@ -167,6 +168,68 @@ case class InSubqueryExec(
   }
 
   override lazy val canonicalized: InSubqueryExec = {
+    copy(
+      child = child.canonicalized,
+      plan = plan.canonicalized.asInstanceOf[BaseSubqueryExec],
+      exprId = ExprId(0),
+      resultBroadcast = null)
+  }
+}
+
+case class BloomFilterSubqueryExec(
+    child: Expression,
+    plan: BaseSubqueryExec,
+    exprId: ExprId,
+    private var resultBroadcast: Broadcast[BloomFilter] = null) extends ExecSubqueryExpression {
+
+  @transient private var bloomFilter: BloomFilter = _
+
+  override def dataType: DataType = BooleanType
+  override def children: Seq[Expression] = child :: Nil
+  override def nullable: Boolean = child.nullable
+  override def toString: String = s"$child IN BLOOM FILTER ${plan.name}"
+  override def withNewPlan(plan: BaseSubqueryExec): BloomFilterSubqueryExec = copy(plan = plan)
+
+  override def semanticEquals(other: Expression): Boolean = other match {
+    case bf: BloomFilterSubqueryExec => child.semanticEquals(bf.child) && plan.sameResult(bf.plan)
+    case _ => false
+  }
+
+  def updateResult(): Unit = {
+    val values = plan.executeCollect().filterNot(_.anyNull).map(_.get(0, child.dataType))
+    bloomFilter = BloomFilter.create(math.max(1, values.length))
+    values.foreach { value =>
+      BuildBloomFilter.buildBloomFilter(child.dataType, bloomFilter, value)
+    }
+
+    resultBroadcast = plan.sqlContext.sparkContext.broadcast(bloomFilter)
+  }
+
+  def values(): Option[BloomFilter] = Option(resultBroadcast).map(_.value)
+
+  private def prepareResult(): Unit = {
+    require(resultBroadcast != null, s"$this has not finished")
+    if (bloomFilter == null) {
+      bloomFilter = resultBroadcast.value
+    }
+  }
+
+  override def eval(input: InternalRow): Any = {
+    prepareResult()
+    val v = child.eval(input)
+    if (v == null) {
+      null
+    } else {
+      InBloomFilter(child, bloomFilter).eval(input)
+    }
+  }
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    prepareResult()
+    InBloomFilter(child, bloomFilter).doGenCode(ctx, ev)
+  }
+
+  override lazy val canonicalized: BloomFilterSubqueryExec = {
     copy(
       child = child.canonicalized,
       plan = plan.canonicalized.asInstanceOf[BaseSubqueryExec],

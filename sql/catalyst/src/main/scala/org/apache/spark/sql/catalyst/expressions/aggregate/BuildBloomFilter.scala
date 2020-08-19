@@ -50,22 +50,7 @@ case class BuildBloomFilter(
     val value = child.eval(input)
     // Ignore empty rows
     if (value != null) {
-      child.dataType match {
-        case _: IntegralType =>
-          buffer.putLong(value.asInstanceOf[Number].longValue())
-        case DateType | TimestampType =>
-          buffer.putLong(value.asInstanceOf[Number].longValue())
-        case FloatType =>
-          buffer.putLong(JFloat.floatToIntBits(value.asInstanceOf[Float]).toLong)
-        case DoubleType =>
-          buffer.putLong(JDouble.doubleToLongBits(value.asInstanceOf[Double]))
-        case StringType =>
-          buffer.putBinary(value.asInstanceOf[UTF8String].getBytes)
-        case BinaryType =>
-          buffer.putBinary(value.asInstanceOf[Array[Byte]])
-        case _: DecimalType =>
-          buffer.putBinary(value.asInstanceOf[Decimal].toJavaBigDecimal.unscaledValue().toByteArray)
-      }
+      BuildBloomFilter.buildBloomFilter(child.dataType, buffer, value)
     }
     buffer
   }
@@ -115,5 +100,29 @@ object BuildBloomFilter {
 
   def isSupportBuildBloomFilter(expression: Expression): Boolean = {
     isSupportBuildBloomFilterType(expression.dataType)
+  }
+
+  def buildBloomFilter(
+      dataType: DataType,
+      bloomFilter: BloomFilter,
+      value: Any): BloomFilter = {
+    dataType match {
+      case _: IntegralType =>
+        bloomFilter.putLong(value.asInstanceOf[Number].longValue())
+      case DateType | TimestampType =>
+        bloomFilter.putLong(value.asInstanceOf[Number].longValue())
+      case FloatType =>
+        bloomFilter.putLong(JFloat.floatToIntBits(value.asInstanceOf[Float]).toLong)
+      case DoubleType =>
+        bloomFilter.putLong(JDouble.doubleToLongBits(value.asInstanceOf[Double]))
+      case StringType =>
+        bloomFilter.putBinary(value.asInstanceOf[UTF8String].getBytes)
+      case BinaryType =>
+        bloomFilter.putBinary(value.asInstanceOf[Array[Byte]])
+      case _: DecimalType =>
+        bloomFilter.putBinary(
+          value.asInstanceOf[Decimal].toJavaBigDecimal.unscaledValue().toByteArray)
+    }
+    bloomFilter
   }
 }

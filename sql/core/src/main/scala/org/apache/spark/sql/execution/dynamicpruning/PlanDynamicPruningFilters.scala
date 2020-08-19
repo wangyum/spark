@@ -22,14 +22,15 @@ import org.apache.spark.sql.catalyst.expressions
 import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeSeq, BindReferences, DynamicPruningExpression, DynamicPruningSubquery, Expression, ListQuery, Literal, PredicateHelper}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{BuildBloomFilter, Max, Min}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, JoinSelectionHelper}
-import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, RepartitionByExpression}
+import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LogicalPlan, RepartitionByExpression}
 import org.apache.spark.sql.catalyst.plans.logical.statsEstimation.EstimationUtils
 import org.apache.spark.sql.catalyst.plans.physical.BroadcastMode
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.execution.{InSubqueryExec, MixedFilterSubqueryExec, QueryExecution, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
+import org.apache.spark.sql.execution.{BloomFilterSubqueryExec, InSubqueryExec, MixedFilterSubqueryExec, QueryExecution, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
 import org.apache.spark.sql.execution.joins._
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{BooleanType, ByteType, ShortType}
 
 /**
  * This planner rule aims at rewriting dynamic pruning predicates in order to reuse the
@@ -47,6 +48,24 @@ case class PlanDynamicPruningFilters(sparkSession: SparkSession)
   private def broadcastMode(keys: Seq[Expression], output: AttributeSeq): BroadcastMode = {
     val packedKeys = BindReferences.bindReferences(HashJoin.rewriteKeyExpr(keys), output)
     HashedRelationBroadcastMode(packedKeys)
+  }
+
+  def isPreferSet(pruningKey: Expression, buildKey: Expression, buildPlan: LogicalPlan): Boolean = {
+    {
+      pruningKey.dataType match {
+        case BooleanType | ByteType | ShortType => true
+        case _ => false
+      }
+    } || {
+      val sizePerRow = EstimationUtils.getSizePerRow(buildKey.references.toSeq)
+      val sizeInBytes = buildPlan.stats.sizeInBytes
+      val rowCount = buildPlan.references.map {
+        attr => buildPlan.stats.attributeStats.get(attr).flatMap(_.distinctCount)
+      }.max.orElse(buildPlan.stats.rowCount).getOrElse(sizeInBytes / sizePerRow).toLong
+
+      rowCount < 100000L ||
+        sizeInBytes.toDouble < SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.defaultValue.get * 0.5
+    }
   }
 
   override def apply(plan: SparkPlan): SparkPlan = {
@@ -79,7 +98,12 @@ case class PlanDynamicPruningFilters(sparkSession: SparkSession)
           // place the broadcast adaptor for reusing the broadcast results on the probe side
           val broadcastValues =
             SubqueryBroadcastExec(name, broadcastKeyIndex, buildKeys, exchange)
-          DynamicPruningExpression(InSubqueryExec(value, broadcastValues, exprId))
+          val subqueryExec = if (isPreferSet(value, buildKeys(broadcastKeyIndex), buildPlan)) {
+            InSubqueryExec(value, broadcastValues, exprId)
+          } else {
+            BloomFilterSubqueryExec(value, broadcastValues, exprId)
+          }
+          DynamicPruningExpression(subqueryExec)
         } else if (onlyInBroadcast) {
           // it is not worthwhile to execute the query, so we fall-back to a true literal
           DynamicPruningExpression(Literal.TrueLiteral)
