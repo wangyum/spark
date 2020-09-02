@@ -19,6 +19,7 @@ package org.apache.spark.sql.hive
 
 import java.io.IOException
 import java.lang.reflect.InvocationTargetException
+import java.net.URI
 import java.util
 import java.util.Locale
 
@@ -828,10 +829,11 @@ private[spark] class HiveExternalCatalog(conf: SparkConf, hadoopConf: Configurat
     // source tables. Here we set the table location to `locationUri` field and filter out the
     // path option in storage properties, to avoid exposing this concept externally.
     val storageWithLocation = {
-      val tableLocation = getLocationFromStorageProps(table)
+      val tableLocation = getLocationFromStorageProps(table).map { loc =>
+        CatalogUtils.correctURIWithHost(new URI(loc), table.storage.locationUri)
+      }
       // We pass None as `newPath` here, to remove the path option in storage properties.
-      updateLocationInStorageProps(table, newPath = None).copy(
-        locationUri = tableLocation.map(CatalogUtils.stringToURI(_)))
+      updateLocationInStorageProps(table, newPath = None).copy(locationUri = tableLocation)
     }
     val storageWithoutHiveGeneratedProperties = storageWithLocation.copy(properties =
       storageWithLocation.properties.filterKeys(!HIVE_GENERATED_STORAGE_PROPERTIES(_)).toMap)

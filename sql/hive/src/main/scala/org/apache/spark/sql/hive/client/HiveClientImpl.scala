@@ -19,6 +19,7 @@ package org.apache.spark.sql.hive.client
 
 import java.io.{File, PrintStream}
 import java.lang.{Iterable => JIterable}
+import java.net.URI
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.{Locale, Map => JMap}
 import java.util.concurrent.TimeUnit._
@@ -512,7 +513,10 @@ private[hive] class HiveClientImpl(
       createTime = h.getTTable.getCreateTime.toLong * 1000,
       lastAccessTime = h.getLastAccessTime.toLong * 1000,
       storage = CatalogStorageFormat(
-        locationUri = shim.getDataLocation(h).map(CatalogUtils.stringToURI),
+        locationUri = shim.getDataLocation(h).map { location =>
+          val dbUri = Option(h.getDbName).map(db => new URI(client.getDatabase(db).getLocationUri))
+          CatalogUtils.correctURIWithHost(new URI(location), dbUri)
+        },
         // To avoid ClassNotFound exception, we try our best to not get the format class, but get
         // the class name directly. However, for non-native tables, there is no interface to get
         // the format class name, so we may still throw ClassNotFound in this case.
@@ -716,7 +720,7 @@ private[hive] class HiveClientImpl(
       spec: TablePartitionSpec): Option[CatalogTablePartition] = withHiveState {
     val hiveTable = toHiveTable(table, Some(userName))
     val hivePartition = client.getPartition(hiveTable, spec.asJava, false)
-    Option(hivePartition).map(fromHivePartition)
+    Option(hivePartition).map(fromHivePartition(_, table))
   }
 
   /**
@@ -733,7 +737,8 @@ private[hive] class HiveClientImpl(
         assert(s.values.forall(_.nonEmpty), s"partition spec '$s' is invalid")
         s
     }
-    val parts = client.getPartitions(hiveTable, partSpec.asJava).asScala.map(fromHivePartition)
+    val parts = client.getPartitions(hiveTable, partSpec.asJava).asScala
+      .map(fromHivePartition(_, table))
     HiveCatalogMetrics.incrementFetchedPartitions(parts.length)
     parts.toSeq
   }
@@ -742,7 +747,8 @@ private[hive] class HiveClientImpl(
       table: CatalogTable,
       predicates: Seq[Expression]): Seq[CatalogTablePartition] = withHiveState {
     val hiveTable = toHiveTable(table, Some(userName))
-    val parts = shim.getPartitionsByFilter(client, hiveTable, predicates).map(fromHivePartition)
+    val parts = shim.getPartitionsByFilter(client, hiveTable, predicates)
+      .map(fromHivePartition(_, table))
     HiveCatalogMetrics.incrementFetchedPartitions(parts.length)
     parts
   }
@@ -1132,7 +1138,7 @@ private[hive] object HiveClientImpl extends Logging {
   /**
    * Build the native partition metadata from Hive's Partition.
    */
-  def fromHivePartition(hp: HivePartition): CatalogTablePartition = {
+  def fromHivePartition(hp: HivePartition, table: CatalogTable): CatalogTablePartition = {
     val apiPartition = hp.getTPartition
     val properties: Map[String, String] = if (hp.getParameters != null) {
       hp.getParameters.asScala.toMap
@@ -1142,7 +1148,8 @@ private[hive] object HiveClientImpl extends Logging {
     CatalogTablePartition(
       spec = Option(hp.getSpec).map(_.asScala.toMap).getOrElse(Map.empty),
       storage = CatalogStorageFormat(
-        locationUri = Option(CatalogUtils.stringToURI(apiPartition.getSd.getLocation)),
+        locationUri = Option(CatalogUtils.correctURIWithHost(
+          CatalogUtils.stringToURI(apiPartition.getSd.getLocation), Some(table.location))),
         inputFormat = Option(apiPartition.getSd.getInputFormat),
         outputFormat = Option(apiPartition.getSd.getOutputFormat),
         serde = Option(apiPartition.getSd.getSerdeInfo.getSerializationLib),

@@ -19,6 +19,7 @@ package org.apache.spark.sql.catalyst.catalog
 
 import java.net.URI
 
+import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.util.Shell
 
@@ -229,6 +230,16 @@ object CatalogUtils {
     tableCols.find(resolver(_, colName)).getOrElse {
       throw new AnalysisException(s"$colType column $colName is not defined in table $tableName, " +
         s"defined table columns are: ${tableCols.mkString(", ")}")
+    }
+  }
+
+  def correctURIWithHost(uri: URI, parentUri: Option[URI]): URI = {
+    parentUri match {
+      case Some(pUri) if StringUtils.isNotEmpty(pUri.getHost) && StringUtils.isEmpty(uri.getHost) =>
+        new URI(pUri.getScheme, pUri.getUserInfo, pUri.getHost, pUri.getPort, uri.getPath,
+          uri.getQuery, uri.getFragment)
+      case _ =>
+        uri
     }
   }
 }
