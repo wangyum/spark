@@ -14,18 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-
 import sys
-
-if sys.version >= '3':
-    basestring = unicode = str
 
 from py4j.java_gateway import JavaClass
 
 from pyspark import RDD, since
-from pyspark.rdd import ignore_unicode_prefix
-from pyspark.sql.column import _to_seq
-from pyspark.sql.types import *
+from pyspark.sql.column import _to_seq, _to_java_column
+from pyspark.sql.types import StructType
 from pyspark.sql import utils
 from pyspark.sql.utils import to_str
 
@@ -94,7 +89,7 @@ class DataFrameReader(OptionUtils):
         if isinstance(schema, StructType):
             jschema = spark._jsparkSession.parseDataType(schema.json())
             self._jreader = self._jreader.schema(jschema)
-        elif isinstance(schema, basestring):
+        elif isinstance(schema, str):
             self._jreader = self._jreader.schema(schema)
         else:
             raise TypeError("schema should be StructType or string")
@@ -174,7 +169,7 @@ class DataFrameReader(OptionUtils):
         if schema is not None:
             self.schema(schema)
         self.options(**options)
-        if isinstance(path, basestring):
+        if isinstance(path, str):
             return self._df(self._jreader.load(path))
         elif path is not None:
             if type(path) != list:
@@ -190,7 +185,7 @@ class DataFrameReader(OptionUtils):
              mode=None, columnNameOfCorruptRecord=None, dateFormat=None, timestampFormat=None,
              multiLine=None, allowUnquotedControlChars=None, lineSep=None, samplingRatio=None,
              dropFieldIfAllNull=None, encoding=None, locale=None, pathGlobFilter=None,
-             recursiveFileLookup=None):
+             recursiveFileLookup=None, allowNonNumericNumbers=None):
         """
         Loads JSON files and returns the results as a :class:`DataFrame`.
 
@@ -223,15 +218,15 @@ class DataFrameReader(OptionUtils):
         :param mode: allows a mode for dealing with corrupt records during parsing. If None is
                      set, it uses the default value, ``PERMISSIVE``.
 
-                * ``PERMISSIVE`` : when it meets a corrupted record, puts the malformed string \
+                * ``PERMISSIVE``: when it meets a corrupted record, puts the malformed string \
                   into a field configured by ``columnNameOfCorruptRecord``, and sets malformed \
                   fields to ``null``. To keep corrupt records, an user can set a string type \
                   field named ``columnNameOfCorruptRecord`` in an user-defined schema. If a \
                   schema does not have the field, it drops corrupt records during parsing. \
                   When inferring a schema, it implicitly adds a ``columnNameOfCorruptRecord`` \
                   field in an output schema.
-                *  ``DROPMALFORMED`` : ignores the whole corrupted records.
-                *  ``FAILFAST`` : throws an exception when it meets corrupted records.
+                *  ``DROPMALFORMED``: ignores the whole corrupted records.
+                *  ``FAILFAST``: throws an exception when it meets corrupted records.
 
         :param columnNameOfCorruptRecord: allows renaming the new field having malformed string
                                           created by ``PERMISSIVE`` mode. This overrides
@@ -245,7 +240,7 @@ class DataFrameReader(OptionUtils):
         :param timestampFormat: sets the string that indicates a timestamp format.
                                 Custom date formats follow the formats at `datetime pattern`_.
                                 This applies to timestamp type. If None is set, it uses the
-                                default value, ``yyyy-MM-dd'T'HH:mm:ss.SSSXXX``.
+                                default value, ``yyyy-MM-dd'T'HH:mm:ss[.SSS][XXX]``.
         :param multiLine: parse one record, which may span multiple lines, per file. If None is
                           set, it uses the default value, ``false``.
         :param allowUnquotedControlChars: allows JSON Strings to contain unquoted control
@@ -270,6 +265,14 @@ class DataFrameReader(OptionUtils):
                                It does not change the behavior of `partition discovery`_.
         :param recursiveFileLookup: recursively scan a directory for files. Using this option
                                     disables `partition discovery`_.
+        :param allowNonNumericNumbers: allows JSON parser to recognize set of "Not-a-Number" (NaN)
+                                       tokens as legal floating number values. If None is set,
+                                       it uses the default value, ``true``.
+
+                * ``+INF``: for positive infinity, as well as alias of
+                            ``+Infinity`` and ``Infinity``.
+                *  ``-INF``: for negative infinity, alias ``-Infinity``.
+                *  ``NaN``: for other not-a-numbers, like result of division by zero.
 
         .. _partition discovery:
           https://spark.apache.org/docs/latest/sql-data-sources-parquet.html#partition-discovery
@@ -293,17 +296,18 @@ class DataFrameReader(OptionUtils):
             timestampFormat=timestampFormat, multiLine=multiLine,
             allowUnquotedControlChars=allowUnquotedControlChars, lineSep=lineSep,
             samplingRatio=samplingRatio, dropFieldIfAllNull=dropFieldIfAllNull, encoding=encoding,
-            locale=locale, pathGlobFilter=pathGlobFilter, recursiveFileLookup=recursiveFileLookup)
-        if isinstance(path, basestring):
+            locale=locale, pathGlobFilter=pathGlobFilter, recursiveFileLookup=recursiveFileLookup,
+            allowNonNumericNumbers=allowNonNumericNumbers)
+        if isinstance(path, str):
             path = [path]
         if type(path) == list:
             return self._df(self._jreader.json(self._spark._sc._jvm.PythonUtils.toSeq(path)))
         elif isinstance(path, RDD):
             def func(iterator):
                 for x in iterator:
-                    if not isinstance(x, basestring):
-                        x = unicode(x)
-                    if isinstance(x, unicode):
+                    if not isinstance(x, str):
+                        x = str(x)
+                    if isinstance(x, str):
                         x = x.encode("utf-8")
                     yield x
             keyed = path.mapPartitions(func)
@@ -341,6 +345,9 @@ class DataFrameReader(OptionUtils):
         :param recursiveFileLookup: recursively scan a directory for files. Using this option
                                     disables `partition discovery`_.
 
+        .. _partition discovery:
+          https://spark.apache.org/docs/latest/sql-data-sources-parquet.html#partition-discovery
+
         >>> df = spark.read.parquet('python/test_support/sql/parquet_partitioned')
         >>> df.dtypes
         [('name', 'string'), ('year', 'int'), ('month', 'int'), ('day', 'int')]
@@ -352,7 +359,6 @@ class DataFrameReader(OptionUtils):
                        recursiveFileLookup=recursiveFileLookup)
         return self._df(self._jreader.parquet(_to_seq(self._spark._sc, paths)))
 
-    @ignore_unicode_prefix
     @since(1.6)
     def text(self, paths, wholetext=False, lineSep=None, pathGlobFilter=None,
              recursiveFileLookup=None):
@@ -374,17 +380,20 @@ class DataFrameReader(OptionUtils):
         :param recursiveFileLookup: recursively scan a directory for files. Using this option
                                     disables `partition discovery`_.
 
+        .. _partition discovery:
+          https://spark.apache.org/docs/latest/sql-data-sources-parquet.html#partition-discovery
+
         >>> df = spark.read.text('python/test_support/sql/text-test.txt')
         >>> df.collect()
-        [Row(value=u'hello'), Row(value=u'this')]
+        [Row(value='hello'), Row(value='this')]
         >>> df = spark.read.text('python/test_support/sql/text-test.txt', wholetext=True)
         >>> df.collect()
-        [Row(value=u'hello\\nthis')]
+        [Row(value='hello\\nthis')]
         """
         self._set_opts(
             wholetext=wholetext, lineSep=lineSep, pathGlobFilter=pathGlobFilter,
             recursiveFileLookup=recursiveFileLookup)
-        if isinstance(paths, basestring):
+        if isinstance(paths, str):
             paths = [paths]
         return self._df(self._jreader.text(self._spark._sc._jvm.PythonUtils.toSeq(paths)))
 
@@ -455,7 +464,7 @@ class DataFrameReader(OptionUtils):
         :param timestampFormat: sets the string that indicates a timestamp format.
                                 Custom date formats follow the formats at `datetime pattern`_.
                                 This applies to timestamp type. If None is set, it uses the
-                                default value, ``yyyy-MM-dd'T'HH:mm:ss.SSSXXX``.
+                                default value, ``yyyy-MM-dd'T'HH:mm:ss[.SSS][XXX]``.
         :param maxColumns: defines a hard limit of how many columns a record can have. If None is
                            set, it uses the default value, ``20480``.
         :param maxCharsPerColumn: defines the maximum number of characters allowed for any given
@@ -470,7 +479,7 @@ class DataFrameReader(OptionUtils):
                      be controlled by ``spark.sql.csv.parser.columnPruning.enabled``
                      (enabled by default).
 
-                * ``PERMISSIVE`` : when it meets a corrupted record, puts the malformed string \
+                * ``PERMISSIVE``: when it meets a corrupted record, puts the malformed string \
                   into a field configured by ``columnNameOfCorruptRecord``, and sets malformed \
                   fields to ``null``. To keep corrupt records, an user can set a string type \
                   field named ``columnNameOfCorruptRecord`` in an user-defined schema. If a \
@@ -479,8 +488,8 @@ class DataFrameReader(OptionUtils):
                   When it meets a record having fewer tokens than the length of the schema, \
                   sets ``null`` to extra fields. When the record has more tokens than the \
                   length of the schema, it drops extra tokens.
-                * ``DROPMALFORMED`` : ignores the whole corrupted records.
-                * ``FAILFAST`` : throws an exception when it meets corrupted records.
+                * ``DROPMALFORMED``: ignores the whole corrupted records.
+                * ``FAILFAST``: throws an exception when it meets corrupted records.
 
         :param columnNameOfCorruptRecord: allows renaming the new field having malformed string
                                           created by ``PERMISSIVE`` mode. This overrides
@@ -509,6 +518,10 @@ class DataFrameReader(OptionUtils):
         :param recursiveFileLookup: recursively scan a directory for files. Using this option
                                     disables `partition discovery`_.
 
+        .. _partition discovery:
+          https://spark.apache.org/docs/latest/sql-data-sources-parquet.html#partition-discovery
+        .. _datetime pattern: https://spark.apache.org/docs/latest/sql-ref-datetime-pattern.html
+
         >>> df = spark.read.csv('python/test_support/sql/ages.csv')
         >>> df.dtypes
         [('_c0', 'string'), ('_c1', 'string')]
@@ -529,16 +542,16 @@ class DataFrameReader(OptionUtils):
             charToEscapeQuoteEscaping=charToEscapeQuoteEscaping, samplingRatio=samplingRatio,
             enforceSchema=enforceSchema, emptyValue=emptyValue, locale=locale, lineSep=lineSep,
             pathGlobFilter=pathGlobFilter, recursiveFileLookup=recursiveFileLookup)
-        if isinstance(path, basestring):
+        if isinstance(path, str):
             path = [path]
         if type(path) == list:
             return self._df(self._jreader.csv(self._spark._sc._jvm.PythonUtils.toSeq(path)))
         elif isinstance(path, RDD):
             def func(iterator):
                 for x in iterator:
-                    if not isinstance(x, basestring):
-                        x = unicode(x)
-                    if isinstance(x, unicode):
+                    if not isinstance(x, str):
+                        x = str(x)
+                    if isinstance(x, str):
                         x = x.encode("utf-8")
                     yield x
             keyed = path.mapPartitions(func)
@@ -568,13 +581,16 @@ class DataFrameReader(OptionUtils):
         :param recursiveFileLookup: recursively scan a directory for files. Using this option
                                     disables `partition discovery`_.
 
+        .. _partition discovery:
+          https://spark.apache.org/docs/latest/sql-data-sources-parquet.html#partition-discovery
+
         >>> df = spark.read.orc('python/test_support/sql/orc_partitioned')
         >>> df.dtypes
         [('a', 'bigint'), ('b', 'int'), ('c', 'int')]
         """
         self._set_opts(mergeSchema=mergeSchema, pathGlobFilter=pathGlobFilter,
                        recursiveFileLookup=recursiveFileLookup)
-        if isinstance(path, basestring):
+        if isinstance(path, str):
             path = [path]
         return self._df(self._jreader.orc(_to_seq(self._spark._sc, path)))
 
@@ -763,7 +779,7 @@ class DataFrameWriter(OptionUtils):
 
             col, cols = col[0], col[1:]
 
-        if not all(isinstance(c, basestring) for c in cols) or not(isinstance(col, basestring)):
+        if not all(isinstance(c, str) for c in cols) or not(isinstance(col, str)):
             raise TypeError("all names should be `str`")
 
         self._jwrite = self._jwrite.bucketBy(numBuckets, col, _to_seq(self._spark._sc, cols))
@@ -788,7 +804,7 @@ class DataFrameWriter(OptionUtils):
 
             col, cols = col[0], col[1:]
 
-        if not all(isinstance(c, basestring) for c in cols) or not(isinstance(col, basestring)):
+        if not all(isinstance(c, str) for c in cols) or not(isinstance(col, str)):
             raise TypeError("all names should be `str`")
 
         self._jwrite = self._jwrite.sortBy(col, _to_seq(self._spark._sc, cols))
@@ -830,7 +846,7 @@ class DataFrameWriter(OptionUtils):
     def insertInto(self, tableName, overwrite=None):
         """Inserts the content of the :class:`DataFrame` to the specified table.
 
-        It requires that the schema of the class:`DataFrame` is the same as the
+        It requires that the schema of the :class:`DataFrame` is the same as the
         schema of the table.
 
         Optionally overwriting any existing data.
@@ -892,13 +908,15 @@ class DataFrameWriter(OptionUtils):
         :param timestampFormat: sets the string that indicates a timestamp format.
                                 Custom date formats follow the formats at `datetime pattern`_.
                                 This applies to timestamp type. If None is set, it uses the
-                                default value, ``yyyy-MM-dd'T'HH:mm:ss.SSSXXX``.
+                                default value, ``yyyy-MM-dd'T'HH:mm:ss[.SSS][XXX]``.
         :param encoding: specifies encoding (charset) of saved json files. If None is set,
                         the default UTF-8 charset will be used.
         :param lineSep: defines the line separator that should be used for writing. If None is
                         set, it uses the default value, ``\\n``.
         :param ignoreNullFields: Whether to ignore null fields when generating JSON objects.
                         If None is set, it uses the default value, ``true``.
+
+        .. _datetime pattern: https://spark.apache.org/docs/latest/sql-ref-datetime-pattern.html
 
         >>> df.write.json(os.path.join(tempfile.mkdtemp(), 'data'))
         """
@@ -996,7 +1014,7 @@ class DataFrameWriter(OptionUtils):
         :param timestampFormat: sets the string that indicates a timestamp format.
                                 Custom date formats follow the formats at `datetime pattern`_.
                                 This applies to timestamp type. If None is set, it uses the
-                                default value, ``yyyy-MM-dd'T'HH:mm:ss.SSSXXX``.
+                                default value, ``yyyy-MM-dd'T'HH:mm:ss[.SSS][XXX]``.
         :param ignoreLeadingWhiteSpace: a flag indicating whether or not leading whitespaces from
                                         values being written should be skipped. If None is set, it
                                         uses the default value, ``true``.
@@ -1013,6 +1031,8 @@ class DataFrameWriter(OptionUtils):
                            the default value, ``""``.
         :param lineSep: defines the line separator that should be used for writing. If None is
                         set, it uses the default value, ``\\n``. Maximum length is 1 character.
+
+        .. _datetime pattern: https://spark.apache.org/docs/latest/sql-ref-datetime-pattern.html
 
         >>> df.write.csv(os.path.join(tempfile.mkdtemp(), 'data'))
         """
@@ -1082,13 +1102,151 @@ class DataFrameWriter(OptionUtils):
         self.mode(mode)._jwrite.jdbc(url, table, jprop)
 
 
+class DataFrameWriterV2(object):
+    """
+    Interface used to write a class:`pyspark.sql.dataframe.DataFrame`
+    to external storage using the v2 API.
+
+    .. versionadded:: 3.1.0
+    """
+
+    def __init__(self, df, table):
+        self._df = df
+        self._spark = df.sql_ctx
+        self._jwriter = df._jdf.writeTo(table)
+
+    @since(3.1)
+    def using(self, provider):
+        """
+        Specifies a provider for the underlying output data source.
+        Spark's default catalog supports "parquet", "json", etc.
+        """
+        self._jwriter.using(provider)
+        return self
+
+    @since(3.1)
+    def option(self, key, value):
+        """
+        Add a write option.
+        """
+        self._jwriter.option(key, to_str(value))
+        return self
+
+    @since(3.1)
+    def options(self, **options):
+        """
+        Add write options.
+        """
+        options = {k: to_str(v) for k, v in options.items()}
+        self._jwriter.options(options)
+        return self
+
+    @since(3.1)
+    def tableProperty(self, property, value):
+        """
+        Add table property.
+        """
+        self._jwriter.tableProperty(property, value)
+        return self
+
+    @since(3.1)
+    def partitionedBy(self, col, *cols):
+        """
+        Partition the output table created by `create`, `createOrReplace`, or `replace` using
+        the given columns or transforms.
+
+        When specified, the table data will be stored by these values for efficient reads.
+
+        For example, when a table is partitioned by day, it may be stored
+        in a directory layout like:
+
+        * `table/day=2019-06-01/`
+        * `table/day=2019-06-02/`
+
+        Partitioning is one of the most widely used techniques to optimize physical data layout.
+        It provides a coarse-grained index for skipping unnecessary data reads when queries have
+        predicates on the partitioned columns. In order for partitioning to work well, the number
+        of distinct values in each column should typically be less than tens of thousands.
+
+        `col` and `cols` support only the following functions:
+
+        * :py:func:`pyspark.sql.functions.years`
+        * :py:func:`pyspark.sql.functions.months`
+        * :py:func:`pyspark.sql.functions.days`
+        * :py:func:`pyspark.sql.functions.hours`
+        * :py:func:`pyspark.sql.functions.bucket`
+
+        """
+        col = _to_java_column(col)
+        cols = _to_seq(self._spark._sc, [_to_java_column(c) for c in cols])
+        return self
+
+    @since(3.1)
+    def create(self):
+        """
+        Create a new table from the contents of the data frame.
+
+        The new table's schema, partition layout, properties, and other configuration will be
+        based on the configuration set on this writer.
+        """
+        self._jwriter.create()
+
+    @since(3.1)
+    def replace(self):
+        """
+        Replace an existing table with the contents of the data frame.
+
+        The existing table's schema, partition layout, properties, and other configuration will be
+        replaced with the contents of the data frame and the configuration set on this writer.
+        """
+        self._jwriter.replace()
+
+    @since(3.1)
+    def createOrReplace(self):
+        """
+        Create a new table or replace an existing table with the contents of the data frame.
+
+        The output table's schema, partition layout, properties,
+        and other configuration will be based on the contents of the data frame
+        and the configuration set on this writer.
+        If the table exists, its configuration and data will be replaced.
+        """
+        self._jwriter.createOrReplace()
+
+    @since(3.1)
+    def append(self):
+        """
+        Append the contents of the data frame to the output table.
+        """
+        self._jwriter.append()
+
+    @since(3.1)
+    def overwrite(self, condition):
+        """
+        Overwrite rows matching the given filter condition with the contents of the data frame in
+        the output table.
+        """
+        self._jwriter.overwrite(condition)
+
+    @since(3.1)
+    def overwritePartitions(self):
+        """
+        Overwrite all partition for which the data frame contains at least one row with the contents
+        of the data frame in the output table.
+
+        This operation is equivalent to Hive's `INSERT OVERWRITE ... PARTITION`, which replaces
+        partitions dynamically depending on the contents of the data frame.
+        """
+        self._jwriter.overwritePartitions()
+
+
 def _test():
     import doctest
     import os
     import tempfile
     import py4j
     from pyspark.context import SparkContext
-    from pyspark.sql import SparkSession, Row
+    from pyspark.sql import SparkSession
     import pyspark.sql.readwriter
 
     os.chdir(os.environ["SPARK_HOME"])

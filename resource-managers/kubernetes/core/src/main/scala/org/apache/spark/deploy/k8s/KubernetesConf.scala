@@ -56,7 +56,7 @@ private[spark] abstract class KubernetesConf(val sparkConf: SparkConf) {
   }
 
   def workerDecommissioning: Boolean =
-    sparkConf.get(org.apache.spark.internal.config.Worker.WORKER_DECOMMISSION_ENABLED)
+    sparkConf.get(org.apache.spark.internal.config.DECOMMISSION_ENABLED)
 
   def nodeSelector: Map[String, String] =
     KubernetesUtils.parsePrefixedKeyValuePairs(sparkConf, KUBERNETES_NODE_SELECTOR_PREFIX)
@@ -108,6 +108,11 @@ private[spark] class KubernetesDriverConf(
 
   override def annotations: Map[String, String] = {
     KubernetesUtils.parsePrefixedKeyValuePairs(sparkConf, KUBERNETES_DRIVER_ANNOTATION_PREFIX)
+  }
+
+  def serviceAnnotations: Map[String, String] = {
+    KubernetesUtils.parsePrefixedKeyValuePairs(sparkConf,
+      KUBERNETES_DRIVER_SERVICE_ANNOTATION_PREFIX)
   }
 
   override def secretNamesToMountPaths: Map[String, String] = {

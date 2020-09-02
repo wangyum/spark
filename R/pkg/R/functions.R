@@ -2286,7 +2286,7 @@ setMethod("pmod", signature(y = "Column"),
             column(jc)
           })
 
-#' @param rsd maximum estimation error allowed (default = 0.05).
+#' @param rsd maximum relative standard deviation allowed (default = 0.05).
 #'
 #' @rdname column_aggregate_functions
 #' @aliases approx_count_distinct,Column-method
@@ -3951,7 +3951,6 @@ setMethod("map_values",
 #' @rdname column_collection_functions
 #' @aliases map_zip_with map_zip_with,characterOrColumn,characterOrColumn,function-method
 #'
-#' @examples
 #' @note map_zip_with since 3.1.0
 setMethod("map_zip_with",
           signature(x = "characterOrColumn", y = "characterOrColumn", f = "function"),

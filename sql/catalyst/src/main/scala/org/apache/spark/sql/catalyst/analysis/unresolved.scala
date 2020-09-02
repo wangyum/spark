@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.catalyst.util.quoteIdentifier
 import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
 import org.apache.spark.sql.types.{DataType, Metadata, StructType}
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 /**
  * Thrown when an invalid attempt is made to access a property of a tree that has yet to be fully
@@ -40,9 +41,12 @@ class UnresolvedException[TreeType <: TreeNode[_]](tree: TreeType, function: Str
  * Holds the name of a relation that has yet to be looked up in a catalog.
  *
  * @param multipartIdentifier table name
+ * @param options options to scan this relation. Only applicable to v2 table scan.
  */
 case class UnresolvedRelation(
-    multipartIdentifier: Seq[String]) extends LeafNode with NamedRelation {
+    multipartIdentifier: Seq[String],
+    options: CaseInsensitiveStringMap = CaseInsensitiveStringMap.empty())
+  extends LeafNode with NamedRelation {
   import org.apache.spark.sql.connector.catalog.CatalogV2Implicits._
 
   /** Returns a `.` separated name for this relation. */
@@ -537,4 +541,16 @@ case class UnresolvedOrdinal(ordinal: Int)
   override def foldable: Boolean = throw new UnresolvedException(this, "foldable")
   override def nullable: Boolean = throw new UnresolvedException(this, "nullable")
   override lazy val resolved = false
+}
+
+/**
+ * Represents unresolved having clause, the child for it can be Aggregate, GroupingSets, Rollup
+ * and Cube. It is turned by the analyzer into a Filter.
+ */
+case class UnresolvedHaving(
+    havingCondition: Expression,
+    child: LogicalPlan)
+  extends UnaryNode {
+  override lazy val resolved: Boolean = false
+  override def output: Seq[Attribute] = child.output
 }

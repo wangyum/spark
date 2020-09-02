@@ -24,6 +24,7 @@ private[spark] object Constants {
   val SPARK_ROLE_LABEL = "spark-role"
   val SPARK_POD_DRIVER_ROLE = "driver"
   val SPARK_POD_EXECUTOR_ROLE = "executor"
+  val SPARK_EXECUTOR_INACTIVE_LABEL = "spark-exec-inactive"
 
   // Credentials secrets
   val DRIVER_CREDENTIALS_SECRETS_BASE_DIR =
@@ -53,6 +54,7 @@ private[spark] object Constants {
   val ENV_DRIVER_URL = "SPARK_DRIVER_URL"
   val ENV_EXECUTOR_CORES = "SPARK_EXECUTOR_CORES"
   val ENV_EXECUTOR_MEMORY = "SPARK_EXECUTOR_MEMORY"
+  val ENV_EXECUTOR_DIRS = "SPARK_EXECUTOR_DIRS"
   val ENV_APPLICATION_ID = "SPARK_APPLICATION_ID"
   val ENV_EXECUTOR_ID = "SPARK_EXECUTOR_ID"
   val ENV_EXECUTOR_POD_IP = "SPARK_EXECUTOR_POD_IP"

@@ -110,6 +110,9 @@ case class DataSource(
 
   private def providingInstance() = providingClass.getConstructor().newInstance()
 
+  private def newHadoopConfiguration(): Configuration =
+    sparkSession.sessionState.newHadoopConfWithOptions(options)
+
   lazy val sourceInfo: SourceInfo = sourceSchema()
   private val caseInsensitiveOptions = CaseInsensitiveMap(options)
   private val equality = sparkSession.sessionState.conf.resolver
@@ -188,9 +191,11 @@ case class DataSource(
     val dataSchema = userSpecifiedSchema.map { schema =>
       StructType(schema.filterNot(f => partitionSchema.exists(p => equality(p.name, f.name))))
     }.orElse {
+      // Remove "path" option so that it is not added to the paths returned by
+      // `tempFileIndex.allFiles()`.
       format.inferSchema(
         sparkSession,
-        caseInsensitiveOptions,
+        caseInsensitiveOptions - "path",
         tempFileIndex.allFiles())
     }.getOrElse {
       throw new AnalysisException(
@@ -231,7 +236,7 @@ case class DataSource(
         // once the streaming job starts and some upstream source starts dropping data.
         val hdfsPath = new Path(path)
         if (!SparkHadoopUtil.get.isGlobPath(hdfsPath)) {
-          val fs = hdfsPath.getFileSystem(sparkSession.sessionState.newHadoopConf())
+          val fs = hdfsPath.getFileSystem(newHadoopConfiguration())
           if (!fs.exists(hdfsPath)) {
             throw new AnalysisException(s"Path does not exist: $path")
           }
@@ -358,15 +363,17 @@ case class DataSource(
       case (format: FileFormat, _)
           if FileStreamSink.hasMetadata(
             caseInsensitiveOptions.get("path").toSeq ++ paths,
-            sparkSession.sessionState.newHadoopConf(),
+            newHadoopConfiguration(),
             sparkSession.sessionState.conf) =>
         val basePath = new Path((caseInsensitiveOptions.get("path").toSeq ++ paths).head)
         val fileCatalog = new MetadataLogFileIndex(sparkSession, basePath,
           caseInsensitiveOptions, userSpecifiedSchema)
         val dataSchema = userSpecifiedSchema.orElse {
+          // Remove "path" option so that it is not added to the paths returned by
+          // `fileCatalog.allFiles()`.
           format.inferSchema(
             sparkSession,
-            caseInsensitiveOptions,
+            caseInsensitiveOptions - "path",
             fileCatalog.allFiles())
         }.getOrElse {
           throw new AnalysisException(
@@ -418,18 +425,18 @@ case class DataSource(
 
     relation match {
       case hs: HadoopFsRelation =>
-        SchemaUtils.checkColumnNameDuplication(
-          hs.dataSchema.map(_.name),
+        SchemaUtils.checkSchemaColumnNameDuplication(
+          hs.dataSchema,
           "in the data schema",
           equality)
-        SchemaUtils.checkColumnNameDuplication(
-          hs.partitionSchema.map(_.name),
+        SchemaUtils.checkSchemaColumnNameDuplication(
+          hs.partitionSchema,
           "in the partition schema",
           equality)
         DataSourceUtils.verifySchema(hs.fileFormat, hs.dataSchema)
       case _ =>
-        SchemaUtils.checkColumnNameDuplication(
-          relation.schema.map(_.name),
+        SchemaUtils.checkSchemaColumnNameDuplication(
+          relation.schema,
           "in the data schema",
           equality)
     }
@@ -450,7 +457,7 @@ case class DataSource(
     val allPaths = paths ++ caseInsensitiveOptions.get("path")
     val outputPath = if (allPaths.length == 1) {
       val path = new Path(allPaths.head)
-      val fs = path.getFileSystem(sparkSession.sessionState.newHadoopConf())
+      val fs = path.getFileSystem(newHadoopConfiguration())
       path.makeQualified(fs.getUri, fs.getWorkingDirectory)
     } else {
       throw new IllegalArgumentException("Expected exactly one path to be specified, but " +
@@ -570,9 +577,7 @@ case class DataSource(
       checkEmptyGlobPath: Boolean,
       checkFilesExist: Boolean): Seq[Path] = {
     val allPaths = caseInsensitiveOptions.get("path") ++ paths
-    val hadoopConf = sparkSession.sessionState.newHadoopConf()
-
-    DataSource.checkAndGlobPathIfNecessary(allPaths.toSeq, hadoopConf,
+    DataSource.checkAndGlobPathIfNecessary(allPaths.toSeq, newHadoopConfiguration(),
       checkEmptyGlobPath, checkFilesExist)
   }
 }
@@ -810,7 +815,7 @@ object DataSource extends Logging {
     val path = CaseInsensitiveMap(options).get("path")
     val optionsWithoutPath = options.filterKeys(_.toLowerCase(Locale.ROOT) != "path")
     CatalogStorageFormat.empty.copy(
-      locationUri = path.map(CatalogUtils.stringToURI), properties = optionsWithoutPath)
+      locationUri = path.map(CatalogUtils.stringToURI), properties = optionsWithoutPath.toMap)
   }
 
   /**
