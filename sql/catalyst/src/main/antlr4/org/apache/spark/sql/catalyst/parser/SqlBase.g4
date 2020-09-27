@@ -204,7 +204,7 @@ statement
         multipartIdentifier AS className=STRING
         (USING resource (',' resource)*)?                              #createFunction
     | DROP TEMPORARY? FUNCTION (IF EXISTS)? multipartIdentifier        #dropFunction
-    | EXPLAIN (LOGICAL | FORMATTED | EXTENDED | CODEGEN | COST)?
+    | EXPLAIN (LOGICAL | FORMATTED | EXTENDED | CODEGEN | COST | OPTIMIZE)?
         statement                                                      #explain
     | SHOW TABLES ((FROM | IN) multipartIdentifier)?
         (LIKE? pattern=STRING)?                                        #showTables
@@ -1111,6 +1111,7 @@ ansiNonReserved
     | NO
     | NULLS
     | OF
+    | OPTIMIZE
     | OPTION
     | OPTIONS
     | OUT
@@ -1359,6 +1360,7 @@ nonReserved
     | NULLS
     | OF
     | ONLY
+    | OPTIMIZE
     | OPTION
     | OPTIONS
     | OR
@@ -1613,6 +1615,7 @@ NULLS: 'NULLS';
 OF: 'OF';
 ON: 'ON';
 ONLY: 'ONLY';
+OPTIMIZE: 'OPTIMIZE';
 OPTION: 'OPTION';
 OPTIONS: 'OPTIONS';
 OR: 'OR';

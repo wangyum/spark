@@ -200,15 +200,19 @@ class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder(conf) {
     if (statement == null) {
       null  // This is enough since ParseException will raise later.
     } else {
-      ExplainCommand(
-        logicalPlan = statement,
-        mode = {
-          if (ctx.EXTENDED != null) ExtendedMode
-          else if (ctx.CODEGEN != null) CodegenMode
-          else if (ctx.COST != null) CostMode
-          else if (ctx.FORMATTED != null) FormattedMode
-          else SimpleMode
-        })
+      if (ctx.OPTIMIZE != null) {
+        ExplainOptimizeCommand(statement)
+      } else {
+        ExplainCommand(
+          logicalPlan = statement,
+          mode = {
+            if (ctx.EXTENDED != null) ExtendedMode
+            else if (ctx.CODEGEN != null) CodegenMode
+            else if (ctx.COST != null) CostMode
+            else if (ctx.FORMATTED != null) FormattedMode
+            else SimpleMode
+          })
+      }
     }
   }
 
