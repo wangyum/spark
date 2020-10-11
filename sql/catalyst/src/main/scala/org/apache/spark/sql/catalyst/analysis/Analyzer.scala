@@ -36,6 +36,7 @@ import org.apache.spark.sql.catalyst.expressions.objects._
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules._
+import org.apache.spark.sql.catalyst.streaming.StreamingRelationV2
 import org.apache.spark.sql.catalyst.trees.TreeNodeRef
 import org.apache.spark.sql.catalyst.util.toPrettySQL
 import org.apache.spark.sql.connector.catalog._
@@ -47,6 +48,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.{PartitionOverwriteMode, StoreAssignmentPolicy}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.apache.spark.util.Utils
 
 /**
  * A trivial [[Analyzer]] with a dummy [[SessionCatalog]] and [[EmptyFunctionRegistry]].
@@ -123,127 +125,6 @@ object AnalysisContext {
   }
 }
 
-object Analyzer {
-
-  /**
-   * Rewrites a given `plan` recursively based on rewrite mappings from old plans to new ones.
-   * This method also updates all the related references in the `plan` accordingly.
-   *
-   * @param plan to rewrite
-   * @param rewritePlanMap has mappings from old plans to new ones for the given `plan`.
-   * @return a rewritten plan and updated references related to a root node of
-   *         the given `plan` for rewriting it.
-   */
-  def rewritePlan(plan: LogicalPlan, rewritePlanMap: Map[LogicalPlan, LogicalPlan])
-    : (LogicalPlan, Seq[(Attribute, Attribute)]) = {
-    if (plan.resolved) {
-      val attrMapping = new mutable.ArrayBuffer[(Attribute, Attribute)]()
-      val newChildren = plan.children.map { child =>
-        // If not, we'd rewrite child plan recursively until we find the
-        // conflict node or reach the leaf node.
-        val (newChild, childAttrMapping) = rewritePlan(child, rewritePlanMap)
-        attrMapping ++= childAttrMapping.filter { case (oldAttr, _) =>
-          // `attrMapping` is not only used to replace the attributes of the current `plan`,
-          // but also to be propagated to the parent plans of the current `plan`. Therefore,
-          // the `oldAttr` must be part of either `plan.references` (so that it can be used to
-          // replace attributes of the current `plan`) or `plan.outputSet` (so that it can be
-          // used by those parent plans).
-          (plan.outputSet ++ plan.references).contains(oldAttr)
-        }
-        newChild
-      }
-
-      val newPlan = if (rewritePlanMap.contains(plan)) {
-        rewritePlanMap(plan).withNewChildren(newChildren)
-      } else {
-        plan.withNewChildren(newChildren)
-      }
-
-      assert(!attrMapping.groupBy(_._1.exprId)
-        .exists(_._2.map(_._2.exprId).distinct.length > 1),
-        "Found duplicate rewrite attributes")
-
-      val attributeRewrites = AttributeMap(attrMapping)
-      // Using attrMapping from the children plans to rewrite their parent node.
-      // Note that we shouldn't rewrite a node using attrMapping from its sibling nodes.
-      val p = newPlan.transformExpressions {
-        case a: Attribute =>
-          updateAttr(a, attributeRewrites)
-        case s: SubqueryExpression =>
-          s.withNewPlan(updateOuterReferencesInSubquery(s.plan, attributeRewrites))
-      }
-      attrMapping ++= plan.output.zip(p.output)
-        .filter { case (a1, a2) => a1.exprId != a2.exprId }
-      p -> attrMapping
-    } else {
-      // Just passes through unresolved nodes
-      plan.mapChildren {
-        rewritePlan(_, rewritePlanMap)._1
-      } -> Nil
-    }
-  }
-
-  private def updateAttr(attr: Attribute, attrMap: AttributeMap[Attribute]): Attribute = {
-    val exprId = attrMap.getOrElse(attr, attr).exprId
-    attr.withExprId(exprId)
-  }
-
-  /**
-   * The outer plan may have old references and the function below updates the
-   * outer references to refer to the new attributes.
-   *
-   * For example (SQL):
-   * {{{
-   *   SELECT * FROM t1
-   *   INTERSECT
-   *   SELECT * FROM t1
-   *   WHERE EXISTS (SELECT 1
-   *                 FROM t2
-   *                 WHERE t1.c1 = t2.c1)
-   * }}}
-   * Plan before resolveReference rule.
-   *    'Intersect
-   *    :- Project [c1#245, c2#246]
-   *    :  +- SubqueryAlias t1
-   *    :     +- Relation[c1#245,c2#246] parquet
-   *    +- 'Project [*]
-   *       +- Filter exists#257 [c1#245]
-   *       :  +- Project [1 AS 1#258]
-   *       :     +- Filter (outer(c1#245) = c1#251)
-   *       :        +- SubqueryAlias t2
-   *       :           +- Relation[c1#251,c2#252] parquet
-   *       +- SubqueryAlias t1
-   *          +- Relation[c1#245,c2#246] parquet
-   * Plan after the resolveReference rule.
-   *    Intersect
-   *    :- Project [c1#245, c2#246]
-   *    :  +- SubqueryAlias t1
-   *    :     +- Relation[c1#245,c2#246] parquet
-   *    +- Project [c1#259, c2#260]
-   *       +- Filter exists#257 [c1#259]
-   *       :  +- Project [1 AS 1#258]
-   *       :     +- Filter (outer(c1#259) = c1#251) => Updated
-   *       :        +- SubqueryAlias t2
-   *       :           +- Relation[c1#251,c2#252] parquet
-   *       +- SubqueryAlias t1
-   *          +- Relation[c1#259,c2#260] parquet  => Outer plan's attributes are rewritten.
-   */
-  private def updateOuterReferencesInSubquery(
-      plan: LogicalPlan,
-      attrMap: AttributeMap[Attribute]): LogicalPlan = {
-    AnalysisHelper.allowInvokingTransformsInAnalyzer {
-      plan transformDown { case currentFragment =>
-        currentFragment transformExpressions {
-          case OuterReference(a: Attribute) =>
-            OuterReference(updateAttr(a, attrMap))
-          case s: SubqueryExpression =>
-            s.withNewPlan(updateOuterReferencesInSubquery(s.plan, attrMap))
-        }
-      }
-    }
-  }
-}
-
 /**
  * Provides a logical query plan analyzer, which translates [[UnresolvedAttribute]]s and
  * [[UnresolvedRelation]]s into fully typed objects using information in a [[SessionCatalog]].
@@ -255,6 +136,10 @@ class Analyzer(
   extends RuleExecutor[LogicalPlan] with CheckAnalysis with LookupCatalog {
 
   private val v1SessionCatalog: SessionCatalog = catalogManager.v1SessionCatalog
+
+  override protected def isPlanIntegral(plan: LogicalPlan): Boolean = {
+    !Utils.isTesting || LogicalPlanIntegrity.checkIfExprIdsAreGloballyUnique(plan)
+  }
 
   override def isView(nameParts: Seq[String]): Boolean = v1SessionCatalog.isView(nameParts)
 
@@ -967,9 +852,9 @@ class Analyzer(
    */
   object ResolveTempViews extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan.resolveOperatorsUp {
-      case u @ UnresolvedRelation(ident, _) =>
-        lookupTempView(ident).getOrElse(u)
-      case i @ InsertIntoStatement(UnresolvedRelation(ident, _), _, _, _, _) =>
+      case u @ UnresolvedRelation(ident, _, isStreaming) =>
+        lookupTempView(ident, isStreaming).getOrElse(u)
+      case i @ InsertIntoStatement(UnresolvedRelation(ident, _, false), _, _, _, _) =>
         lookupTempView(ident)
           .map(view => i.copy(table = view))
           .getOrElse(i)
@@ -982,15 +867,22 @@ class Analyzer(
         lookupTempView(ident).map(_ => ResolvedView(ident.asIdentifier)).getOrElse(u)
     }
 
-    def lookupTempView(identifier: Seq[String]): Option[LogicalPlan] = {
+    def lookupTempView(
+        identifier: Seq[String], isStreaming: Boolean = false): Option[LogicalPlan] = {
       // Permanent View can't refer to temp views, no need to lookup at all.
       if (isResolvingView) return None
 
-      identifier match {
+      val tmpView = identifier match {
         case Seq(part1) => v1SessionCatalog.lookupTempView(part1)
         case Seq(part1, part2) => v1SessionCatalog.lookupGlobalTempView(part1, part2)
         case _ => None
       }
+
+      if (isStreaming && tmpView.nonEmpty && !tmpView.get.isStreaming) {
+        throw new AnalysisException(s"${identifier.quoted} is not a temp view of streaming " +
+          s"logical plan, please use batch API such as `DataFrameReader.table` to read it.")
+      }
+      tmpView
     }
   }
 
@@ -1016,10 +908,13 @@ class Analyzer(
   object ResolveTables extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = ResolveTempViews(plan).resolveOperatorsUp {
       case u: UnresolvedRelation =>
-        lookupV2Relation(u.multipartIdentifier, u.options)
-          .map { rel =>
-            val ident = rel.identifier.get
-            SubqueryAlias(rel.catalog.get.name +: ident.namespace :+ ident.name, rel)
+        lookupV2Relation(u.multipartIdentifier, u.options, u.isStreaming)
+          .map { relation =>
+            val (catalog, ident) = relation match {
+              case ds: DataSourceV2Relation => (ds.catalog, ds.identifier.get)
+              case s: StreamingRelationV2 => (s.catalog, s.identifier.get)
+            }
+            SubqueryAlias(catalog.get.name +: ident.namespace :+ ident.name, relation)
           }.getOrElse(u)
 
       case u @ UnresolvedTable(NonSessionCatalogAndIdentifier(catalog, ident)) =>
@@ -1032,8 +927,9 @@ class Analyzer(
           .map(ResolvedTable(catalog.asTableCatalog, ident, _))
           .getOrElse(u)
 
-      case i @ InsertIntoStatement(u: UnresolvedRelation, _, _, _, _) if i.query.resolved =>
-        lookupV2Relation(u.multipartIdentifier, u.options)
+      case i @ InsertIntoStatement(u @ UnresolvedRelation(_, _, false), _, _, _, _)
+          if i.query.resolved =>
+        lookupV2Relation(u.multipartIdentifier, u.options, false)
           .map(v2Relation => i.copy(table = v2Relation))
           .getOrElse(i)
 
@@ -1051,12 +947,18 @@ class Analyzer(
      */
     private def lookupV2Relation(
         identifier: Seq[String],
-        options: CaseInsensitiveStringMap): Option[DataSourceV2Relation] =
+        options: CaseInsensitiveStringMap,
+        isStreaming: Boolean): Option[LogicalPlan] =
       expandRelationName(identifier) match {
         case NonSessionCatalogAndIdentifier(catalog, ident) =>
           CatalogV2Util.loadTable(catalog, ident) match {
             case Some(table) =>
-              Some(DataSourceV2Relation.create(table, Some(catalog), Some(ident), options))
+              if (isStreaming) {
+                Some(StreamingRelationV2(None, table.name, table, options,
+                  table.schema.toAttributes, Some(catalog), Some(ident), None))
+              } else {
+                Some(DataSourceV2Relation.create(table, Some(catalog), Some(ident), options))
+              }
             case None => None
           }
         case _ => None
@@ -1097,8 +999,8 @@ class Analyzer(
     def apply(plan: LogicalPlan): LogicalPlan = ResolveTempViews(plan).resolveOperatorsUp {
       case i @ InsertIntoStatement(table, _, _, _, _) if i.query.resolved =>
         val relation = table match {
-          case u: UnresolvedRelation =>
-            lookupRelation(u.multipartIdentifier, u.options).getOrElse(u)
+          case u @ UnresolvedRelation(_, _, false) =>
+            lookupRelation(u.multipartIdentifier, u.options, false).getOrElse(u)
           case other => other
         }
 
@@ -1109,7 +1011,8 @@ class Analyzer(
         }
 
       case u: UnresolvedRelation =>
-        lookupRelation(u.multipartIdentifier, u.options).map(resolveViews).getOrElse(u)
+        lookupRelation(u.multipartIdentifier, u.options, u.isStreaming)
+          .map(resolveViews).getOrElse(u)
 
       case u @ UnresolvedTable(identifier) =>
         lookupTableOrView(identifier).map {
@@ -1141,16 +1044,40 @@ class Analyzer(
     // 3) If a v1 table is found, create a v1 relation. Otherwise, create a v2 relation.
     private def lookupRelation(
         identifier: Seq[String],
-        options: CaseInsensitiveStringMap): Option[LogicalPlan] = {
+        options: CaseInsensitiveStringMap,
+        isStreaming: Boolean): Option[LogicalPlan] = {
       expandRelationName(identifier) match {
         case SessionCatalogAndIdentifier(catalog, ident) =>
           lazy val loaded = CatalogV2Util.loadTable(catalog, ident).map {
             case v1Table: V1Table =>
-              v1SessionCatalog.getRelation(v1Table.v1Table)
+              if (isStreaming) {
+                if (v1Table.v1Table.tableType == CatalogTableType.VIEW) {
+                  throw new AnalysisException(s"${identifier.quoted} is a permanent view, " +
+                    "which is not supported by streaming reading API such as " +
+                    "`DataStreamReader.table` yet.")
+                }
+                SubqueryAlias(
+                  catalog.name +: ident.asMultipartIdentifier,
+                  UnresolvedCatalogRelation(v1Table.v1Table, options, isStreaming = true))
+              } else {
+                v1SessionCatalog.getRelation(v1Table.v1Table, options)
+              }
             case table =>
-              SubqueryAlias(
-                catalog.name +: ident.asMultipartIdentifier,
-                DataSourceV2Relation.create(table, Some(catalog), Some(ident), options))
+              if (isStreaming) {
+                val v1Fallback = table match {
+                  case withFallback: V2TableWithV1Fallback =>
+                    Some(UnresolvedCatalogRelation(withFallback.v1Table, isStreaming = true))
+                  case _ => None
+                }
+                SubqueryAlias(
+                  catalog.name +: ident.asMultipartIdentifier,
+                  StreamingRelationV2(None, table.name, table, options, table.schema.toAttributes,
+                    Some(catalog), Some(ident), v1Fallback))
+              } else {
+                SubqueryAlias(
+                  catalog.name +: ident.asMultipartIdentifier,
+                  DataSourceV2Relation.create(table, Some(catalog), Some(ident), options))
+              }
           }
           val key = catalog.name +: ident.namespace :+ ident.name
           AnalysisContext.get.relationCache.get(key).map(_.transform {
@@ -1376,7 +1303,14 @@ class Analyzer(
       if (conflictPlans.isEmpty) {
         right
       } else {
-        Analyzer.rewritePlan(right, conflictPlans.toMap)._1
+        val planMapping = conflictPlans.toMap
+        right.transformUpWithNewOutput {
+          case oldPlan =>
+            val newPlanOpt = planMapping.get(oldPlan)
+            newPlanOpt.map { newPlan =>
+              newPlan -> oldPlan.output.zip(newPlan.output)
+            }.getOrElse(oldPlan -> Nil)
+        }
       }
     }
 
@@ -2848,8 +2782,8 @@ class Analyzer(
       // a resolved Aggregate will not have Window Functions.
       case f @ UnresolvedHaving(condition, a @ Aggregate(groupingExprs, aggregateExprs, child))
         if child.resolved &&
-           hasWindowFunction(aggregateExprs) &&
-           a.expressions.forall(_.resolved) =>
+          hasWindowFunction(aggregateExprs) &&
+          a.expressions.forall(_.resolved) =>
         val (windowExpressions, aggregateExpressions) = extract(aggregateExprs)
         // Create an Aggregate operator to evaluate aggregation functions.
         val withAggregate = Aggregate(groupingExprs, aggregateExpressions, child)
@@ -2866,7 +2800,7 @@ class Analyzer(
       // Aggregate without Having clause.
       case a @ Aggregate(groupingExprs, aggregateExprs, child)
         if hasWindowFunction(aggregateExprs) &&
-           a.expressions.forall(_.resolved) =>
+          a.expressions.forall(_.resolved) =>
         val (windowExpressions, aggregateExpressions) = extract(aggregateExprs)
         // Create an Aggregate operator to evaluate aggregation functions.
         val withAggregate = Aggregate(groupingExprs, aggregateExpressions, child)
