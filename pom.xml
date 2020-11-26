@@ -290,7 +290,6 @@
       </snapshots>
     </repository>
     <repository>
-    <repository>
       <id>github</id>
       <name>GitHub wangyum Apache Maven Packages</name>
       <url>https://maven.pkg.github.com/wangyum/hive</url>
