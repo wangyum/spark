@@ -7,8 +7,8 @@
     <server>
       <id>github</id>
       <username>wangyum</username>
-      <!-- Public token with `read:packages` scope -->
-      <password>e234893d40a5f6427a2e633b0318fcd812f6c2f7</password>
+      <!-- Public token with `read:packages` and `public_repo` scope -->
+      <password>10be5b0578590d93d73139d7d05835d4109ae13a</password>
     </server>
   </servers>
 </settings>
