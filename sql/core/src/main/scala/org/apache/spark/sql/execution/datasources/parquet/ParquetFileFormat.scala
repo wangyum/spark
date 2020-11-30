@@ -34,6 +34,7 @@ import org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GRO
 import org.apache.parquet.hadoop._
 import org.apache.parquet.hadoop.ParquetOutputFormat.JobSummaryLevel
 import org.apache.parquet.hadoop.codec.CodecConfig
+import org.apache.parquet.hadoop.metadata.FileMetaData
 import org.apache.parquet.hadoop.util.ContextUtil
 
 import org.apache.spark.{SparkException, TaskContext}
@@ -43,7 +44,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.GenerateUnsafeProjection
 import org.apache.spark.sql.catalyst.parser.LegacyTypeStringParser
-import org.apache.spark.sql.catalyst.util.{DateTimeUtils, TypeUtils}
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.vectorized.{OffHeapColumnVector, OnHeapColumnVector}
 import org.apache.spark.sql.internal.SQLConf
@@ -271,20 +272,9 @@ class ParquetFileFormat
         ParquetFileReader.readFooter(sharedConf, filePath, SKIP_ROW_GROUPS).getFileMetaData
       // Try to push down filters when filter push-down is enabled.
       val pushed = if (enableParquetFilterPushDown) {
-        val parquetSchema = footerFileMetaData.getSchema
-        val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
+        val parquetFilters = new ParquetFilters(footerFileMetaData, pushDownDate, pushDownTimestamp,
           pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive)
-        filters.map {
-          case in @ sources.In(attribute, values) if values.length > pushDownInFilterThreshold =>
-            resultSchema.find { f =>
-              if (isCaseSensitive) f.name.equals(attribute) else f.name.equalsIgnoreCase(attribute)
-            }.map { f =>
-              val (min, max) = TypeUtils.getMinMaxValue(f.dataType, values)
-              sources.And(sources.GreaterThanOrEqual(attribute, min),
-                sources.LessThanOrEqual(attribute, max))
-            }.getOrElse(in)
-          case other => other
-        }
+        filters
           // Collects all converted Parquet filter predicates. Notice that not all predicates can be
           // converted (`ParquetFilters.createFilter` returns an `Option`). That's why a `flatMap`
           // is used here.
@@ -519,12 +509,15 @@ object ParquetFileFormat extends Logging {
   def readSchemaFromFooter(
       footer: Footer, converter: ParquetToSparkSchemaConverter): StructType = {
     val fileMetaData = footer.getParquetMetadata.getFileMetaData
+    getSchemaFromFileMetaData(fileMetaData).getOrElse(converter.convert(fileMetaData.getSchema))
+  }
+
+  def getSchemaFromFileMetaData(fileMetaData: FileMetaData): Option[StructType] = {
     fileMetaData
       .getKeyValueMetaData
       .asScala.toMap
       .get(ParquetReadSupport.SPARK_METADATA_KEY)
       .flatMap(deserializeSchemaString)
-      .getOrElse(converter.convert(fileMetaData.getSchema))
   }
 
   private def deserializeSchemaString(schemaString: String): Option[StructType] = {
