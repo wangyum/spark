@@ -37,6 +37,7 @@ import org.apache.spark.sql.catalyst.planning.ScanOperation
 import org.apache.spark.sql.catalyst.plans.logical.{InsertIntoDir, InsertIntoStatement, LogicalPlan, Project}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.streaming.StreamingRelationV2
+import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.connector.catalog.SupportsRead
 import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.execution.{RowDataSourceScanExec, SparkPlan}
@@ -528,8 +529,17 @@ object DataSourceStrategy
       Some(sources.GreaterThanOrEqual(name, convertToScala(v, t)))
 
     case expressions.InSet(e @ pushableColumn(name), set) =>
+      val array = set.toArray
+      val xx = conf.getConfString("spark.sql.optimize.inSet", "true").toBoolean
       val toScala = CatalystTypeConverters.createToScalaConverter(e.dataType)
-      Some(sources.In(name, set.toArray.map(toScala)))
+      val xxxxx = if (xx) {
+        val sortedValues = values.sorted(TypeUtils.getInterpretedOrdering(e.dataType))
+        Seq(sources.GreaterThanOrEqual(name, sortedValues.head),
+          sources.LessThanOrEqual(name, sortedValues.last))
+      } else {
+        Seq.empty
+      } ++ Seq(sources.In(name, array.map(toScala)))
+      xxxxx.reduceLeftOption(sources.And)
 
     // Because we only convert In to InSet in Optimizer when there are more than certain
     // items. So it is possible we still get an In expression here that needs to be pushed
