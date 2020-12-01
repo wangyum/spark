@@ -533,7 +533,7 @@ object DataSourceStrategy
       val xx = conf.getConfString("spark.sql.optimize.inSet", "true").toBoolean
       val toScala = CatalystTypeConverters.createToScalaConverter(e.dataType)
       val xxxxx = if (xx) {
-        val sortedValues = values.sorted(TypeUtils.getInterpretedOrdering(e.dataType))
+        val sortedValues = array.sorted(TypeUtils.getInterpretedOrdering(e.dataType))
         Seq(sources.GreaterThanOrEqual(name, sortedValues.head),
           sources.LessThanOrEqual(name, sortedValues.last))
       } else {
