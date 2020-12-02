@@ -617,20 +617,35 @@ object DataSourceStrategy
         translateFilterWithMapping(child, translatedFilterToExpr, nestedPredicatePushdownEnabled)
           .map(sources.Not)
 
-      case expressions.InSet(e, set) if set.size > conf.optimizerInSetRewriteMinMaxThreshold =>
-        val (min, max) = TypeUtils.getMinMaxValue(e.dataType, set.toArray)
-        val minMaxFilter = Seq(expressions.GreaterThanOrEqual(e, Literal.create(min, e.dataType)),
-          expressions.LessThanOrEqual(e, Literal.create(max, e.dataType)))
-        translateFilterWithMapping(minMaxFilter.reduceLeft(expressions.And), translatedFilterToExpr,
-          nestedPredicatePushdownEnabled)
+      case inSet @ expressions.InSet(e, set) =>
+        val minMaxFilter = if (set.size > conf.optimizerInSetRewriteMinMaxThreshold) {
+          val (min, max) = TypeUtils.getMinMaxValue(e.dataType, set.toArray)
+          Seq(expressions.GreaterThanOrEqual(e, Literal.create(min, e.dataType)),
+            expressions.LessThanOrEqual(e, Literal.create(max, e.dataType)))
+        } else {
+          Seq.empty
+        }
+
+        (minMaxFilter :+ inSet).flatMap { f =>
+          translateLeafNodeFilterWithMapping(
+            f, translatedFilterToExpr, nestedPredicatePushdownEnabled)
+        }.reduceLeftOption(sources.And)
 
       case other =>
-        val filter = translateLeafNodeFilter(other, PushableColumn(nestedPredicatePushdownEnabled))
-        if (filter.isDefined && translatedFilterToExpr.isDefined) {
-          translatedFilterToExpr.get(filter.get) = predicate
-        }
-        filter
+        translateLeafNodeFilterWithMapping(
+          other, translatedFilterToExpr, nestedPredicatePushdownEnabled)
     }
+  }
+
+  private def translateLeafNodeFilterWithMapping(
+      predicate: Expression,
+      translatedFilterToExpr: Option[mutable.HashMap[sources.Filter, Expression]],
+      nestedPredicatePushdownEnabled: Boolean): Option[Filter] = {
+    val filter = translateLeafNodeFilter(predicate, PushableColumn(nestedPredicatePushdownEnabled))
+    if (filter.isDefined && translatedFilterToExpr.isDefined) {
+      translatedFilterToExpr.get(filter.get) = predicate
+    }
+    filter
   }
 
   protected[sql] def rebuildExpressionFromFilter(
