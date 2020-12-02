@@ -83,8 +83,8 @@ object InSetFilterPushdownBenchmark extends SqlBasedBenchmark {
        selectExpr: String = "*"): Unit = {
     val benchmark = new Benchmark(title, values, minNumIters = 5, output = output)
 
-    Seq(10, Int.MaxValue).foreach { pushDownEnabled =>
-      val name = s"Parquet Vectorized ${if (pushDownEnabled == 10) s"(Rewrite InSet)" else ""}"
+    Seq(Int.MaxValue, 10).foreach { pushDownEnabled =>
+      val name = s"Parquet ${if (pushDownEnabled == 10) s"(Rewrite InSet)" else ""}"
       benchmark.addCase(name) { _ =>
         withSQLConf("spark.sql.optimizer.inSetRewriteMinMaxThreshold" -> s"$pushDownEnabled") {
           spark.sql(s"SELECT $selectExpr FROM parquetTable WHERE $whereExpr").noop()
@@ -92,7 +92,7 @@ object InSetFilterPushdownBenchmark extends SqlBasedBenchmark {
       }
     }
 
-    Seq(10, Int.MaxValue).foreach { pushDownEnabled =>
+    Seq(Int.MaxValue, 10).foreach { pushDownEnabled =>
       val name = s"ORC ${if (pushDownEnabled == 10) s"(Rewrite InSet)" else ""}"
       benchmark.addCase(name) { _ =>
         withSQLConf("spark.sql.optimizer.inSetRewriteMinMaxThreshold" -> s"$pushDownEnabled") {
@@ -101,7 +101,7 @@ object InSetFilterPushdownBenchmark extends SqlBasedBenchmark {
       }
     }
 
-    Seq(10, Int.MaxValue).foreach { pushDownEnabled =>
+    Seq(Int.MaxValue, 10).foreach { pushDownEnabled =>
       val name = s"CSV ${if (pushDownEnabled == 10) s"(Rewrite InSet)" else ""}"
       benchmark.addCase(name) { _ =>
         withSQLConf("spark.sql.optimizer.inSetRewriteMinMaxThreshold" -> s"$pushDownEnabled") {
