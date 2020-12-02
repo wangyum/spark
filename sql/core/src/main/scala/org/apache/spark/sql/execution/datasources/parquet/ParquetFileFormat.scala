@@ -34,7 +34,6 @@ import org.apache.parquet.format.converter.ParquetMetadataConverter.SKIP_ROW_GRO
 import org.apache.parquet.hadoop._
 import org.apache.parquet.hadoop.ParquetOutputFormat.JobSummaryLevel
 import org.apache.parquet.hadoop.codec.CodecConfig
-import org.apache.parquet.hadoop.metadata.FileMetaData
 import org.apache.parquet.hadoop.util.ContextUtil
 
 import org.apache.spark.{SparkException, TaskContext}
@@ -268,11 +267,12 @@ class ParquetFileFormat
 
       val sharedConf = broadcastedHadoopConf.value.value
 
-      val footerFileMetaData =
+      lazy val footerFileMetaData =
         ParquetFileReader.readFooter(sharedConf, filePath, SKIP_ROW_GROUPS).getFileMetaData
       // Try to push down filters when filter push-down is enabled.
       val pushed = if (enableParquetFilterPushDown) {
-        val parquetFilters = new ParquetFilters(footerFileMetaData, pushDownDate, pushDownTimestamp,
+        val parquetSchema = footerFileMetaData.getSchema
+        val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
           pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive)
         filters
           // Collects all converted Parquet filter predicates. Notice that not all predicates can be
@@ -509,15 +509,12 @@ object ParquetFileFormat extends Logging {
   def readSchemaFromFooter(
       footer: Footer, converter: ParquetToSparkSchemaConverter): StructType = {
     val fileMetaData = footer.getParquetMetadata.getFileMetaData
-    getSchemaFromFileMetaData(fileMetaData).getOrElse(converter.convert(fileMetaData.getSchema))
-  }
-
-  def getSchemaFromFileMetaData(fileMetaData: FileMetaData): Option[StructType] = {
     fileMetaData
       .getKeyValueMetaData
       .asScala.toMap
       .get(ParquetReadSupport.SPARK_METADATA_KEY)
       .flatMap(deserializeSchemaString)
+      .getOrElse(converter.convert(fileMetaData.getSchema))
   }
 
   private def deserializeSchemaString(schemaString: String): Option[StructType] = {

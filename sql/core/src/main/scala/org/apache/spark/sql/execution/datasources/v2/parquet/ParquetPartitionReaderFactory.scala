@@ -137,7 +137,8 @@ case class ParquetPartitionReaderFactory(
       ParquetFileReader.readFooter(conf, filePath, SKIP_ROW_GROUPS).getFileMetaData
     // Try to push down filters when filter push-down is enabled.
     val pushed = if (enableParquetFilterPushDown) {
-      val parquetFilters = new ParquetFilters(footerFileMetaData, pushDownDate, pushDownTimestamp,
+      val parquetSchema = footerFileMetaData.getSchema
+      val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
         pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive)
       filters
         // Collects all converted Parquet filter predicates. Notice that not all predicates can be

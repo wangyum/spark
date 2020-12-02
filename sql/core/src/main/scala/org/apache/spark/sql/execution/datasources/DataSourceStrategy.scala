@@ -37,6 +37,7 @@ import org.apache.spark.sql.catalyst.planning.ScanOperation
 import org.apache.spark.sql.catalyst.plans.logical.{InsertIntoDir, InsertIntoStatement, LogicalPlan, Project}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.streaming.StreamingRelationV2
+import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.connector.catalog.SupportsRead
 import org.apache.spark.sql.connector.catalog.TableCapability._
 import org.apache.spark.sql.execution.{RowDataSourceScanExec, SparkPlan}
@@ -324,7 +325,7 @@ object DataSourceStrategy
           toCatalystRDD(l, requestedColumns, t.buildScan(requestedColumns, allPredicates))) :: Nil
 
     case ScanOperation(projects, filters,
-                           l @ LogicalRelation(t: PrunedFilteredScan, _, _, _)) =>
+        l @ LogicalRelation(t: PrunedFilteredScan, _, _, _)) =>
       pruneFilterProject(
         l,
         projects,
@@ -615,6 +616,13 @@ object DataSourceStrategy
       case expressions.Not(child) =>
         translateFilterWithMapping(child, translatedFilterToExpr, nestedPredicatePushdownEnabled)
           .map(sources.Not)
+
+      case expressions.InSet(e, set) if set.size > conf.optimizerInSetRewriteMinMaxThreshold =>
+        val (min, max) = TypeUtils.getMinMaxValue(e.dataType, set.toArray)
+        val minMaxFilter = Seq(expressions.GreaterThanOrEqual(e, Literal.create(min, e.dataType)),
+          expressions.LessThanOrEqual(e, Literal.create(max, e.dataType)))
+        translateFilterWithMapping(minMaxFilter.reduceLeft(expressions.And), translatedFilterToExpr,
+          nestedPredicatePushdownEnabled)
 
       case other =>
         val filter = translateLeafNodeFilter(other, PushableColumn(nestedPredicatePushdownEnabled))

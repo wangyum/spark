@@ -19,12 +19,10 @@ package org.apache.spark.sql.execution.datasources.v2.parquet
 
 import scala.collection.JavaConverters._
 
-import org.apache.parquet.hadoop.metadata.FileMetaData
-
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.connector.read.{Scan, SupportsPushDownFilters}
 import org.apache.spark.sql.execution.datasources.PartitioningAwareFileIndex
-import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, ParquetReadSupport, SparkToParquetSchemaConverter}
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetFilters, SparkToParquetSchemaConverter}
 import org.apache.spark.sql.execution.datasources.v2.FileScanBuilder
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
@@ -53,10 +51,7 @@ case class ParquetScanBuilder(
     val isCaseSensitive = sqlConf.caseSensitiveAnalysis
     val parquetSchema =
       new SparkToParquetSchemaConverter(sparkSession.sessionState.conf).convert(schema)
-    val extraMetadata = Map(ParquetReadSupport.SPARK_METADATA_KEY -> schema.json).asJava
-    val createdBy = s"Apache Spark ${org.apache.spark.SPARK_VERSION}"
-    val fileMetaData = new FileMetaData(parquetSchema, extraMetadata, createdBy)
-    val parquetFilters = new ParquetFilters(fileMetaData, pushDownDate, pushDownTimestamp,
+    val parquetFilters = new ParquetFilters(parquetSchema, pushDownDate, pushDownTimestamp,
       pushDownDecimal, pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive)
     parquetFilters.convertibleFilters(this.filters).toArray
   }
