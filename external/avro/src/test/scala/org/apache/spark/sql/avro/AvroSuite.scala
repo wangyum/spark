@@ -984,6 +984,8 @@ abstract class AvroSuite
   test("support user provided non-nullable avro schema " +
     "for nullable catalyst schema without any null record") {
     withTempPath { tempDir =>
+
+
       val catalystSchema =
         StructType(Seq(
           StructField("Age", IntegerType, true),
@@ -1015,7 +1017,7 @@ abstract class AvroSuite
           .save(s"$tempDir/${UUID.randomUUID()}")
       }.getCause.getMessage
       assert(message.contains("Caused by: java.lang.NullPointerException: " +
-        "in test_schema in string null of string in field Name"))
+        "null of string in string in field Name of test_schema in test_schema"))
     }
   }
 
