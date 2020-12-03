@@ -984,8 +984,6 @@ abstract class AvroSuite
   test("support user provided non-nullable avro schema " +
     "for nullable catalyst schema without any null record") {
     withTempPath { tempDir =>
-
-
       val catalystSchema =
         StructType(Seq(
           StructField("Age", IntegerType, true),
