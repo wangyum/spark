@@ -251,7 +251,7 @@ class ParquetSchemaInferenceSuite extends ParquetSchemaTest {
     """
       |message root {
       |  optional group _1 (MAP) {
-      |    repeated group map (MAP_KEY_VALUE) {
+      |    repeated group key_value (MAP_KEY_VALUE) {
       |      required int32 key;
       |      optional binary value (UTF8);
       |    }
@@ -267,7 +267,7 @@ class ParquetSchemaInferenceSuite extends ParquetSchemaTest {
     """
       |message root {
       |  optional group _1 (MAP) {
-      |    repeated group map (MAP_KEY_VALUE) {
+      |    repeated group key_value (MAP_KEY_VALUE) {
       |      required group key {
       |        optional binary _1 (UTF8);
       |        optional binary _2 (UTF8);
@@ -300,7 +300,7 @@ class ParquetSchemaInferenceSuite extends ParquetSchemaTest {
     """
       |message root {
       |  optional group _1 (MAP_KEY_VALUE) {
-      |    repeated group map {
+      |    repeated group key_value {
       |      required int32 key;
       |      optional group value {
       |        optional binary _1 (UTF8);
@@ -857,7 +857,7 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
         nullable = true))),
     """message root {
       |  optional group f1 (MAP) {
-      |    repeated group map (MAP_KEY_VALUE) {
+      |    repeated group key_value (MAP_KEY_VALUE) {
       |      required int32 key;
       |      required binary value (UTF8);
       |    }
@@ -893,7 +893,7 @@ class ParquetSchemaSuite extends ParquetSchemaTest {
         nullable = true))),
     """message root {
       |  optional group f1 (MAP) {
-      |    repeated group map (MAP_KEY_VALUE) {
+      |    repeated group key_value (MAP_KEY_VALUE) {
       |      required int32 key;
       |      optional binary value (UTF8);
       |    }
