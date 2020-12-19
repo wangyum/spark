@@ -199,4 +199,33 @@ class SimplifyConditionalSuite extends PlanTest with ExpressionEvalHelper with P
         If(Factorial(5) > 100L, b, nullLiteral).eval(EmptyRow))
     }
   }
+
+  test("remove unnecessary CaseWhen when the elseValue is empty and all branches are null") {
+    assertEquivalent(
+      CaseWhen((IsNotNull(UnresolvedAttribute("a")), Literal(null, BooleanType)) ::
+        (IsNotNull(UnresolvedAttribute("b")), Literal(null, BooleanType)) ::
+        Nil,
+        None),
+      Literal(null, BooleanType))
+
+    assertEquivalent(
+      CaseWhen((IsNotNull(UnresolvedAttribute("a")), Literal(null, BooleanType)) ::
+        (IsNotNull(UnresolvedAttribute("b")), FalseLiteral) ::
+        Nil,
+        None),
+      CaseWhen((IsNotNull(UnresolvedAttribute("a")), Literal(null, BooleanType)) ::
+        (IsNotNull(UnresolvedAttribute("b")), FalseLiteral) ::
+        Nil,
+        None))
+
+    assertEquivalent(
+      CaseWhen((LessThan(Rand(1), 0.5), Literal(null, BooleanType)) ::
+        (IsNotNull(UnresolvedAttribute("b")), Literal(null, BooleanType)) ::
+        Nil,
+        None),
+      CaseWhen((LessThan(Rand(1), 0.5), Literal(null, BooleanType)) ::
+        (IsNotNull(UnresolvedAttribute("b")), Literal(null, BooleanType)) ::
+        Nil,
+        None))
+  }
 }
