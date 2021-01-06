@@ -136,7 +136,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                           BroadcastHashJoin [wr_returned_date_sk,d_date_sk]
                                                             Project [wr_returned_date_sk,wr_return_amt,wr_net_loss,wp_web_page_sk]
                                                               BroadcastHashJoin [wr_web_page_sk,wp_web_page_sk]
-                                                                Filter [wr_returned_date_sk,wr_web_page_sk]
+                                                                Filter [wr_web_page_sk,wr_returned_date_sk]
                                                                   ColumnarToRow
                                                                     InputAdapter
                                                                       Scan parquet default.web_returns [wr_returned_date_sk,wr_web_page_sk,wr_return_amt,wr_net_loss]

@@ -126,7 +126,7 @@ TakeOrderedAndProject (121)
 Output [7]: [ss_sold_date_sk#1, ss_item_sk#2, ss_store_sk#3, ss_promo_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_net_profit#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_sold_date_sk), IsNotNull(ss_store_sk), IsNotNull(ss_item_sk), IsNotNull(ss_promo_sk)]
+PushedFilters: [IsNotNull(ss_sold_date_sk), IsNotNull(ss_promo_sk), IsNotNull(ss_store_sk), IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_sold_date_sk:int,ss_item_sk:int,ss_store_sk:int,ss_promo_sk:int,ss_ticket_number:int,ss_ext_sales_price:decimal(7,2),ss_net_profit:decimal(7,2)>
 
 (2) ColumnarToRow [codegen id : 1]
@@ -134,7 +134,7 @@ Input [7]: [ss_sold_date_sk#1, ss_item_sk#2, ss_store_sk#3, ss_promo_sk#4, ss_ti
 
 (3) Filter [codegen id : 1]
 Input [7]: [ss_sold_date_sk#1, ss_item_sk#2, ss_store_sk#3, ss_promo_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_net_profit#7]
-Condition : (((isnotnull(ss_sold_date_sk#1) AND isnotnull(ss_store_sk#3)) AND isnotnull(ss_item_sk#2)) AND isnotnull(ss_promo_sk#4))
+Condition : (((isnotnull(ss_sold_date_sk#1) AND isnotnull(ss_promo_sk#4)) AND isnotnull(ss_store_sk#3)) AND isnotnull(ss_item_sk#2))
 
 (4) Exchange
 Input [7]: [ss_sold_date_sk#1, ss_item_sk#2, ss_store_sk#3, ss_promo_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_net_profit#7]
@@ -179,7 +179,7 @@ Input [11]: [ss_sold_date_sk#1, ss_item_sk#2, ss_store_sk#3, ss_promo_sk#4, ss_t
 Output [2]: [i_item_sk#14, i_current_price#15]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_current_price), GreaterThan(i_current_price,50.00), IsNotNull(i_item_sk)]
+PushedFilters: [GreaterThan(i_current_price,50.00), IsNotNull(i_current_price), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_current_price:decimal(7,2)>
 
 (14) ColumnarToRow [codegen id : 5]
@@ -187,7 +187,7 @@ Input [2]: [i_item_sk#14, i_current_price#15]
 
 (15) Filter [codegen id : 5]
 Input [2]: [i_item_sk#14, i_current_price#15]
-Condition : ((isnotnull(i_current_price#15) AND (i_current_price#15 > 50.00)) AND isnotnull(i_item_sk#14))
+Condition : (((i_current_price#15 > 50.00) AND isnotnull(i_current_price#15)) AND isnotnull(i_item_sk#14))
 
 (16) Project [codegen id : 5]
 Output [1]: [i_item_sk#14]
@@ -317,7 +317,7 @@ Results [5]: [store channel AS channel#40, concat(store, s_store_id#24) AS id#41
 Output [7]: [cs_sold_date_sk#45, cs_catalog_page_sk#46, cs_item_sk#47, cs_promo_sk#48, cs_order_number#49, cs_ext_sales_price#50, cs_net_profit#51]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_sales]
-PushedFilters: [IsNotNull(cs_sold_date_sk), IsNotNull(cs_catalog_page_sk), IsNotNull(cs_item_sk), IsNotNull(cs_promo_sk)]
+PushedFilters: [IsNotNull(cs_promo_sk), IsNotNull(cs_sold_date_sk), IsNotNull(cs_catalog_page_sk), IsNotNull(cs_item_sk)]
 ReadSchema: struct<cs_sold_date_sk:int,cs_catalog_page_sk:int,cs_item_sk:int,cs_promo_sk:int,cs_order_number:int,cs_ext_sales_price:decimal(7,2),cs_net_profit:decimal(7,2)>
 
 (44) ColumnarToRow [codegen id : 11]
@@ -325,7 +325,7 @@ Input [7]: [cs_sold_date_sk#45, cs_catalog_page_sk#46, cs_item_sk#47, cs_promo_s
 
 (45) Filter [codegen id : 11]
 Input [7]: [cs_sold_date_sk#45, cs_catalog_page_sk#46, cs_item_sk#47, cs_promo_sk#48, cs_order_number#49, cs_ext_sales_price#50, cs_net_profit#51]
-Condition : (((isnotnull(cs_sold_date_sk#45) AND isnotnull(cs_catalog_page_sk#46)) AND isnotnull(cs_item_sk#47)) AND isnotnull(cs_promo_sk#48))
+Condition : (((isnotnull(cs_promo_sk#48) AND isnotnull(cs_sold_date_sk#45)) AND isnotnull(cs_catalog_page_sk#46)) AND isnotnull(cs_item_sk#47))
 
 (46) Exchange
 Input [7]: [cs_sold_date_sk#45, cs_catalog_page_sk#46, cs_item_sk#47, cs_promo_sk#48, cs_order_number#49, cs_ext_sales_price#50, cs_net_profit#51]
@@ -451,7 +451,7 @@ Results [5]: [catalog channel AS channel#75, concat(catalog_page, cp_catalog_pag
 Output [7]: [ws_sold_date_sk#80, ws_item_sk#81, ws_web_site_sk#82, ws_promo_sk#83, ws_order_number#84, ws_ext_sales_price#85, ws_net_profit#86]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
-PushedFilters: [IsNotNull(ws_sold_date_sk), IsNotNull(ws_web_site_sk), IsNotNull(ws_item_sk), IsNotNull(ws_promo_sk)]
+PushedFilters: [IsNotNull(ws_promo_sk), IsNotNull(ws_web_site_sk), IsNotNull(ws_sold_date_sk), IsNotNull(ws_item_sk)]
 ReadSchema: struct<ws_sold_date_sk:int,ws_item_sk:int,ws_web_site_sk:int,ws_promo_sk:int,ws_order_number:int,ws_ext_sales_price:decimal(7,2),ws_net_profit:decimal(7,2)>
 
 (74) ColumnarToRow [codegen id : 21]
@@ -459,7 +459,7 @@ Input [7]: [ws_sold_date_sk#80, ws_item_sk#81, ws_web_site_sk#82, ws_promo_sk#83
 
 (75) Filter [codegen id : 21]
 Input [7]: [ws_sold_date_sk#80, ws_item_sk#81, ws_web_site_sk#82, ws_promo_sk#83, ws_order_number#84, ws_ext_sales_price#85, ws_net_profit#86]
-Condition : (((isnotnull(ws_sold_date_sk#80) AND isnotnull(ws_web_site_sk#82)) AND isnotnull(ws_item_sk#81)) AND isnotnull(ws_promo_sk#83))
+Condition : (((isnotnull(ws_promo_sk#83) AND isnotnull(ws_web_site_sk#82)) AND isnotnull(ws_sold_date_sk#80)) AND isnotnull(ws_item_sk#81))
 
 (76) Exchange
 Input [7]: [ws_sold_date_sk#80, ws_item_sk#81, ws_web_site_sk#82, ws_promo_sk#83, ws_order_number#84, ws_ext_sales_price#85, ws_net_profit#86]

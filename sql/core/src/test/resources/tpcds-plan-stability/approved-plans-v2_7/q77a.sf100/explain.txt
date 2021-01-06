@@ -438,7 +438,7 @@ Results [3]: [wp_web_page_sk#71, MakeDecimal(sum(UnscaledValue(ws_ext_sales_pric
 Output [4]: [wr_returned_date_sk#82, wr_web_page_sk#83, wr_return_amt#84, wr_net_loss#85]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_returns]
-PushedFilters: [IsNotNull(wr_returned_date_sk), IsNotNull(wr_web_page_sk)]
+PushedFilters: [IsNotNull(wr_web_page_sk), IsNotNull(wr_returned_date_sk)]
 ReadSchema: struct<wr_returned_date_sk:bigint,wr_web_page_sk:bigint,wr_return_amt:decimal(7,2),wr_net_loss:decimal(7,2)>
 
 (72) ColumnarToRow [codegen id : 21]
@@ -446,7 +446,7 @@ Input [4]: [wr_returned_date_sk#82, wr_web_page_sk#83, wr_return_amt#84, wr_net_
 
 (73) Filter [codegen id : 21]
 Input [4]: [wr_returned_date_sk#82, wr_web_page_sk#83, wr_return_amt#84, wr_net_loss#85]
-Condition : (isnotnull(wr_returned_date_sk#82) AND isnotnull(wr_web_page_sk#83))
+Condition : (isnotnull(wr_web_page_sk#83) AND isnotnull(wr_returned_date_sk#82))
 
 (74) ReusedExchange [Reuses operator id: 65]
 Output [1]: [wp_web_page_sk#86]

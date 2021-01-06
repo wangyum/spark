@@ -52,7 +52,7 @@
 Output [4]: [cr_returned_date_sk#1, cr_returning_customer_sk#2, cr_call_center_sk#3, cr_net_loss#4]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_returns]
-PushedFilters: [IsNotNull(cr_call_center_sk), IsNotNull(cr_returned_date_sk), IsNotNull(cr_returning_customer_sk)]
+PushedFilters: [IsNotNull(cr_call_center_sk), IsNotNull(cr_returning_customer_sk), IsNotNull(cr_returned_date_sk)]
 ReadSchema: struct<cr_returned_date_sk:int,cr_returning_customer_sk:int,cr_call_center_sk:int,cr_net_loss:decimal(7,2)>
 
 (2) ColumnarToRow [codegen id : 2]
@@ -60,13 +60,13 @@ Input [4]: [cr_returned_date_sk#1, cr_returning_customer_sk#2, cr_call_center_sk
 
 (3) Filter [codegen id : 2]
 Input [4]: [cr_returned_date_sk#1, cr_returning_customer_sk#2, cr_call_center_sk#3, cr_net_loss#4]
-Condition : ((isnotnull(cr_call_center_sk#3) AND isnotnull(cr_returned_date_sk#1)) AND isnotnull(cr_returning_customer_sk#2))
+Condition : ((isnotnull(cr_call_center_sk#3) AND isnotnull(cr_returning_customer_sk#2)) AND isnotnull(cr_returned_date_sk#1))
 
 (4) Scan parquet default.date_dim
 Output [3]: [d_date_sk#5, d_year#6, d_moy#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,1998), EqualTo(d_moy,11), IsNotNull(d_date_sk)]
+PushedFilters: [EqualTo(d_year,1998), EqualTo(d_moy,11), IsNotNull(d_year), IsNotNull(d_moy), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (5) ColumnarToRow [codegen id : 1]
@@ -74,7 +74,7 @@ Input [3]: [d_date_sk#5, d_year#6, d_moy#7]
 
 (6) Filter [codegen id : 1]
 Input [3]: [d_date_sk#5, d_year#6, d_moy#7]
-Condition : ((((isnotnull(d_year#6) AND isnotnull(d_moy#7)) AND (d_year#6 = 1998)) AND (d_moy#7 = 11)) AND isnotnull(d_date_sk#5))
+Condition : (((((d_year#6 = 1998) AND (d_moy#7 = 11)) AND isnotnull(d_year#6)) AND isnotnull(d_moy#7)) AND isnotnull(d_date_sk#5))
 
 (7) Project [codegen id : 1]
 Output [1]: [d_date_sk#5]
@@ -101,7 +101,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Output [4]: [c_customer_sk#10, c_current_cdemo_sk#11, c_current_hdemo_sk#12, c_current_addr_sk#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer]
-PushedFilters: [IsNotNull(c_customer_sk), IsNotNull(c_current_addr_sk), IsNotNull(c_current_cdemo_sk), IsNotNull(c_current_hdemo_sk)]
+PushedFilters: [IsNotNull(c_current_cdemo_sk), IsNotNull(c_current_hdemo_sk), IsNotNull(c_customer_sk), IsNotNull(c_current_addr_sk)]
 ReadSchema: struct<c_customer_sk:int,c_current_cdemo_sk:int,c_current_hdemo_sk:int,c_current_addr_sk:int>
 
 (13) ColumnarToRow
@@ -109,7 +109,7 @@ Input [4]: [c_customer_sk#10, c_current_cdemo_sk#11, c_current_hdemo_sk#12, c_cu
 
 (14) Filter
 Input [4]: [c_customer_sk#10, c_current_cdemo_sk#11, c_current_hdemo_sk#12, c_current_addr_sk#13]
-Condition : (((isnotnull(c_customer_sk#10) AND isnotnull(c_current_addr_sk#13)) AND isnotnull(c_current_cdemo_sk#11)) AND isnotnull(c_current_hdemo_sk#12))
+Condition : (((isnotnull(c_current_cdemo_sk#11) AND isnotnull(c_current_hdemo_sk#12)) AND isnotnull(c_customer_sk#10)) AND isnotnull(c_current_addr_sk#13))
 
 (15) BroadcastHashJoin [codegen id : 7]
 Left keys [1]: [cr_returning_customer_sk#2]
@@ -155,7 +155,7 @@ Input [6]: [cr_call_center_sk#3, cr_net_loss#4, c_current_cdemo_sk#11, c_current
 Output [2]: [ca_address_sk#17, ca_gmt_offset#18]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_gmt_offset), EqualTo(ca_gmt_offset,-7.00), IsNotNull(ca_address_sk)]
+PushedFilters: [EqualTo(ca_gmt_offset,-7.00), IsNotNull(ca_gmt_offset), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_gmt_offset:decimal(5,2)>
 
 (25) ColumnarToRow [codegen id : 4]
@@ -163,7 +163,7 @@ Input [2]: [ca_address_sk#17, ca_gmt_offset#18]
 
 (26) Filter [codegen id : 4]
 Input [2]: [ca_address_sk#17, ca_gmt_offset#18]
-Condition : ((isnotnull(ca_gmt_offset#18) AND (ca_gmt_offset#18 = -7.00)) AND isnotnull(ca_address_sk#17))
+Condition : (((ca_gmt_offset#18 = -7.00) AND isnotnull(ca_gmt_offset#18)) AND isnotnull(ca_address_sk#17))
 
 (27) Project [codegen id : 4]
 Output [1]: [ca_address_sk#17]
