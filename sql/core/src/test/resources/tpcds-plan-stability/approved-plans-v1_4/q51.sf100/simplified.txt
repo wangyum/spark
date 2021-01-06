@@ -31,7 +31,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                             HashAggregate [ws_item_sk,d_date,ws_sales_price] [sum,sum]
                                                               Project [ws_item_sk,ws_sales_price,d_date]
                                                                 BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
-                                                                  Filter [ws_item_sk,ws_sold_date_sk]
+                                                                  Filter [ws_sold_date_sk,ws_item_sk]
                                                                     ColumnarToRow
                                                                       InputAdapter
                                                                         Scan parquet default.web_sales [ws_sold_date_sk,ws_item_sk,ws_sales_price]
@@ -63,7 +63,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                             HashAggregate [ss_item_sk,d_date,ss_sales_price] [sum,sum]
                                                               Project [ss_item_sk,ss_sales_price,d_date]
                                                                 BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                                  Filter [ss_item_sk,ss_sold_date_sk]
+                                                                  Filter [ss_sold_date_sk,ss_item_sk]
                                                                     ColumnarToRow
                                                                       InputAdapter
                                                                         Scan parquet default.store_sales [ss_sold_date_sk,ss_item_sk,ss_sales_price]

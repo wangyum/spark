@@ -47,7 +47,7 @@
 Output [4]: [i_item_sk#1, i_brand_id#2, i_brand#3, i_manager_id#4]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_manager_id), EqualTo(i_manager_id,1), IsNotNull(i_item_sk)]
+PushedFilters: [EqualTo(i_manager_id,1), IsNotNull(i_manager_id), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_brand_id:int,i_brand:string,i_manager_id:int>
 
 (2) ColumnarToRow [codegen id : 1]
@@ -55,7 +55,7 @@ Input [4]: [i_item_sk#1, i_brand_id#2, i_brand#3, i_manager_id#4]
 
 (3) Filter [codegen id : 1]
 Input [4]: [i_item_sk#1, i_brand_id#2, i_brand#3, i_manager_id#4]
-Condition : ((isnotnull(i_manager_id#4) AND (i_manager_id#4 = 1)) AND isnotnull(i_item_sk#1))
+Condition : (((i_manager_id#4 = 1) AND isnotnull(i_manager_id#4)) AND isnotnull(i_item_sk#1))
 
 (4) Project [codegen id : 1]
 Output [3]: [i_item_sk#1, i_brand_id#2, i_brand#3]
@@ -69,7 +69,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Output [4]: [ws_sold_date_sk#6, ws_sold_time_sk#7, ws_item_sk#8, ws_ext_sales_price#9]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
-PushedFilters: [IsNotNull(ws_sold_date_sk), IsNotNull(ws_item_sk), IsNotNull(ws_sold_time_sk)]
+PushedFilters: [IsNotNull(ws_sold_time_sk), IsNotNull(ws_sold_date_sk), IsNotNull(ws_item_sk)]
 ReadSchema: struct<ws_sold_date_sk:int,ws_sold_time_sk:int,ws_item_sk:int,ws_ext_sales_price:decimal(7,2)>
 
 (7) ColumnarToRow [codegen id : 3]
@@ -77,13 +77,13 @@ Input [4]: [ws_sold_date_sk#6, ws_sold_time_sk#7, ws_item_sk#8, ws_ext_sales_pri
 
 (8) Filter [codegen id : 3]
 Input [4]: [ws_sold_date_sk#6, ws_sold_time_sk#7, ws_item_sk#8, ws_ext_sales_price#9]
-Condition : ((isnotnull(ws_sold_date_sk#6) AND isnotnull(ws_item_sk#8)) AND isnotnull(ws_sold_time_sk#7))
+Condition : ((isnotnull(ws_sold_time_sk#7) AND isnotnull(ws_sold_date_sk#6)) AND isnotnull(ws_item_sk#8))
 
 (9) Scan parquet default.date_dim
 Output [3]: [d_date_sk#10, d_year#11, d_moy#12]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_moy), IsNotNull(d_year), EqualTo(d_moy,11), EqualTo(d_year,1999), IsNotNull(d_date_sk)]
+PushedFilters: [EqualTo(d_year,1999), EqualTo(d_moy,11), IsNotNull(d_moy), IsNotNull(d_year), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (10) ColumnarToRow [codegen id : 2]
@@ -91,7 +91,7 @@ Input [3]: [d_date_sk#10, d_year#11, d_moy#12]
 
 (11) Filter [codegen id : 2]
 Input [3]: [d_date_sk#10, d_year#11, d_moy#12]
-Condition : ((((isnotnull(d_moy#12) AND isnotnull(d_year#11)) AND (d_moy#12 = 11)) AND (d_year#11 = 1999)) AND isnotnull(d_date_sk#10))
+Condition : (((((d_year#11 = 1999) AND (d_moy#12 = 11)) AND isnotnull(d_moy#12)) AND isnotnull(d_year#11)) AND isnotnull(d_date_sk#10))
 
 (12) Project [codegen id : 2]
 Output [1]: [d_date_sk#10]
@@ -114,7 +114,7 @@ Input [5]: [ws_sold_date_sk#6, ws_sold_time_sk#7, ws_item_sk#8, ws_ext_sales_pri
 Output [4]: [cs_sold_date_sk#17, cs_sold_time_sk#18, cs_item_sk#19, cs_ext_sales_price#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_sales]
-PushedFilters: [IsNotNull(cs_sold_date_sk), IsNotNull(cs_item_sk), IsNotNull(cs_sold_time_sk)]
+PushedFilters: [IsNotNull(cs_sold_time_sk), IsNotNull(cs_sold_date_sk), IsNotNull(cs_item_sk)]
 ReadSchema: struct<cs_sold_date_sk:int,cs_sold_time_sk:int,cs_item_sk:int,cs_ext_sales_price:decimal(7,2)>
 
 (17) ColumnarToRow [codegen id : 5]
@@ -122,7 +122,7 @@ Input [4]: [cs_sold_date_sk#17, cs_sold_time_sk#18, cs_item_sk#19, cs_ext_sales_
 
 (18) Filter [codegen id : 5]
 Input [4]: [cs_sold_date_sk#17, cs_sold_time_sk#18, cs_item_sk#19, cs_ext_sales_price#20]
-Condition : ((isnotnull(cs_sold_date_sk#17) AND isnotnull(cs_item_sk#19)) AND isnotnull(cs_sold_time_sk#18))
+Condition : ((isnotnull(cs_sold_time_sk#18) AND isnotnull(cs_sold_date_sk#17)) AND isnotnull(cs_item_sk#19))
 
 (19) ReusedExchange [Reuses operator id: 13]
 Output [1]: [d_date_sk#10]
@@ -140,7 +140,7 @@ Input [5]: [cs_sold_date_sk#17, cs_sold_time_sk#18, cs_item_sk#19, cs_ext_sales_
 Output [4]: [ss_sold_date_sk#24, ss_sold_time_sk#25, ss_item_sk#26, ss_ext_sales_price#27]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_sold_date_sk), IsNotNull(ss_item_sk), IsNotNull(ss_sold_time_sk)]
+PushedFilters: [IsNotNull(ss_sold_date_sk), IsNotNull(ss_sold_time_sk), IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_sold_date_sk:int,ss_sold_time_sk:int,ss_item_sk:int,ss_ext_sales_price:decimal(7,2)>
 
 (23) ColumnarToRow [codegen id : 7]
@@ -148,7 +148,7 @@ Input [4]: [ss_sold_date_sk#24, ss_sold_time_sk#25, ss_item_sk#26, ss_ext_sales_
 
 (24) Filter [codegen id : 7]
 Input [4]: [ss_sold_date_sk#24, ss_sold_time_sk#25, ss_item_sk#26, ss_ext_sales_price#27]
-Condition : ((isnotnull(ss_sold_date_sk#24) AND isnotnull(ss_item_sk#26)) AND isnotnull(ss_sold_time_sk#25))
+Condition : ((isnotnull(ss_sold_date_sk#24) AND isnotnull(ss_sold_time_sk#25)) AND isnotnull(ss_item_sk#26))
 
 (25) ReusedExchange [Reuses operator id: 13]
 Output [1]: [d_date_sk#10]
@@ -213,7 +213,7 @@ Results [5]: [i_brand#3, i_brand_id#2, t_hour#32, t_minute#33, sum#37]
 
 (39) Exchange
 Input [5]: [i_brand#3, i_brand_id#2, t_hour#32, t_minute#33, sum#37]
-Arguments: hashpartitioning(i_brand#3, i_brand_id#2, t_hour#32, t_minute#33, 5), true, [id=#38]
+Arguments: hashpartitioning(i_brand#3, i_brand_id#2, t_hour#32, t_minute#33, 5), ENSURE_REQUIREMENTS, [id=#38]
 
 (40) HashAggregate [codegen id : 10]
 Input [5]: [i_brand#3, i_brand_id#2, t_hour#32, t_minute#33, sum#37]
@@ -224,7 +224,7 @@ Results [5]: [i_brand_id#2 AS brand_id#40, i_brand#3 AS brand#41, t_hour#32, t_m
 
 (41) Exchange
 Input [5]: [brand_id#40, brand#41, t_hour#32, t_minute#33, ext_price#42]
-Arguments: rangepartitioning(ext_price#42 DESC NULLS LAST, brand_id#40 ASC NULLS FIRST, 5), true, [id=#43]
+Arguments: rangepartitioning(ext_price#42 DESC NULLS LAST, brand_id#40 ASC NULLS FIRST, 5), ENSURE_REQUIREMENTS, [id=#43]
 
 (42) Sort [codegen id : 11]
 Input [5]: [brand_id#40, brand#41, t_hour#32, t_minute#33, ext_price#42]

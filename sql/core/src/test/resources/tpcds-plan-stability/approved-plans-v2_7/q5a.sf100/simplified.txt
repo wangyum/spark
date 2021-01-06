@@ -82,7 +82,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                                     Scan parquet default.catalog_sales [cs_sold_date_sk,cs_catalog_page_sk,cs_ext_sales_price,cs_net_profit]
                                                                           WholeStageCodegen (8)
                                                                             Project [cr_catalog_page_sk,cr_returned_date_sk,cr_return_amount,cr_net_loss]
-                                                                              Filter [cr_returned_date_sk,cr_catalog_page_sk]
+                                                                              Filter [cr_catalog_page_sk,cr_returned_date_sk]
                                                                                 ColumnarToRow
                                                                                   InputAdapter
                                                                                     Scan parquet default.catalog_returns [cr_returned_date_sk,cr_catalog_page_sk,cr_return_amount,cr_net_loss]
@@ -109,7 +109,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                         Union
                                                                           WholeStageCodegen (13)
                                                                             Project [ws_web_site_sk,ws_sold_date_sk,ws_ext_sales_price,ws_net_profit]
-                                                                              Filter [ws_sold_date_sk,ws_web_site_sk]
+                                                                              Filter [ws_web_site_sk,ws_sold_date_sk]
                                                                                 ColumnarToRow
                                                                                   InputAdapter
                                                                                     Scan parquet default.web_sales [ws_sold_date_sk,ws_web_site_sk,ws_ext_sales_price,ws_net_profit]
@@ -132,7 +132,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                                       InputAdapter
                                                                                         Exchange [ws_item_sk,ws_order_number] #11
                                                                                           WholeStageCodegen (16)
-                                                                                            Filter [ws_item_sk,ws_order_number,ws_web_site_sk]
+                                                                                            Filter [ws_web_site_sk,ws_item_sk,ws_order_number]
                                                                                               ColumnarToRow
                                                                                                 InputAdapter
                                                                                                   Scan parquet default.web_sales [ws_item_sk,ws_web_site_sk,ws_order_number]

@@ -25,7 +25,7 @@ TakeOrderedAndProject [ss_sold_year,ss_item_sk,ss_customer_sk,ss_qty,ss_wc,ss_sp
                                                 InputAdapter
                                                   Exchange [ss_ticket_number,ss_item_sk] #2
                                                     WholeStageCodegen (1)
-                                                      Filter [ss_sold_date_sk,ss_item_sk,ss_customer_sk]
+                                                      Filter [ss_sold_date_sk,ss_customer_sk,ss_item_sk]
                                                         ColumnarToRow
                                                           InputAdapter
                                                             Scan parquet default.store_sales [ss_sold_date_sk,ss_item_sk,ss_customer_sk,ss_ticket_number,ss_quantity,ss_wholesale_cost,ss_sales_price]
@@ -65,7 +65,7 @@ TakeOrderedAndProject [ss_sold_year,ss_item_sk,ss_customer_sk,ss_qty,ss_wc,ss_sp
                                                   InputAdapter
                                                     Exchange [cs_order_number,cs_item_sk] #6
                                                       WholeStageCodegen (8)
-                                                        Filter [cs_sold_date_sk,cs_item_sk,cs_bill_customer_sk]
+                                                        Filter [cs_sold_date_sk,cs_bill_customer_sk,cs_item_sk]
                                                           ColumnarToRow
                                                             InputAdapter
                                                               Scan parquet default.catalog_sales [cs_sold_date_sk,cs_bill_customer_sk,cs_item_sk,cs_order_number,cs_quantity,cs_wholesale_cost,cs_sales_price]
@@ -100,7 +100,7 @@ TakeOrderedAndProject [ss_sold_year,ss_item_sk,ss_customer_sk,ss_qty,ss_wc,ss_sp
                                           InputAdapter
                                             Exchange [ws_order_number,ws_item_sk] #9
                                               WholeStageCodegen (16)
-                                                Filter [ws_sold_date_sk,ws_item_sk,ws_bill_customer_sk]
+                                                Filter [ws_sold_date_sk,ws_bill_customer_sk,ws_item_sk]
                                                   ColumnarToRow
                                                     InputAdapter
                                                       Scan parquet default.web_sales [ws_sold_date_sk,ws_item_sk,ws_bill_customer_sk,ws_order_number,ws_quantity,ws_wholesale_cost,ws_sales_price]

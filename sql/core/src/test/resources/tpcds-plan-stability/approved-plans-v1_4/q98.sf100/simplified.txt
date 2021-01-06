@@ -27,7 +27,7 @@ WholeStageCodegen (10)
                                                     WholeStageCodegen (2)
                                                       Project [ss_item_sk,ss_ext_sales_price]
                                                         BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                          Filter [ss_item_sk,ss_sold_date_sk]
+                                                          Filter [ss_sold_date_sk,ss_item_sk]
                                                             ColumnarToRow
                                                               InputAdapter
                                                                 Scan parquet default.store_sales [ss_sold_date_sk,ss_item_sk,ss_ext_sales_price]

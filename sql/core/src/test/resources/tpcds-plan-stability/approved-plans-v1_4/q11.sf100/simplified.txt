@@ -32,7 +32,7 @@ TakeOrderedAndProject [customer_preferred_cust_flag]
                                                               WholeStageCodegen (2)
                                                                 Project [ss_customer_sk,ss_ext_discount_amt,ss_ext_list_price,d_year]
                                                                   BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                                    Filter [ss_customer_sk,ss_sold_date_sk]
+                                                                    Filter [ss_sold_date_sk,ss_customer_sk]
                                                                       ColumnarToRow
                                                                         InputAdapter
                                                                           Scan parquet default.store_sales [ss_sold_date_sk,ss_customer_sk,ss_ext_discount_amt,ss_ext_list_price]
@@ -74,7 +74,7 @@ TakeOrderedAndProject [customer_preferred_cust_flag]
                                                             WholeStageCodegen (10)
                                                               Project [ss_customer_sk,ss_ext_discount_amt,ss_ext_list_price,d_year]
                                                                 BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                                  Filter [ss_customer_sk,ss_sold_date_sk]
+                                                                  Filter [ss_sold_date_sk,ss_customer_sk]
                                                                     ColumnarToRow
                                                                       InputAdapter
                                                                         Scan parquet default.store_sales [ss_sold_date_sk,ss_customer_sk,ss_ext_discount_amt,ss_ext_list_price]
@@ -113,7 +113,7 @@ TakeOrderedAndProject [customer_preferred_cust_flag]
                                                         WholeStageCodegen (19)
                                                           Project [ws_bill_customer_sk,ws_ext_discount_amt,ws_ext_list_price,d_year]
                                                             BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
-                                                              Filter [ws_bill_customer_sk,ws_sold_date_sk]
+                                                              Filter [ws_sold_date_sk,ws_bill_customer_sk]
                                                                 ColumnarToRow
                                                                   InputAdapter
                                                                     Scan parquet default.web_sales [ws_sold_date_sk,ws_bill_customer_sk,ws_ext_discount_amt,ws_ext_list_price]
@@ -145,7 +145,7 @@ TakeOrderedAndProject [customer_preferred_cust_flag]
                                             WholeStageCodegen (28)
                                               Project [ws_bill_customer_sk,ws_ext_discount_amt,ws_ext_list_price,d_year]
                                                 BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
-                                                  Filter [ws_bill_customer_sk,ws_sold_date_sk]
+                                                  Filter [ws_sold_date_sk,ws_bill_customer_sk]
                                                     ColumnarToRow
                                                       InputAdapter
                                                         Scan parquet default.web_sales [ws_sold_date_sk,ws_bill_customer_sk,ws_ext_discount_amt,ws_ext_list_price]

@@ -27,7 +27,7 @@ TakeOrderedAndProject (22)
 Output [4]: [sr_item_sk#1, sr_reason_sk#2, sr_ticket_number#3, sr_return_quantity#4]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_returns]
-PushedFilters: [IsNotNull(sr_item_sk), IsNotNull(sr_ticket_number), IsNotNull(sr_reason_sk)]
+PushedFilters: [IsNotNull(sr_reason_sk), IsNotNull(sr_item_sk), IsNotNull(sr_ticket_number)]
 ReadSchema: struct<sr_item_sk:bigint,sr_reason_sk:bigint,sr_ticket_number:bigint,sr_return_quantity:int>
 
 (2) ColumnarToRow [codegen id : 2]
@@ -35,13 +35,13 @@ Input [4]: [sr_item_sk#1, sr_reason_sk#2, sr_ticket_number#3, sr_return_quantity
 
 (3) Filter [codegen id : 2]
 Input [4]: [sr_item_sk#1, sr_reason_sk#2, sr_ticket_number#3, sr_return_quantity#4]
-Condition : ((isnotnull(sr_item_sk#1) AND isnotnull(sr_ticket_number#3)) AND isnotnull(sr_reason_sk#2))
+Condition : ((isnotnull(sr_reason_sk#2) AND isnotnull(sr_item_sk#1)) AND isnotnull(sr_ticket_number#3))
 
 (4) Scan parquet default.reason
 Output [2]: [r_reason_sk#5, r_reason_desc#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/reason]
-PushedFilters: [IsNotNull(r_reason_desc), EqualTo(r_reason_desc,reason 28), IsNotNull(r_reason_sk)]
+PushedFilters: [EqualTo(r_reason_desc,reason 28), IsNotNull(r_reason_desc), IsNotNull(r_reason_sk)]
 ReadSchema: struct<r_reason_sk:int,r_reason_desc:string>
 
 (5) ColumnarToRow [codegen id : 1]
@@ -49,7 +49,7 @@ Input [2]: [r_reason_sk#5, r_reason_desc#6]
 
 (6) Filter [codegen id : 1]
 Input [2]: [r_reason_sk#5, r_reason_desc#6]
-Condition : ((isnotnull(r_reason_desc#6) AND (r_reason_desc#6 = reason 28)) AND isnotnull(r_reason_sk#5))
+Condition : (((r_reason_desc#6 = reason 28) AND isnotnull(r_reason_desc#6)) AND isnotnull(r_reason_sk#5))
 
 (7) Project [codegen id : 1]
 Output [1]: [r_reason_sk#5]
@@ -70,7 +70,7 @@ Input [5]: [sr_item_sk#1, sr_reason_sk#2, sr_ticket_number#3, sr_return_quantity
 
 (11) Exchange
 Input [3]: [sr_item_sk#1, sr_ticket_number#3, sr_return_quantity#4]
-Arguments: hashpartitioning(sr_item_sk#1, sr_ticket_number#3, 5), true, [id=#8]
+Arguments: hashpartitioning(sr_item_sk#1, sr_ticket_number#3, 5), ENSURE_REQUIREMENTS, [id=#8]
 
 (12) Sort [codegen id : 3]
 Input [3]: [sr_item_sk#1, sr_ticket_number#3, sr_return_quantity#4]
@@ -87,7 +87,7 @@ Input [5]: [ss_item_sk#9, ss_customer_sk#10, ss_ticket_number#11, ss_quantity#12
 
 (15) Exchange
 Input [5]: [ss_item_sk#9, ss_customer_sk#10, ss_ticket_number#11, ss_quantity#12, ss_sales_price#13]
-Arguments: hashpartitioning(cast(ss_item_sk#9 as bigint), cast(ss_ticket_number#11 as bigint), 5), true, [id=#14]
+Arguments: hashpartitioning(cast(ss_item_sk#9 as bigint), cast(ss_ticket_number#11 as bigint), 5), ENSURE_REQUIREMENTS, [id=#14]
 
 (16) Sort [codegen id : 5]
 Input [5]: [ss_item_sk#9, ss_customer_sk#10, ss_ticket_number#11, ss_quantity#12, ss_sales_price#13]
@@ -111,7 +111,7 @@ Results [3]: [ss_customer_sk#10, sum#18, isEmpty#19]
 
 (20) Exchange
 Input [3]: [ss_customer_sk#10, sum#18, isEmpty#19]
-Arguments: hashpartitioning(ss_customer_sk#10, 5), true, [id=#20]
+Arguments: hashpartitioning(ss_customer_sk#10, 5), ENSURE_REQUIREMENTS, [id=#20]
 
 (21) HashAggregate [codegen id : 7]
 Input [3]: [ss_customer_sk#10, sum#18, isEmpty#19]

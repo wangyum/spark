@@ -45,7 +45,7 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,ca_st
                                                   WholeStageCodegen (5)
                                                     Project [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]
                                                       BroadcastHashJoin [cr_returned_date_sk,d_date_sk]
-                                                        Filter [cr_returned_date_sk,cr_returning_addr_sk,cr_returning_customer_sk]
+                                                        Filter [cr_returning_addr_sk,cr_returning_customer_sk,cr_returned_date_sk]
                                                           ColumnarToRow
                                                             InputAdapter
                                                               Scan parquet default.catalog_returns [cr_returned_date_sk,cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]
@@ -63,7 +63,7 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,ca_st
                                               InputAdapter
                                                 Exchange [ca_address_sk] #7
                                                   WholeStageCodegen (7)
-                                                    Filter [ca_address_sk,ca_state]
+                                                    Filter [ca_state,ca_address_sk]
                                                       ColumnarToRow
                                                         InputAdapter
                                                           Scan parquet default.customer_address [ca_address_sk,ca_state]
@@ -91,7 +91,7 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,ca_st
                                                   WholeStageCodegen (13)
                                                     Project [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]
                                                       BroadcastHashJoin [cr_returned_date_sk,d_date_sk]
-                                                        Filter [cr_returned_date_sk,cr_returning_addr_sk]
+                                                        Filter [cr_returning_addr_sk,cr_returned_date_sk]
                                                           ColumnarToRow
                                                             InputAdapter
                                                               Scan parquet default.catalog_returns [cr_returned_date_sk,cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]

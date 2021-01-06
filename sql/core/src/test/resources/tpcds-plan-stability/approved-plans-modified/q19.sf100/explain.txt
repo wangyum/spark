@@ -44,7 +44,7 @@ TakeOrderedAndProject (39)
 Output [3]: [d_date_sk#1, d_year#2, d_moy#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_moy), IsNotNull(d_year), EqualTo(d_moy,11), EqualTo(d_year,1999), GreaterThanOrEqual(d_date_sk,2451484), LessThanOrEqual(d_date_sk,2451513), IsNotNull(d_date_sk)]
+PushedFilters: [LessThanOrEqual(d_date_sk,2451513), EqualTo(d_year,1999), EqualTo(d_moy,11), GreaterThanOrEqual(d_date_sk,2451484), IsNotNull(d_moy), IsNotNull(d_year), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (2) ColumnarToRow [codegen id : 1]
@@ -52,7 +52,7 @@ Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
 
 (3) Filter [codegen id : 1]
 Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
-Condition : ((((((isnotnull(d_moy#3) AND isnotnull(d_year#2)) AND (d_moy#3 = 11)) AND (d_year#2 = 1999)) AND (d_date_sk#1 >= 2451484)) AND (d_date_sk#1 <= 2451513)) AND isnotnull(d_date_sk#1))
+Condition : (((((((d_date_sk#1 <= 2451513) AND (d_year#2 = 1999)) AND (d_moy#3 = 11)) AND (d_date_sk#1 >= 2451484)) AND isnotnull(d_moy#3)) AND isnotnull(d_year#2)) AND isnotnull(d_date_sk#1))
 
 (4) Project [codegen id : 1]
 Output [1]: [d_date_sk#1]
@@ -66,7 +66,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Output [5]: [ss_sold_date_sk#5, ss_item_sk#6, ss_customer_sk#7, ss_store_sk#8, ss_ext_sales_price#9]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_sold_date_sk), GreaterThanOrEqual(ss_sold_date_sk,2451484), LessThanOrEqual(ss_sold_date_sk,2451513), IsNotNull(ss_item_sk), IsNotNull(ss_customer_sk), IsNotNull(ss_store_sk)]
+PushedFilters: [LessThanOrEqual(ss_sold_date_sk,2451513), GreaterThanOrEqual(ss_sold_date_sk,2451484), IsNotNull(ss_sold_date_sk), IsNotNull(ss_customer_sk), IsNotNull(ss_store_sk), IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_sold_date_sk:int,ss_item_sk:int,ss_customer_sk:int,ss_store_sk:int,ss_ext_sales_price:decimal(7,2)>
 
 (7) ColumnarToRow
@@ -74,7 +74,7 @@ Input [5]: [ss_sold_date_sk#5, ss_item_sk#6, ss_customer_sk#7, ss_store_sk#8, ss
 
 (8) Filter
 Input [5]: [ss_sold_date_sk#5, ss_item_sk#6, ss_customer_sk#7, ss_store_sk#8, ss_ext_sales_price#9]
-Condition : (((((isnotnull(ss_sold_date_sk#5) AND (ss_sold_date_sk#5 >= 2451484)) AND (ss_sold_date_sk#5 <= 2451513)) AND isnotnull(ss_item_sk#6)) AND isnotnull(ss_customer_sk#7)) AND isnotnull(ss_store_sk#8))
+Condition : ((((((ss_sold_date_sk#5 <= 2451513) AND (ss_sold_date_sk#5 >= 2451484)) AND isnotnull(ss_sold_date_sk#5)) AND isnotnull(ss_customer_sk#7)) AND isnotnull(ss_store_sk#8)) AND isnotnull(ss_item_sk#6))
 
 (9) BroadcastHashJoin [codegen id : 2]
 Left keys [1]: [d_date_sk#1]
@@ -147,7 +147,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[2, int, true] as bigint))
 Output [2]: [ca_address_sk#17, ca_zip#18]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_address_sk), IsNotNull(ca_zip)]
+PushedFilters: [IsNotNull(ca_zip), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_zip:string>
 
 (25) ColumnarToRow
@@ -155,7 +155,7 @@ Input [2]: [ca_address_sk#17, ca_zip#18]
 
 (26) Filter
 Input [2]: [ca_address_sk#17, ca_zip#18]
-Condition : (isnotnull(ca_address_sk#17) AND isnotnull(ca_zip#18))
+Condition : (isnotnull(ca_zip#18) AND isnotnull(ca_address_sk#17))
 
 (27) BroadcastHashJoin [codegen id : 6]
 Left keys [1]: [c_current_addr_sk#12]
@@ -170,7 +170,7 @@ Input [6]: [ss_item_sk#6, ss_ext_sales_price#9, c_current_addr_sk#12, s_zip#14, 
 Output [6]: [i_item_sk#19, i_brand_id#20, i_brand#21, i_manufact_id#22, i_manufact#23, i_manager_id#24]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_manager_id), EqualTo(i_manager_id,7), IsNotNull(i_item_sk)]
+PushedFilters: [EqualTo(i_manager_id,7), IsNotNull(i_manager_id), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_brand_id:int,i_brand:string,i_manufact_id:int,i_manufact:string,i_manager_id:int>
 
 (30) ColumnarToRow [codegen id : 5]
@@ -178,7 +178,7 @@ Input [6]: [i_item_sk#19, i_brand_id#20, i_brand#21, i_manufact_id#22, i_manufac
 
 (31) Filter [codegen id : 5]
 Input [6]: [i_item_sk#19, i_brand_id#20, i_brand#21, i_manufact_id#22, i_manufact#23, i_manager_id#24]
-Condition : ((isnotnull(i_manager_id#24) AND (i_manager_id#24 = 7)) AND isnotnull(i_item_sk#19))
+Condition : (((i_manager_id#24 = 7) AND isnotnull(i_manager_id#24)) AND isnotnull(i_item_sk#19))
 
 (32) Project [codegen id : 5]
 Output [5]: [i_item_sk#19, i_brand_id#20, i_brand#21, i_manufact_id#22, i_manufact#23]
@@ -206,7 +206,7 @@ Results [5]: [i_brand#21, i_brand_id#20, i_manufact_id#22, i_manufact#23, sum#27
 
 (37) Exchange
 Input [5]: [i_brand#21, i_brand_id#20, i_manufact_id#22, i_manufact#23, sum#27]
-Arguments: hashpartitioning(i_brand#21, i_brand_id#20, i_manufact_id#22, i_manufact#23, 5), true, [id=#28]
+Arguments: hashpartitioning(i_brand#21, i_brand_id#20, i_manufact_id#22, i_manufact#23, 5), ENSURE_REQUIREMENTS, [id=#28]
 
 (38) HashAggregate [codegen id : 7]
 Input [5]: [i_brand#21, i_brand_id#20, i_manufact_id#22, i_manufact#23, sum#27]

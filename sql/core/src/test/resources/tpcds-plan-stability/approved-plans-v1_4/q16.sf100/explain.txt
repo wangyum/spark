@@ -49,7 +49,7 @@
 Output [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_sales]
-PushedFilters: [IsNotNull(cs_ship_date_sk), IsNotNull(cs_ship_addr_sk), IsNotNull(cs_call_center_sk)]
+PushedFilters: [IsNotNull(cs_call_center_sk), IsNotNull(cs_ship_date_sk), IsNotNull(cs_ship_addr_sk)]
 ReadSchema: struct<cs_ship_date_sk:int,cs_ship_addr_sk:int,cs_call_center_sk:int,cs_warehouse_sk:int,cs_order_number:int,cs_ext_ship_cost:decimal(7,2),cs_net_profit:decimal(7,2)>
 
 (2) ColumnarToRow [codegen id : 1]
@@ -57,11 +57,11 @@ Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_wareho
 
 (3) Filter [codegen id : 1]
 Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7]
-Condition : ((isnotnull(cs_ship_date_sk#1) AND isnotnull(cs_ship_addr_sk#2)) AND isnotnull(cs_call_center_sk#3))
+Condition : ((isnotnull(cs_call_center_sk#3) AND isnotnull(cs_ship_date_sk#1)) AND isnotnull(cs_ship_addr_sk#2))
 
 (4) Exchange
 Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7]
-Arguments: hashpartitioning(cs_order_number#5, 5), true, [id=#8]
+Arguments: hashpartitioning(cs_order_number#5, 5), ENSURE_REQUIREMENTS, [id=#8]
 
 (5) Sort [codegen id : 2]
 Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7]
@@ -82,7 +82,7 @@ Input [2]: [cs_warehouse_sk#4, cs_order_number#5]
 
 (9) Exchange
 Input [2]: [cs_warehouse_sk#4#9, cs_order_number#5#10]
-Arguments: hashpartitioning(cs_order_number#5#10, 5), true, [id=#11]
+Arguments: hashpartitioning(cs_order_number#5#10, 5), ENSURE_REQUIREMENTS, [id=#11]
 
 (10) Sort [codegen id : 4]
 Input [2]: [cs_warehouse_sk#4#9, cs_order_number#5#10]
@@ -108,7 +108,7 @@ Input [1]: [cr_order_number#12]
 
 (15) Exchange
 Input [1]: [cr_order_number#12]
-Arguments: hashpartitioning(cr_order_number#12, 5), true, [id=#13]
+Arguments: hashpartitioning(cr_order_number#12, 5), ENSURE_REQUIREMENTS, [id=#13]
 
 (16) Sort [codegen id : 7]
 Input [1]: [cr_order_number#12]
@@ -123,7 +123,7 @@ Join condition: None
 Output [2]: [ca_address_sk#14, ca_state#15]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_state), EqualTo(ca_state,GA), IsNotNull(ca_address_sk)]
+PushedFilters: [EqualTo(ca_state,GA), IsNotNull(ca_state), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
 (19) ColumnarToRow [codegen id : 8]
@@ -131,7 +131,7 @@ Input [2]: [ca_address_sk#14, ca_state#15]
 
 (20) Filter [codegen id : 8]
 Input [2]: [ca_address_sk#14, ca_state#15]
-Condition : ((isnotnull(ca_state#15) AND (ca_state#15 = GA)) AND isnotnull(ca_address_sk#14))
+Condition : (((ca_state#15 = GA) AND isnotnull(ca_state#15)) AND isnotnull(ca_address_sk#14))
 
 (21) Project [codegen id : 8]
 Output [1]: [ca_address_sk#14]
@@ -154,7 +154,7 @@ Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_order_
 Output [2]: [cc_call_center_sk#17, cc_county#18]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/call_center]
-PushedFilters: [IsNotNull(cc_county), EqualTo(cc_county,Williamson County), IsNotNull(cc_call_center_sk)]
+PushedFilters: [EqualTo(cc_county,Williamson County), IsNotNull(cc_county), IsNotNull(cc_call_center_sk)]
 ReadSchema: struct<cc_call_center_sk:int,cc_county:string>
 
 (26) ColumnarToRow [codegen id : 9]
@@ -162,7 +162,7 @@ Input [2]: [cc_call_center_sk#17, cc_county#18]
 
 (27) Filter [codegen id : 9]
 Input [2]: [cc_call_center_sk#17, cc_county#18]
-Condition : ((isnotnull(cc_county#18) AND (cc_county#18 = Williamson County)) AND isnotnull(cc_call_center_sk#17))
+Condition : (((cc_county#18 = Williamson County) AND isnotnull(cc_county#18)) AND isnotnull(cc_call_center_sk#17))
 
 (28) Project [codegen id : 9]
 Output [1]: [cc_call_center_sk#17]
@@ -235,7 +235,7 @@ Results [3]: [sum#25, sum#26, count#28]
 
 (42) Exchange
 Input [3]: [sum#25, sum#26, count#28]
-Arguments: SinglePartition, true, [id=#29]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [id=#29]
 
 (43) HashAggregate [codegen id : 12]
 Input [3]: [sum#25, sum#26, count#28]

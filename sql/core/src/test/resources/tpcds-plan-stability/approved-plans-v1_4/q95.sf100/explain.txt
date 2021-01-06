@@ -66,7 +66,7 @@
 Output [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
-PushedFilters: [IsNotNull(ws_ship_date_sk), IsNotNull(ws_ship_addr_sk), IsNotNull(ws_web_site_sk)]
+PushedFilters: [IsNotNull(ws_web_site_sk), IsNotNull(ws_ship_addr_sk), IsNotNull(ws_ship_date_sk)]
 ReadSchema: struct<ws_ship_date_sk:int,ws_ship_addr_sk:int,ws_web_site_sk:int,ws_order_number:int,ws_ext_ship_cost:decimal(7,2),ws_net_profit:decimal(7,2)>
 
 (2) ColumnarToRow [codegen id : 1]
@@ -74,11 +74,11 @@ Input [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_num
 
 (3) Filter [codegen id : 1]
 Input [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
-Condition : ((isnotnull(ws_ship_date_sk#1) AND isnotnull(ws_ship_addr_sk#2)) AND isnotnull(ws_web_site_sk#3))
+Condition : ((isnotnull(ws_web_site_sk#3) AND isnotnull(ws_ship_addr_sk#2)) AND isnotnull(ws_ship_date_sk#1))
 
 (4) Exchange
 Input [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
-Arguments: hashpartitioning(ws_order_number#4, 5), true, [id=#7]
+Arguments: hashpartitioning(ws_order_number#4, 5), ENSURE_REQUIREMENTS, [id=#7]
 
 (5) Sort [codegen id : 2]
 Input [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
@@ -88,7 +88,7 @@ Arguments: [ws_order_number#4 ASC NULLS FIRST], false, 0
 Output [2]: [ws_warehouse_sk#8, ws_order_number#4]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
-PushedFilters: [IsNotNull(ws_order_number), IsNotNull(ws_warehouse_sk)]
+PushedFilters: [IsNotNull(ws_warehouse_sk), IsNotNull(ws_order_number)]
 ReadSchema: struct<ws_warehouse_sk:int,ws_order_number:int>
 
 (7) ColumnarToRow [codegen id : 3]
@@ -96,11 +96,11 @@ Input [2]: [ws_warehouse_sk#8, ws_order_number#4]
 
 (8) Filter [codegen id : 3]
 Input [2]: [ws_warehouse_sk#8, ws_order_number#4]
-Condition : (isnotnull(ws_order_number#4) AND isnotnull(ws_warehouse_sk#8))
+Condition : (isnotnull(ws_warehouse_sk#8) AND isnotnull(ws_order_number#4))
 
 (9) Exchange
 Input [2]: [ws_warehouse_sk#8, ws_order_number#4]
-Arguments: hashpartitioning(ws_order_number#4, 5), true, [id=#9]
+Arguments: hashpartitioning(ws_order_number#4, 5), ENSURE_REQUIREMENTS, [id=#9]
 
 (10) Sort [codegen id : 4]
 Input [2]: [ws_warehouse_sk#8, ws_order_number#4]
@@ -129,7 +129,7 @@ Join condition: None
 
 (16) Exchange
 Input [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
-Arguments: hashpartitioning(cast(ws_order_number#4 as bigint), 5), true, [id=#13]
+Arguments: hashpartitioning(cast(ws_order_number#4 as bigint), 5), ENSURE_REQUIREMENTS, [id=#13]
 
 (17) Sort [codegen id : 8]
 Input [6]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
@@ -160,7 +160,7 @@ Input [4]: [ws_warehouse_sk#8, ws_order_number#4, ws_warehouse_sk#14, ws_order_n
 
 (24) Exchange
 Input [1]: [ws_order_number#4]
-Arguments: hashpartitioning(cast(ws_order_number#4 as bigint), 5), true, [id=#16]
+Arguments: hashpartitioning(cast(ws_order_number#4 as bigint), 5), ENSURE_REQUIREMENTS, [id=#16]
 
 (25) Sort [codegen id : 14]
 Input [1]: [ws_order_number#4]
@@ -182,7 +182,7 @@ Condition : isnotnull(wr_order_number#17)
 
 (29) Exchange
 Input [1]: [wr_order_number#17]
-Arguments: hashpartitioning(wr_order_number#17, 5), true, [id=#18]
+Arguments: hashpartitioning(wr_order_number#17, 5), ENSURE_REQUIREMENTS, [id=#18]
 
 (30) Sort [codegen id : 16]
 Input [1]: [wr_order_number#17]
@@ -206,7 +206,7 @@ Join condition: None
 Output [2]: [ca_address_sk#19, ca_state#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_state), EqualTo(ca_state,IL), IsNotNull(ca_address_sk)]
+PushedFilters: [EqualTo(ca_state,IL), IsNotNull(ca_state), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
 (35) ColumnarToRow [codegen id : 18]
@@ -214,7 +214,7 @@ Input [2]: [ca_address_sk#19, ca_state#20]
 
 (36) Filter [codegen id : 18]
 Input [2]: [ca_address_sk#19, ca_state#20]
-Condition : ((isnotnull(ca_state#20) AND (ca_state#20 = IL)) AND isnotnull(ca_address_sk#19))
+Condition : (((ca_state#20 = IL) AND isnotnull(ca_state#20)) AND isnotnull(ca_address_sk#19))
 
 (37) Project [codegen id : 18]
 Output [1]: [ca_address_sk#19]
@@ -237,7 +237,7 @@ Input [7]: [ws_ship_date_sk#1, ws_ship_addr_sk#2, ws_web_site_sk#3, ws_order_num
 Output [2]: [web_site_sk#22, web_company_name#23]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_site]
-PushedFilters: [IsNotNull(web_company_name), EqualTo(web_company_name,pri), IsNotNull(web_site_sk)]
+PushedFilters: [EqualTo(web_company_name,pri), IsNotNull(web_company_name), IsNotNull(web_site_sk)]
 ReadSchema: struct<web_site_sk:int,web_company_name:string>
 
 (42) ColumnarToRow [codegen id : 19]
@@ -245,7 +245,7 @@ Input [2]: [web_site_sk#22, web_company_name#23]
 
 (43) Filter [codegen id : 19]
 Input [2]: [web_site_sk#22, web_company_name#23]
-Condition : ((isnotnull(web_company_name#23) AND (web_company_name#23 = pri)) AND isnotnull(web_site_sk#22))
+Condition : (((web_company_name#23 = pri) AND isnotnull(web_company_name#23)) AND isnotnull(web_site_sk#22))
 
 (44) Project [codegen id : 19]
 Output [1]: [web_site_sk#22]
@@ -304,7 +304,7 @@ Results [3]: [ws_order_number#4, sum#30, sum#31]
 
 (56) Exchange
 Input [3]: [ws_order_number#4, sum#30, sum#31]
-Arguments: hashpartitioning(ws_order_number#4, 5), true, [id=#32]
+Arguments: hashpartitioning(ws_order_number#4, 5), ENSURE_REQUIREMENTS, [id=#32]
 
 (57) HashAggregate [codegen id : 22]
 Input [3]: [ws_order_number#4, sum#30, sum#31]
@@ -322,7 +322,7 @@ Results [3]: [sum#30, sum#31, count#34]
 
 (59) Exchange
 Input [3]: [sum#30, sum#31, count#34]
-Arguments: SinglePartition, true, [id=#35]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [id=#35]
 
 (60) HashAggregate [codegen id : 23]
 Input [3]: [sum#30, sum#31, count#34]

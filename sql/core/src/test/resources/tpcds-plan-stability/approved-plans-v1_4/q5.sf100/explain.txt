@@ -186,7 +186,7 @@ Results [5]: [s_store_id#25, sum#31, sum#32, sum#33, sum#34]
 
 (24) Exchange
 Input [5]: [s_store_id#25, sum#31, sum#32, sum#33, sum#34]
-Arguments: hashpartitioning(s_store_id#25, 5), true, [id=#35]
+Arguments: hashpartitioning(s_store_id#25, 5), ENSURE_REQUIREMENTS, [id=#35]
 
 (25) HashAggregate [codegen id : 6]
 Input [5]: [s_store_id#25, sum#31, sum#32, sum#33, sum#34]
@@ -217,7 +217,7 @@ Input [4]: [cs_sold_date_sk#45, cs_catalog_page_sk#46, cs_ext_sales_price#47, cs
 Output [4]: [cr_returned_date_sk#55, cr_catalog_page_sk#56, cr_return_amount#57, cr_net_loss#58]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_returns]
-PushedFilters: [IsNotNull(cr_returned_date_sk), IsNotNull(cr_catalog_page_sk)]
+PushedFilters: [IsNotNull(cr_catalog_page_sk), IsNotNull(cr_returned_date_sk)]
 ReadSchema: struct<cr_returned_date_sk:int,cr_catalog_page_sk:int,cr_return_amount:decimal(7,2),cr_net_loss:decimal(7,2)>
 
 (31) ColumnarToRow [codegen id : 8]
@@ -225,7 +225,7 @@ Input [4]: [cr_returned_date_sk#55, cr_catalog_page_sk#56, cr_return_amount#57, 
 
 (32) Filter [codegen id : 8]
 Input [4]: [cr_returned_date_sk#55, cr_catalog_page_sk#56, cr_return_amount#57, cr_net_loss#58]
-Condition : (isnotnull(cr_returned_date_sk#55) AND isnotnull(cr_catalog_page_sk#56))
+Condition : (isnotnull(cr_catalog_page_sk#56) AND isnotnull(cr_returned_date_sk#55))
 
 (33) Project [codegen id : 8]
 Output [6]: [cr_catalog_page_sk#56 AS page_sk#59, cr_returned_date_sk#55 AS date_sk#60, 0.00 AS sales_price#61, 0.00 AS profit#62, cr_return_amount#57 AS return_amt#63, cr_net_loss#58 AS net_loss#64]
@@ -281,7 +281,7 @@ Results [5]: [cp_catalog_page_id#66, sum#72, sum#73, sum#74, sum#75]
 
 (45) Exchange
 Input [5]: [cp_catalog_page_id#66, sum#72, sum#73, sum#74, sum#75]
-Arguments: hashpartitioning(cp_catalog_page_id#66, 5), true, [id=#76]
+Arguments: hashpartitioning(cp_catalog_page_id#66, 5), ENSURE_REQUIREMENTS, [id=#76]
 
 (46) HashAggregate [codegen id : 12]
 Input [5]: [cp_catalog_page_id#66, sum#72, sum#73, sum#74, sum#75]
@@ -302,7 +302,7 @@ Input [4]: [ws_sold_date_sk#86, ws_web_site_sk#87, ws_ext_sales_price#88, ws_net
 
 (49) Filter [codegen id : 13]
 Input [4]: [ws_sold_date_sk#86, ws_web_site_sk#87, ws_ext_sales_price#88, ws_net_profit#89]
-Condition : (isnotnull(cast(ws_sold_date_sk#86 as bigint)) AND isnotnull(ws_web_site_sk#87))
+Condition : (isnotnull(ws_web_site_sk#87) AND isnotnull(cast(ws_sold_date_sk#86 as bigint)))
 
 (50) Project [codegen id : 13]
 Output [6]: [ws_web_site_sk#87 AS wsr_web_site_sk#90, cast(ws_sold_date_sk#86 as bigint) AS date_sk#91, ws_ext_sales_price#88 AS sales_price#92, ws_net_profit#89 AS profit#93, 0.00 AS return_amt#94, 0.00 AS net_loss#95]
@@ -324,7 +324,7 @@ Condition : isnotnull(wr_returned_date_sk#96)
 
 (54) Exchange
 Input [5]: [wr_returned_date_sk#96, wr_item_sk#97, wr_order_number#98, wr_return_amt#99, wr_net_loss#100]
-Arguments: hashpartitioning(wr_item_sk#97, wr_order_number#98, 5), true, [id=#101]
+Arguments: hashpartitioning(wr_item_sk#97, wr_order_number#98, 5), ENSURE_REQUIREMENTS, [id=#101]
 
 (55) Sort [codegen id : 15]
 Input [5]: [wr_returned_date_sk#96, wr_item_sk#97, wr_order_number#98, wr_return_amt#99, wr_net_loss#100]
@@ -334,7 +334,7 @@ Arguments: [wr_item_sk#97 ASC NULLS FIRST, wr_order_number#98 ASC NULLS FIRST], 
 Output [3]: [ws_item_sk#102, ws_web_site_sk#87, ws_order_number#103]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
-PushedFilters: [IsNotNull(ws_item_sk), IsNotNull(ws_order_number), IsNotNull(ws_web_site_sk)]
+PushedFilters: [IsNotNull(ws_web_site_sk), IsNotNull(ws_item_sk), IsNotNull(ws_order_number)]
 ReadSchema: struct<ws_item_sk:int,ws_web_site_sk:int,ws_order_number:int>
 
 (57) ColumnarToRow [codegen id : 16]
@@ -342,11 +342,11 @@ Input [3]: [ws_item_sk#102, ws_web_site_sk#87, ws_order_number#103]
 
 (58) Filter [codegen id : 16]
 Input [3]: [ws_item_sk#102, ws_web_site_sk#87, ws_order_number#103]
-Condition : ((isnotnull(ws_item_sk#102) AND isnotnull(ws_order_number#103)) AND isnotnull(ws_web_site_sk#87))
+Condition : ((isnotnull(ws_web_site_sk#87) AND isnotnull(ws_item_sk#102)) AND isnotnull(ws_order_number#103))
 
 (59) Exchange
 Input [3]: [ws_item_sk#102, ws_web_site_sk#87, ws_order_number#103]
-Arguments: hashpartitioning(cast(ws_item_sk#102 as bigint), cast(ws_order_number#103 as bigint), 5), true, [id=#104]
+Arguments: hashpartitioning(cast(ws_item_sk#102 as bigint), cast(ws_order_number#103 as bigint), 5), ENSURE_REQUIREMENTS, [id=#104]
 
 (60) Sort [codegen id : 17]
 Input [3]: [ws_item_sk#102, ws_web_site_sk#87, ws_order_number#103]
@@ -411,7 +411,7 @@ Results [5]: [web_site_id#112, sum#118, sum#119, sum#120, sum#121]
 
 (74) Exchange
 Input [5]: [web_site_id#112, sum#118, sum#119, sum#120, sum#121]
-Arguments: hashpartitioning(web_site_id#112, 5), true, [id=#122]
+Arguments: hashpartitioning(web_site_id#112, 5), ENSURE_REQUIREMENTS, [id=#122]
 
 (75) HashAggregate [codegen id : 22]
 Input [5]: [web_site_id#112, sum#118, sum#119, sum#120, sum#121]
@@ -435,7 +435,7 @@ Results [9]: [channel#132, id#133, spark_grouping_id#134, sum#141, isEmpty#142, 
 
 (79) Exchange
 Input [9]: [channel#132, id#133, spark_grouping_id#134, sum#141, isEmpty#142, sum#143, isEmpty#144, sum#145, isEmpty#146]
-Arguments: hashpartitioning(channel#132, id#133, spark_grouping_id#134, 5), true, [id=#147]
+Arguments: hashpartitioning(channel#132, id#133, spark_grouping_id#134, 5), ENSURE_REQUIREMENTS, [id=#147]
 
 (80) HashAggregate [codegen id : 24]
 Input [9]: [channel#132, id#133, spark_grouping_id#134, sum#141, isEmpty#142, sum#143, isEmpty#144, sum#145, isEmpty#146]

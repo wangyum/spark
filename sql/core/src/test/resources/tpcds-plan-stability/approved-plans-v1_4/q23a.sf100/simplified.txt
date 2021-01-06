@@ -90,7 +90,7 @@ WholeStageCodegen (36)
                                                                     WholeStageCodegen (2)
                                                                       Project [ss_customer_sk,ss_quantity,ss_sales_price]
                                                                         BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                                          Filter [ss_customer_sk,ss_sold_date_sk]
+                                                                          Filter [ss_sold_date_sk,ss_customer_sk]
                                                                             ColumnarToRow
                                                                               InputAdapter
                                                                                 Scan parquet default.store_sales [ss_sold_date_sk,ss_customer_sk,ss_quantity,ss_sales_price]

@@ -75,7 +75,7 @@
 Output [6]: [ss_sold_date_sk#1, ss_item_sk#2, ss_customer_sk#3, ss_store_sk#4, ss_promo_sk#5, ss_ext_sales_price#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_store_sk), IsNotNull(ss_promo_sk), IsNotNull(ss_sold_date_sk), IsNotNull(ss_customer_sk), IsNotNull(ss_item_sk)]
+PushedFilters: [IsNotNull(ss_sold_date_sk), IsNotNull(ss_promo_sk), IsNotNull(ss_customer_sk), IsNotNull(ss_store_sk), IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_sold_date_sk:int,ss_item_sk:int,ss_customer_sk:int,ss_store_sk:int,ss_promo_sk:int,ss_ext_sales_price:decimal(7,2)>
 
 (2) ColumnarToRow [codegen id : 7]
@@ -83,13 +83,13 @@ Input [6]: [ss_sold_date_sk#1, ss_item_sk#2, ss_customer_sk#3, ss_store_sk#4, ss
 
 (3) Filter [codegen id : 7]
 Input [6]: [ss_sold_date_sk#1, ss_item_sk#2, ss_customer_sk#3, ss_store_sk#4, ss_promo_sk#5, ss_ext_sales_price#6]
-Condition : ((((isnotnull(ss_store_sk#4) AND isnotnull(ss_promo_sk#5)) AND isnotnull(ss_sold_date_sk#1)) AND isnotnull(ss_customer_sk#3)) AND isnotnull(ss_item_sk#2))
+Condition : ((((isnotnull(ss_sold_date_sk#1) AND isnotnull(ss_promo_sk#5)) AND isnotnull(ss_customer_sk#3)) AND isnotnull(ss_store_sk#4)) AND isnotnull(ss_item_sk#2))
 
 (4) Scan parquet default.date_dim
 Output [3]: [d_date_sk#7, d_year#8, d_moy#9]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,1998), EqualTo(d_moy,11), IsNotNull(d_date_sk)]
+PushedFilters: [EqualTo(d_year,1998), EqualTo(d_moy,11), IsNotNull(d_year), IsNotNull(d_moy), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (5) ColumnarToRow [codegen id : 1]
@@ -97,7 +97,7 @@ Input [3]: [d_date_sk#7, d_year#8, d_moy#9]
 
 (6) Filter [codegen id : 1]
 Input [3]: [d_date_sk#7, d_year#8, d_moy#9]
-Condition : ((((isnotnull(d_year#8) AND isnotnull(d_moy#9)) AND (d_year#8 = 1998)) AND (d_moy#9 = 11)) AND isnotnull(d_date_sk#7))
+Condition : (((((d_year#8 = 1998) AND (d_moy#9 = 11)) AND isnotnull(d_year#8)) AND isnotnull(d_moy#9)) AND isnotnull(d_date_sk#7))
 
 (7) Project [codegen id : 1]
 Output [1]: [d_date_sk#7]
@@ -120,7 +120,7 @@ Input [7]: [ss_sold_date_sk#1, ss_item_sk#2, ss_customer_sk#3, ss_store_sk#4, ss
 Output [2]: [i_item_sk#11, i_category#12]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_category), EqualTo(i_category,Jewelry), IsNotNull(i_item_sk)]
+PushedFilters: [EqualTo(i_category,Jewelry), IsNotNull(i_category), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_category:string>
 
 (12) ColumnarToRow [codegen id : 2]
@@ -128,7 +128,7 @@ Input [2]: [i_item_sk#11, i_category#12]
 
 (13) Filter [codegen id : 2]
 Input [2]: [i_item_sk#11, i_category#12]
-Condition : ((isnotnull(i_category#12) AND (i_category#12 = Jewelry)) AND isnotnull(i_item_sk#11))
+Condition : (((i_category#12 = Jewelry) AND isnotnull(i_category#12)) AND isnotnull(i_item_sk#11))
 
 (14) Project [codegen id : 2]
 Output [1]: [i_item_sk#11]
@@ -182,7 +182,7 @@ Input [5]: [ss_customer_sk#3, ss_store_sk#4, ss_promo_sk#5, ss_ext_sales_price#6
 Output [2]: [s_store_sk#19, s_gmt_offset#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
-PushedFilters: [IsNotNull(s_gmt_offset), EqualTo(s_gmt_offset,-5.00), IsNotNull(s_store_sk)]
+PushedFilters: [EqualTo(s_gmt_offset,-5.00), IsNotNull(s_gmt_offset), IsNotNull(s_store_sk)]
 ReadSchema: struct<s_store_sk:int,s_gmt_offset:decimal(5,2)>
 
 (26) ColumnarToRow [codegen id : 4]
@@ -190,7 +190,7 @@ Input [2]: [s_store_sk#19, s_gmt_offset#20]
 
 (27) Filter [codegen id : 4]
 Input [2]: [s_store_sk#19, s_gmt_offset#20]
-Condition : ((isnotnull(s_gmt_offset#20) AND (s_gmt_offset#20 = -5.00)) AND isnotnull(s_store_sk#19))
+Condition : (((s_gmt_offset#20 = -5.00) AND isnotnull(s_gmt_offset#20)) AND isnotnull(s_store_sk#19))
 
 (28) Project [codegen id : 4]
 Output [1]: [s_store_sk#19]
@@ -227,7 +227,7 @@ Condition : (isnotnull(c_customer_sk#22) AND isnotnull(c_current_addr_sk#23))
 Output [2]: [ca_address_sk#24, ca_gmt_offset#25]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_gmt_offset), EqualTo(ca_gmt_offset,-5.00), IsNotNull(ca_address_sk)]
+PushedFilters: [EqualTo(ca_gmt_offset,-5.00), IsNotNull(ca_gmt_offset), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_gmt_offset:decimal(5,2)>
 
 (36) ColumnarToRow [codegen id : 5]
@@ -235,7 +235,7 @@ Input [2]: [ca_address_sk#24, ca_gmt_offset#25]
 
 (37) Filter [codegen id : 5]
 Input [2]: [ca_address_sk#24, ca_gmt_offset#25]
-Condition : ((isnotnull(ca_gmt_offset#25) AND (ca_gmt_offset#25 = -5.00)) AND isnotnull(ca_address_sk#24))
+Condition : (((ca_gmt_offset#25 = -5.00) AND isnotnull(ca_gmt_offset#25)) AND isnotnull(ca_address_sk#24))
 
 (38) Project [codegen id : 5]
 Output [1]: [ca_address_sk#24]
@@ -276,7 +276,7 @@ Results [1]: [sum#29]
 
 (46) Exchange
 Input [1]: [sum#29]
-Arguments: SinglePartition, true, [id=#30]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [id=#30]
 
 (47) HashAggregate [codegen id : 8]
 Input [1]: [sum#29]
@@ -289,7 +289,7 @@ Results [1]: [MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#6))#31,17,2) AS p
 Output [5]: [ss_sold_date_sk#1, ss_item_sk#2, ss_customer_sk#3, ss_store_sk#4, ss_ext_sales_price#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_store_sk), IsNotNull(ss_sold_date_sk), IsNotNull(ss_customer_sk), IsNotNull(ss_item_sk)]
+PushedFilters: [IsNotNull(ss_sold_date_sk), IsNotNull(ss_customer_sk), IsNotNull(ss_store_sk), IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_sold_date_sk:int,ss_item_sk:int,ss_customer_sk:int,ss_store_sk:int,ss_ext_sales_price:decimal(7,2)>
 
 (49) ColumnarToRow [codegen id : 14]
@@ -297,7 +297,7 @@ Input [5]: [ss_sold_date_sk#1, ss_item_sk#2, ss_customer_sk#3, ss_store_sk#4, ss
 
 (50) Filter [codegen id : 14]
 Input [5]: [ss_sold_date_sk#1, ss_item_sk#2, ss_customer_sk#3, ss_store_sk#4, ss_ext_sales_price#6]
-Condition : (((isnotnull(ss_store_sk#4) AND isnotnull(ss_sold_date_sk#1)) AND isnotnull(ss_customer_sk#3)) AND isnotnull(ss_item_sk#2))
+Condition : (((isnotnull(ss_sold_date_sk#1) AND isnotnull(ss_customer_sk#3)) AND isnotnull(ss_store_sk#4)) AND isnotnull(ss_item_sk#2))
 
 (51) ReusedExchange [Reuses operator id: 8]
 Output [1]: [d_date_sk#7]
@@ -356,7 +356,7 @@ Results [1]: [sum#34]
 
 (64) Exchange
 Input [1]: [sum#34]
-Arguments: SinglePartition, true, [id=#35]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [id=#35]
 
 (65) HashAggregate [codegen id : 15]
 Input [1]: [sum#34]
@@ -378,7 +378,7 @@ Input [2]: [promotions#32, total#37]
 
 (69) Exchange
 Input [3]: [promotions#32, total#37, (CAST((CAST(CAST(promotions AS DECIMAL(15,4)) AS DECIMAL(15,4)) / CAST(CAST(total AS DECIMAL(15,4)) AS DECIMAL(15,4))) AS DECIMAL(35,20)) * CAST(CAST(100 AS DECIMAL(3,0)) AS DECIMAL(35,20)))#39]
-Arguments: rangepartitioning(promotions#32 ASC NULLS FIRST, total#37 ASC NULLS FIRST, 5), true, [id=#40]
+Arguments: rangepartitioning(promotions#32 ASC NULLS FIRST, total#37 ASC NULLS FIRST, 5), ENSURE_REQUIREMENTS, [id=#40]
 
 (70) Sort [codegen id : 17]
 Input [3]: [promotions#32, total#37, (CAST((CAST(CAST(promotions AS DECIMAL(15,4)) AS DECIMAL(15,4)) / CAST(CAST(total AS DECIMAL(15,4)) AS DECIMAL(15,4))) AS DECIMAL(35,20)) * CAST(CAST(100 AS DECIMAL(3,0)) AS DECIMAL(35,20)))#39]

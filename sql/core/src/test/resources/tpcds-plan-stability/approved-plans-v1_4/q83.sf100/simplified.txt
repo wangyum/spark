@@ -13,7 +13,7 @@ TakeOrderedAndProject [item_id,sr_item_qty,sr_dev,cr_item_qty,cr_dev,wr_item_qty
                         BroadcastHashJoin [sr_item_sk,i_item_sk]
                           Project [sr_item_sk,sr_return_quantity]
                             BroadcastHashJoin [sr_returned_date_sk,d_date_sk]
-                              Filter [sr_item_sk,sr_returned_date_sk]
+                              Filter [sr_returned_date_sk,sr_item_sk]
                                 ColumnarToRow
                                   InputAdapter
                                     Scan parquet default.store_returns [sr_returned_date_sk,sr_item_sk,sr_return_quantity]
@@ -81,7 +81,7 @@ TakeOrderedAndProject [item_id,sr_item_qty,sr_dev,cr_item_qty,cr_dev,wr_item_qty
                           BroadcastHashJoin [wr_item_sk,i_item_sk]
                             Project [wr_item_sk,wr_return_quantity]
                               BroadcastHashJoin [wr_returned_date_sk,d_date_sk]
-                                Filter [wr_item_sk,wr_returned_date_sk]
+                                Filter [wr_returned_date_sk,wr_item_sk]
                                   ColumnarToRow
                                     InputAdapter
                                       Scan parquet default.web_returns [wr_returned_date_sk,wr_item_sk,wr_return_quantity]

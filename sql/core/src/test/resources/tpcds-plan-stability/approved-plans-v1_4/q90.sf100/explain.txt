@@ -56,7 +56,7 @@
 Output [3]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
-PushedFilters: [IsNotNull(ws_ship_hdemo_sk), IsNotNull(ws_sold_time_sk), IsNotNull(ws_web_page_sk)]
+PushedFilters: [IsNotNull(ws_sold_time_sk), IsNotNull(ws_web_page_sk), IsNotNull(ws_ship_hdemo_sk)]
 ReadSchema: struct<ws_sold_time_sk:int,ws_ship_hdemo_sk:int,ws_web_page_sk:int>
 
 (2) ColumnarToRow [codegen id : 4]
@@ -64,13 +64,13 @@ Input [3]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3]
 
 (3) Filter [codegen id : 4]
 Input [3]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3]
-Condition : ((isnotnull(ws_ship_hdemo_sk#2) AND isnotnull(ws_sold_time_sk#1)) AND isnotnull(ws_web_page_sk#3))
+Condition : ((isnotnull(ws_sold_time_sk#1) AND isnotnull(ws_web_page_sk#3)) AND isnotnull(ws_ship_hdemo_sk#2))
 
 (4) Scan parquet default.web_page
 Output [2]: [wp_web_page_sk#4, wp_char_count#5]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_page]
-PushedFilters: [IsNotNull(wp_char_count), GreaterThanOrEqual(wp_char_count,5000), LessThanOrEqual(wp_char_count,5200), IsNotNull(wp_web_page_sk)]
+PushedFilters: [LessThanOrEqual(wp_char_count,5200), GreaterThanOrEqual(wp_char_count,5000), IsNotNull(wp_char_count), IsNotNull(wp_web_page_sk)]
 ReadSchema: struct<wp_web_page_sk:int,wp_char_count:int>
 
 (5) ColumnarToRow [codegen id : 1]
@@ -78,7 +78,7 @@ Input [2]: [wp_web_page_sk#4, wp_char_count#5]
 
 (6) Filter [codegen id : 1]
 Input [2]: [wp_web_page_sk#4, wp_char_count#5]
-Condition : (((isnotnull(wp_char_count#5) AND (wp_char_count#5 >= 5000)) AND (wp_char_count#5 <= 5200)) AND isnotnull(wp_web_page_sk#4))
+Condition : ((((wp_char_count#5 <= 5200) AND (wp_char_count#5 >= 5000)) AND isnotnull(wp_char_count#5)) AND isnotnull(wp_web_page_sk#4))
 
 (7) Project [codegen id : 1]
 Output [1]: [wp_web_page_sk#4]
@@ -101,7 +101,7 @@ Input [4]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3, wp_web_page
 Output [2]: [hd_demo_sk#7, hd_dep_count#8]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/household_demographics]
-PushedFilters: [IsNotNull(hd_dep_count), EqualTo(hd_dep_count,6), IsNotNull(hd_demo_sk)]
+PushedFilters: [EqualTo(hd_dep_count,6), IsNotNull(hd_dep_count), IsNotNull(hd_demo_sk)]
 ReadSchema: struct<hd_demo_sk:int,hd_dep_count:int>
 
 (12) ColumnarToRow [codegen id : 2]
@@ -109,7 +109,7 @@ Input [2]: [hd_demo_sk#7, hd_dep_count#8]
 
 (13) Filter [codegen id : 2]
 Input [2]: [hd_demo_sk#7, hd_dep_count#8]
-Condition : ((isnotnull(hd_dep_count#8) AND (hd_dep_count#8 = 6)) AND isnotnull(hd_demo_sk#7))
+Condition : (((hd_dep_count#8 = 6) AND isnotnull(hd_dep_count#8)) AND isnotnull(hd_demo_sk#7))
 
 (14) Project [codegen id : 2]
 Output [1]: [hd_demo_sk#7]
@@ -132,7 +132,7 @@ Input [3]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, hd_demo_sk#7]
 Output [2]: [t_time_sk#10, t_hour#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/time_dim]
-PushedFilters: [IsNotNull(t_hour), GreaterThanOrEqual(t_hour,8), LessThanOrEqual(t_hour,9), IsNotNull(t_time_sk)]
+PushedFilters: [LessThanOrEqual(t_hour,9), GreaterThanOrEqual(t_hour,8), IsNotNull(t_hour), IsNotNull(t_time_sk)]
 ReadSchema: struct<t_time_sk:int,t_hour:int>
 
 (19) ColumnarToRow [codegen id : 3]
@@ -140,7 +140,7 @@ Input [2]: [t_time_sk#10, t_hour#11]
 
 (20) Filter [codegen id : 3]
 Input [2]: [t_time_sk#10, t_hour#11]
-Condition : (((isnotnull(t_hour#11) AND (t_hour#11 >= 8)) AND (t_hour#11 <= 9)) AND isnotnull(t_time_sk#10))
+Condition : ((((t_hour#11 <= 9) AND (t_hour#11 >= 8)) AND isnotnull(t_hour#11)) AND isnotnull(t_time_sk#10))
 
 (21) Project [codegen id : 3]
 Output [1]: [t_time_sk#10]
@@ -168,7 +168,7 @@ Results [1]: [count#14]
 
 (26) Exchange
 Input [1]: [count#14]
-Arguments: SinglePartition, true, [id=#15]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [id=#15]
 
 (27) HashAggregate [codegen id : 5]
 Input [1]: [count#14]
@@ -181,7 +181,7 @@ Results [1]: [count(1)#16 AS amc#17]
 Output [3]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
-PushedFilters: [IsNotNull(ws_ship_hdemo_sk), IsNotNull(ws_sold_time_sk), IsNotNull(ws_web_page_sk)]
+PushedFilters: [IsNotNull(ws_sold_time_sk), IsNotNull(ws_web_page_sk), IsNotNull(ws_ship_hdemo_sk)]
 ReadSchema: struct<ws_sold_time_sk:int,ws_ship_hdemo_sk:int,ws_web_page_sk:int>
 
 (29) ColumnarToRow [codegen id : 9]
@@ -189,7 +189,7 @@ Input [3]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3]
 
 (30) Filter [codegen id : 9]
 Input [3]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, ws_web_page_sk#3]
-Condition : ((isnotnull(ws_ship_hdemo_sk#2) AND isnotnull(ws_sold_time_sk#1)) AND isnotnull(ws_web_page_sk#3))
+Condition : ((isnotnull(ws_sold_time_sk#1) AND isnotnull(ws_web_page_sk#3)) AND isnotnull(ws_ship_hdemo_sk#2))
 
 (31) ReusedExchange [Reuses operator id: 8]
 Output [1]: [wp_web_page_sk#4]
@@ -219,7 +219,7 @@ Input [3]: [ws_sold_time_sk#1, ws_ship_hdemo_sk#2, hd_demo_sk#7]
 Output [2]: [t_time_sk#10, t_hour#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/time_dim]
-PushedFilters: [IsNotNull(t_hour), GreaterThanOrEqual(t_hour,19), LessThanOrEqual(t_hour,20), IsNotNull(t_time_sk)]
+PushedFilters: [GreaterThanOrEqual(t_hour,19), LessThanOrEqual(t_hour,20), IsNotNull(t_hour), IsNotNull(t_time_sk)]
 ReadSchema: struct<t_time_sk:int,t_hour:int>
 
 (38) ColumnarToRow [codegen id : 8]
@@ -227,7 +227,7 @@ Input [2]: [t_time_sk#10, t_hour#11]
 
 (39) Filter [codegen id : 8]
 Input [2]: [t_time_sk#10, t_hour#11]
-Condition : (((isnotnull(t_hour#11) AND (t_hour#11 >= 19)) AND (t_hour#11 <= 20)) AND isnotnull(t_time_sk#10))
+Condition : ((((t_hour#11 >= 19) AND (t_hour#11 <= 20)) AND isnotnull(t_hour#11)) AND isnotnull(t_time_sk#10))
 
 (40) Project [codegen id : 8]
 Output [1]: [t_time_sk#10]
@@ -255,7 +255,7 @@ Results [1]: [count#20]
 
 (45) Exchange
 Input [1]: [count#20]
-Arguments: SinglePartition, true, [id=#21]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [id=#21]
 
 (46) HashAggregate [codegen id : 10]
 Input [1]: [count#20]
@@ -277,7 +277,7 @@ Input [2]: [amc#17, pmc#23]
 
 (50) Exchange
 Input [1]: [am_pm_ratio#25]
-Arguments: rangepartitioning(am_pm_ratio#25 ASC NULLS FIRST, 5), true, [id=#26]
+Arguments: rangepartitioning(am_pm_ratio#25 ASC NULLS FIRST, 5), ENSURE_REQUIREMENTS, [id=#26]
 
 (51) Sort [codegen id : 12]
 Input [1]: [am_pm_ratio#25]

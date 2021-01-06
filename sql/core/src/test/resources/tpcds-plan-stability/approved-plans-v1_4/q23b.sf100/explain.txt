@@ -141,7 +141,7 @@ TakeOrderedAndProject (136)
 Output [5]: [cs_sold_date_sk#1, cs_bill_customer_sk#2, cs_item_sk#3, cs_quantity#4, cs_list_price#5]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_sales]
-PushedFilters: [IsNotNull(cs_bill_customer_sk), IsNotNull(cs_sold_date_sk)]
+PushedFilters: [IsNotNull(cs_sold_date_sk), IsNotNull(cs_bill_customer_sk)]
 ReadSchema: struct<cs_sold_date_sk:int,cs_bill_customer_sk:int,cs_item_sk:int,cs_quantity:int,cs_list_price:decimal(7,2)>
 
 (2) ColumnarToRow [codegen id : 1]
@@ -149,11 +149,11 @@ Input [5]: [cs_sold_date_sk#1, cs_bill_customer_sk#2, cs_item_sk#3, cs_quantity#
 
 (3) Filter [codegen id : 1]
 Input [5]: [cs_sold_date_sk#1, cs_bill_customer_sk#2, cs_item_sk#3, cs_quantity#4, cs_list_price#5]
-Condition : (isnotnull(cs_bill_customer_sk#2) AND isnotnull(cs_sold_date_sk#1))
+Condition : (isnotnull(cs_sold_date_sk#1) AND isnotnull(cs_bill_customer_sk#2))
 
 (4) Exchange
 Input [5]: [cs_sold_date_sk#1, cs_bill_customer_sk#2, cs_item_sk#3, cs_quantity#4, cs_list_price#5]
-Arguments: hashpartitioning(cs_item_sk#3, 5), true, [id=#6]
+Arguments: hashpartitioning(cs_item_sk#3, 5), ENSURE_REQUIREMENTS, [id=#6]
 
 (5) Sort [codegen id : 2]
 Input [5]: [cs_sold_date_sk#1, cs_bill_customer_sk#2, cs_item_sk#3, cs_quantity#4, cs_list_price#5]
@@ -206,7 +206,7 @@ Input [4]: [ss_sold_date_sk#7, ss_item_sk#8, d_date_sk#9, d_date#10]
 
 (16) Exchange
 Input [2]: [ss_item_sk#8, d_date#10]
-Arguments: hashpartitioning(ss_item_sk#8, 5), true, [id=#13]
+Arguments: hashpartitioning(ss_item_sk#8, 5), ENSURE_REQUIREMENTS, [id=#13]
 
 (17) Sort [codegen id : 5]
 Input [2]: [ss_item_sk#8, d_date#10]
@@ -228,7 +228,7 @@ Condition : isnotnull(i_item_sk#14)
 
 (21) Exchange
 Input [2]: [i_item_sk#14, i_item_desc#15]
-Arguments: hashpartitioning(i_item_sk#14, 5), true, [id=#16]
+Arguments: hashpartitioning(i_item_sk#14, 5), ENSURE_REQUIREMENTS, [id=#16]
 
 (22) Sort [codegen id : 7]
 Input [2]: [i_item_sk#14, i_item_desc#15]
@@ -280,7 +280,7 @@ Input [5]: [cs_sold_date_sk#1, cs_bill_customer_sk#2, cs_item_sk#3, cs_quantity#
 
 (32) Exchange
 Input [4]: [cs_sold_date_sk#1, cs_bill_customer_sk#2, cs_quantity#4, cs_list_price#5]
-Arguments: hashpartitioning(cs_bill_customer_sk#2, 5), true, [id=#23]
+Arguments: hashpartitioning(cs_bill_customer_sk#2, 5), ENSURE_REQUIREMENTS, [id=#23]
 
 (33) Sort [codegen id : 10]
 Input [4]: [cs_sold_date_sk#1, cs_bill_customer_sk#2, cs_quantity#4, cs_list_price#5]
@@ -302,7 +302,7 @@ Condition : isnotnull(ss_customer_sk#24)
 
 (37) Exchange
 Input [3]: [ss_customer_sk#24, ss_quantity#25, ss_sales_price#26]
-Arguments: hashpartitioning(ss_customer_sk#24, 5), true, [id=#27]
+Arguments: hashpartitioning(ss_customer_sk#24, 5), ENSURE_REQUIREMENTS, [id=#27]
 
 (38) Sort [codegen id : 12]
 Input [3]: [ss_customer_sk#24, ss_quantity#25, ss_sales_price#26]
@@ -324,7 +324,7 @@ Condition : isnotnull(c_customer_sk#28)
 
 (42) Exchange
 Input [1]: [c_customer_sk#28]
-Arguments: hashpartitioning(c_customer_sk#28, 5), true, [id=#29]
+Arguments: hashpartitioning(c_customer_sk#28, 5), ENSURE_REQUIREMENTS, [id=#29]
 
 (43) Sort [codegen id : 14]
 Input [1]: [c_customer_sk#28]
@@ -374,7 +374,7 @@ Join condition: None
 Output [3]: [d_date_sk#9, d_year#11, d_moy#38]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,2000), EqualTo(d_moy,2), IsNotNull(d_date_sk)]
+PushedFilters: [EqualTo(d_year,2000), EqualTo(d_moy,2), IsNotNull(d_year), IsNotNull(d_moy), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (53) ColumnarToRow [codegen id : 16]
@@ -382,7 +382,7 @@ Input [3]: [d_date_sk#9, d_year#11, d_moy#38]
 
 (54) Filter [codegen id : 16]
 Input [3]: [d_date_sk#9, d_year#11, d_moy#38]
-Condition : ((((isnotnull(d_year#11) AND isnotnull(d_moy#38)) AND (d_year#11 = 2000)) AND (d_moy#38 = 2)) AND isnotnull(d_date_sk#9))
+Condition : (((((d_year#11 = 2000) AND (d_moy#38 = 2)) AND isnotnull(d_year#11)) AND isnotnull(d_moy#38)) AND isnotnull(d_date_sk#9))
 
 (55) Project [codegen id : 16]
 Output [1]: [d_date_sk#9]
@@ -417,7 +417,7 @@ Condition : isnotnull(c_customer_sk#28)
 
 (62) Exchange
 Input [3]: [c_customer_sk#28, c_first_name#40, c_last_name#41]
-Arguments: hashpartitioning(c_customer_sk#28, 5), true, [id=#42]
+Arguments: hashpartitioning(c_customer_sk#28, 5), ENSURE_REQUIREMENTS, [id=#42]
 
 (63) Sort [codegen id : 19]
 Input [3]: [c_customer_sk#28, c_first_name#40, c_last_name#41]
@@ -495,7 +495,7 @@ Results [4]: [c_last_name#41, c_first_name#40, sum#46, isEmpty#47]
 
 (79) Exchange
 Input [4]: [c_last_name#41, c_first_name#40, sum#46, isEmpty#47]
-Arguments: hashpartitioning(c_last_name#41, c_first_name#40, 5), true, [id=#48]
+Arguments: hashpartitioning(c_last_name#41, c_first_name#40, 5), ENSURE_REQUIREMENTS, [id=#48]
 
 (80) HashAggregate [codegen id : 26]
 Input [4]: [c_last_name#41, c_first_name#40, sum#46, isEmpty#47]
@@ -508,7 +508,7 @@ Results [3]: [c_last_name#41, c_first_name#40, sum(CheckOverflow((promote_precis
 Output [5]: [ws_sold_date_sk#51, ws_item_sk#52, ws_bill_customer_sk#53, ws_quantity#54, ws_list_price#55]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/web_sales]
-PushedFilters: [IsNotNull(ws_bill_customer_sk), IsNotNull(ws_sold_date_sk)]
+PushedFilters: [IsNotNull(ws_sold_date_sk), IsNotNull(ws_bill_customer_sk)]
 ReadSchema: struct<ws_sold_date_sk:int,ws_item_sk:int,ws_bill_customer_sk:int,ws_quantity:int,ws_list_price:decimal(7,2)>
 
 (82) ColumnarToRow [codegen id : 27]
@@ -516,11 +516,11 @@ Input [5]: [ws_sold_date_sk#51, ws_item_sk#52, ws_bill_customer_sk#53, ws_quanti
 
 (83) Filter [codegen id : 27]
 Input [5]: [ws_sold_date_sk#51, ws_item_sk#52, ws_bill_customer_sk#53, ws_quantity#54, ws_list_price#55]
-Condition : (isnotnull(ws_bill_customer_sk#53) AND isnotnull(ws_sold_date_sk#51))
+Condition : (isnotnull(ws_sold_date_sk#51) AND isnotnull(ws_bill_customer_sk#53))
 
 (84) Exchange
 Input [5]: [ws_sold_date_sk#51, ws_item_sk#52, ws_bill_customer_sk#53, ws_quantity#54, ws_list_price#55]
-Arguments: hashpartitioning(ws_item_sk#52, 5), true, [id=#56]
+Arguments: hashpartitioning(ws_item_sk#52, 5), ENSURE_REQUIREMENTS, [id=#56]
 
 (85) Sort [codegen id : 28]
 Input [5]: [ws_sold_date_sk#51, ws_item_sk#52, ws_bill_customer_sk#53, ws_quantity#54, ws_list_price#55]
@@ -586,7 +586,7 @@ Input [5]: [ws_sold_date_sk#51, ws_item_sk#52, ws_bill_customer_sk#53, ws_quanti
 
 (99) Exchange
 Input [4]: [ws_sold_date_sk#51, ws_bill_customer_sk#53, ws_quantity#54, ws_list_price#55]
-Arguments: hashpartitioning(ws_bill_customer_sk#53, 5), true, [id=#62]
+Arguments: hashpartitioning(ws_bill_customer_sk#53, 5), ENSURE_REQUIREMENTS, [id=#62]
 
 (100) Sort [codegen id : 36]
 Input [4]: [ws_sold_date_sk#51, ws_bill_customer_sk#53, ws_quantity#54, ws_list_price#55]
@@ -737,7 +737,7 @@ Results [4]: [c_last_name#41, c_first_name#40, sum#72, isEmpty#73]
 
 (133) Exchange
 Input [4]: [c_last_name#41, c_first_name#40, sum#72, isEmpty#73]
-Arguments: hashpartitioning(c_last_name#41, c_first_name#40, 5), true, [id=#74]
+Arguments: hashpartitioning(c_last_name#41, c_first_name#40, 5), ENSURE_REQUIREMENTS, [id=#74]
 
 (134) HashAggregate [codegen id : 52]
 Input [4]: [c_last_name#41, c_first_name#40, sum#72, isEmpty#73]
@@ -785,7 +785,7 @@ Subquery:1 Hosting operator id = 48 Hosting Expression = Subquery scalar-subquer
 Output [4]: [ss_sold_date_sk#7, ss_customer_sk#24, ss_quantity#25, ss_sales_price#26]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_customer_sk), IsNotNull(ss_sold_date_sk)]
+PushedFilters: [IsNotNull(ss_sold_date_sk), IsNotNull(ss_customer_sk)]
 ReadSchema: struct<ss_sold_date_sk:int,ss_customer_sk:int,ss_quantity:int,ss_sales_price:decimal(7,2)>
 
 (138) ColumnarToRow [codegen id : 2]
@@ -793,7 +793,7 @@ Input [4]: [ss_sold_date_sk#7, ss_customer_sk#24, ss_quantity#25, ss_sales_price
 
 (139) Filter [codegen id : 2]
 Input [4]: [ss_sold_date_sk#7, ss_customer_sk#24, ss_quantity#25, ss_sales_price#26]
-Condition : (isnotnull(ss_customer_sk#24) AND isnotnull(ss_sold_date_sk#7))
+Condition : (isnotnull(ss_sold_date_sk#7) AND isnotnull(ss_customer_sk#24))
 
 (140) Scan parquet default.date_dim
 Output [2]: [d_date_sk#9, d_year#11]
@@ -828,7 +828,7 @@ Input [5]: [ss_sold_date_sk#7, ss_customer_sk#24, ss_quantity#25, ss_sales_price
 
 (147) Exchange
 Input [3]: [ss_customer_sk#24, ss_quantity#25, ss_sales_price#26]
-Arguments: hashpartitioning(ss_customer_sk#24, 5), true, [id=#78]
+Arguments: hashpartitioning(ss_customer_sk#24, 5), ENSURE_REQUIREMENTS, [id=#78]
 
 (148) Sort [codegen id : 3]
 Input [3]: [ss_customer_sk#24, ss_quantity#25, ss_sales_price#26]
@@ -850,7 +850,7 @@ Condition : isnotnull(c_customer_sk#28)
 
 (152) Exchange
 Input [1]: [c_customer_sk#28]
-Arguments: hashpartitioning(c_customer_sk#28, 5), true, [id=#79]
+Arguments: hashpartitioning(c_customer_sk#28, 5), ENSURE_REQUIREMENTS, [id=#79]
 
 (153) Sort [codegen id : 5]
 Input [1]: [c_customer_sk#28]
@@ -888,7 +888,7 @@ Results [1]: [max#87]
 
 (159) Exchange
 Input [1]: [max#87]
-Arguments: SinglePartition, true, [id=#88]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [id=#88]
 
 (160) HashAggregate [codegen id : 7]
 Input [1]: [max#87]

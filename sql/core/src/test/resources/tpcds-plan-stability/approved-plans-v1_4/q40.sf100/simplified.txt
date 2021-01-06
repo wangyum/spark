@@ -19,7 +19,7 @@ TakeOrderedAndProject [w_state,i_item_id,sales_before,sales_after]
                                     InputAdapter
                                       Exchange [cs_order_number,cs_item_sk] #2
                                         WholeStageCodegen (1)
-                                          Filter [cs_warehouse_sk,cs_item_sk,cs_sold_date_sk]
+                                          Filter [cs_warehouse_sk,cs_sold_date_sk,cs_item_sk]
                                             ColumnarToRow
                                               InputAdapter
                                                 Scan parquet default.catalog_sales [cs_sold_date_sk,cs_warehouse_sk,cs_item_sk,cs_order_number,cs_sales_price]

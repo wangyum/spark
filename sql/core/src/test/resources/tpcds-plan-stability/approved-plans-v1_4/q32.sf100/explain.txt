@@ -36,7 +36,7 @@ CollectLimit (31)
 Output [2]: [i_item_sk#1, i_manufact_id#2]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_manufact_id), EqualTo(i_manufact_id,977), IsNotNull(i_item_sk)]
+PushedFilters: [EqualTo(i_manufact_id,977), IsNotNull(i_manufact_id), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_manufact_id:int>
 
 (2) ColumnarToRow [codegen id : 1]
@@ -44,7 +44,7 @@ Input [2]: [i_item_sk#1, i_manufact_id#2]
 
 (3) Filter [codegen id : 1]
 Input [2]: [i_item_sk#1, i_manufact_id#2]
-Condition : ((isnotnull(i_manufact_id#2) AND (i_manufact_id#2 = 977)) AND isnotnull(i_item_sk#1))
+Condition : (((i_manufact_id#2 = 977) AND isnotnull(i_manufact_id#2)) AND isnotnull(i_item_sk#1))
 
 (4) Project [codegen id : 1]
 Output [1]: [i_item_sk#1]
@@ -108,7 +108,7 @@ Results [3]: [cs_item_sk#5, sum#12, count#13]
 
 (17) Exchange
 Input [3]: [cs_item_sk#5, sum#12, count#13]
-Arguments: hashpartitioning(cs_item_sk#5, 5), true, [id=#14]
+Arguments: hashpartitioning(cs_item_sk#5, 5), ENSURE_REQUIREMENTS, [id=#14]
 
 (18) HashAggregate
 Input [3]: [cs_item_sk#5, sum#12, count#13]
@@ -138,7 +138,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Output [3]: [cs_sold_date_sk#4, cs_item_sk#5, cs_ext_discount_amt#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_sales]
-PushedFilters: [IsNotNull(cs_item_sk), IsNotNull(cs_ext_discount_amt), IsNotNull(cs_sold_date_sk)]
+PushedFilters: [IsNotNull(cs_ext_discount_amt), IsNotNull(cs_sold_date_sk), IsNotNull(cs_item_sk)]
 ReadSchema: struct<cs_sold_date_sk:int,cs_item_sk:int,cs_ext_discount_amt:decimal(7,2)>
 
 (24) ColumnarToRow
@@ -146,7 +146,7 @@ Input [3]: [cs_sold_date_sk#4, cs_item_sk#5, cs_ext_discount_amt#6]
 
 (25) Filter
 Input [3]: [cs_sold_date_sk#4, cs_item_sk#5, cs_ext_discount_amt#6]
-Condition : ((isnotnull(cs_item_sk#5) AND isnotnull(cs_ext_discount_amt#6)) AND isnotnull(cs_sold_date_sk#4))
+Condition : ((isnotnull(cs_ext_discount_amt#6) AND isnotnull(cs_sold_date_sk#4)) AND isnotnull(cs_item_sk#5))
 
 (26) BroadcastHashJoin [codegen id : 6]
 Left keys [1]: [i_item_sk#1]
