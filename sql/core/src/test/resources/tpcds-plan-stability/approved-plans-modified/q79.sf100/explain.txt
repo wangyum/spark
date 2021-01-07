@@ -56,7 +56,7 @@ Condition : ((((((ss_sold_date_sk#1 <= 2451904) AND isnotnull(ss_hdemo_sk#3)) AN
 Output [3]: [d_date_sk#9, d_year#10, d_dow#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [In(d_year, [1998,1999,2000]), LessThanOrEqual(d_date_sk,2451904), EqualTo(d_dow,1), GreaterThanOrEqual(d_date_sk,2450819), IsNotNull(d_dow), IsNotNull(d_date_sk)]
+PushedFilters: [In(d_year, [1998,1999,2000]), EqualTo(d_dow,1), LessThanOrEqual(d_date_sk,2451904), GreaterThanOrEqual(d_date_sk,2450819), IsNotNull(d_dow), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_dow:int>
 
 (5) ColumnarToRow [codegen id : 1]
@@ -64,7 +64,7 @@ Input [3]: [d_date_sk#9, d_year#10, d_dow#11]
 
 (6) Filter [codegen id : 1]
 Input [3]: [d_date_sk#9, d_year#10, d_dow#11]
-Condition : (((((d_year#10 IN (1998,1999,2000) AND (d_date_sk#9 <= 2451904)) AND (d_dow#11 = 1)) AND (d_date_sk#9 >= 2450819)) AND isnotnull(d_dow#11)) AND isnotnull(d_date_sk#9))
+Condition : (((((d_year#10 IN (1998,1999,2000) AND (d_dow#11 = 1)) AND (d_date_sk#9 <= 2451904)) AND (d_date_sk#9 >= 2450819)) AND isnotnull(d_dow#11)) AND isnotnull(d_date_sk#9))
 
 (7) Project [codegen id : 1]
 Output [1]: [d_date_sk#9]

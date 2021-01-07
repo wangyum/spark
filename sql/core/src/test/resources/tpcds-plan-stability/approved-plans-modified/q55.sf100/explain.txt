@@ -26,7 +26,7 @@ TakeOrderedAndProject (21)
 Output [3]: [d_date_sk#1, d_year#2, d_moy#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [LessThanOrEqual(d_date_sk,2452244), EqualTo(d_year,2001), EqualTo(d_moy,11), GreaterThanOrEqual(d_date_sk,2452215), IsNotNull(d_moy), IsNotNull(d_year), IsNotNull(d_date_sk)]
+PushedFilters: [EqualTo(d_year,2001), EqualTo(d_moy,11), GreaterThanOrEqual(d_date_sk,2452215), LessThanOrEqual(d_date_sk,2452244), IsNotNull(d_moy), IsNotNull(d_year), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (2) ColumnarToRow [codegen id : 1]
@@ -34,7 +34,7 @@ Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
 
 (3) Filter [codegen id : 1]
 Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
-Condition : (((((((d_date_sk#1 <= 2452244) AND (d_year#2 = 2001)) AND (d_moy#3 = 11)) AND (d_date_sk#1 >= 2452215)) AND isnotnull(d_moy#3)) AND isnotnull(d_year#2)) AND isnotnull(d_date_sk#1))
+Condition : (((((((d_year#2 = 2001) AND (d_moy#3 = 11)) AND (d_date_sk#1 >= 2452215)) AND (d_date_sk#1 <= 2452244)) AND isnotnull(d_moy#3)) AND isnotnull(d_year#2)) AND isnotnull(d_date_sk#1))
 
 (4) Project [codegen id : 1]
 Output [1]: [d_date_sk#1]
@@ -48,7 +48,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Output [3]: [ss_sold_date_sk#5, ss_item_sk#6, ss_ext_sales_price#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [LessThanOrEqual(ss_sold_date_sk,2452244), GreaterThanOrEqual(ss_sold_date_sk,2452215), IsNotNull(ss_sold_date_sk), IsNotNull(ss_item_sk)]
+PushedFilters: [GreaterThanOrEqual(ss_sold_date_sk,2452215), LessThanOrEqual(ss_sold_date_sk,2452244), IsNotNull(ss_sold_date_sk), IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_sold_date_sk:int,ss_item_sk:int,ss_ext_sales_price:decimal(7,2)>
 
 (7) ColumnarToRow
@@ -56,7 +56,7 @@ Input [3]: [ss_sold_date_sk#5, ss_item_sk#6, ss_ext_sales_price#7]
 
 (8) Filter
 Input [3]: [ss_sold_date_sk#5, ss_item_sk#6, ss_ext_sales_price#7]
-Condition : ((((ss_sold_date_sk#5 <= 2452244) AND (ss_sold_date_sk#5 >= 2452215)) AND isnotnull(ss_sold_date_sk#5)) AND isnotnull(ss_item_sk#6))
+Condition : ((((ss_sold_date_sk#5 >= 2452215) AND (ss_sold_date_sk#5 <= 2452244)) AND isnotnull(ss_sold_date_sk#5)) AND isnotnull(ss_item_sk#6))
 
 (9) BroadcastHashJoin [codegen id : 3]
 Left keys [1]: [d_date_sk#1]

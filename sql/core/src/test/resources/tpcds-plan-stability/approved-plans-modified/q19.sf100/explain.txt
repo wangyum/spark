@@ -44,7 +44,7 @@ TakeOrderedAndProject (39)
 Output [3]: [d_date_sk#1, d_year#2, d_moy#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [LessThanOrEqual(d_date_sk,2451513), EqualTo(d_year,1999), EqualTo(d_moy,11), GreaterThanOrEqual(d_date_sk,2451484), IsNotNull(d_moy), IsNotNull(d_year), IsNotNull(d_date_sk)]
+PushedFilters: [EqualTo(d_year,1999), EqualTo(d_moy,11), LessThanOrEqual(d_date_sk,2451513), GreaterThanOrEqual(d_date_sk,2451484), IsNotNull(d_moy), IsNotNull(d_year), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (2) ColumnarToRow [codegen id : 1]
@@ -52,7 +52,7 @@ Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
 
 (3) Filter [codegen id : 1]
 Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
-Condition : (((((((d_date_sk#1 <= 2451513) AND (d_year#2 = 1999)) AND (d_moy#3 = 11)) AND (d_date_sk#1 >= 2451484)) AND isnotnull(d_moy#3)) AND isnotnull(d_year#2)) AND isnotnull(d_date_sk#1))
+Condition : (((((((d_year#2 = 1999) AND (d_moy#3 = 11)) AND (d_date_sk#1 <= 2451513)) AND (d_date_sk#1 >= 2451484)) AND isnotnull(d_moy#3)) AND isnotnull(d_year#2)) AND isnotnull(d_date_sk#1))
 
 (4) Project [codegen id : 1]
 Output [1]: [d_date_sk#1]
