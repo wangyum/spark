@@ -17,7 +17,7 @@ jobs:
   tpcds1g:
     name: Benchmark TPC-DS 1G
     runs-on: ubuntu-20.04
-    # continue-on-error: true
+    continue-on-error: true
     steps:
       - name: Checkout Spark repository
         uses: actions/checkout@v2
