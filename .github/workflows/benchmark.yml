@@ -31,7 +31,7 @@ jobs:
         with:
           java-version: 8
       - name: Test exist
-        run: exit
+        run: exit 125
       - name: Run TPCDSQueryBenchmark
         run: |
           SPARK_GENERATE_BENCHMARK_FILES=1 build/sbt "sql/test:runMain org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark --data-location `pwd`/tpcds1g --query-filter q3 --cbo"
