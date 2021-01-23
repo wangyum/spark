@@ -1,0 +1,40 @@
+name: Benchmark
+
+on:
+  push:
+    branches:
+    - master
+  pull_request:
+    branches:
+    - master
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target branch to run'
+        required: true
+
+jobs:
+  tpcds1g:
+    name: Benchmark TPC-DS 1G
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout Spark repository
+        uses: actions/checkout@v2
+      - name: Checkout TPC-DS 1G repository
+        uses: actions/checkout@v2
+        with:
+          repository: wangyum/tpcds1g
+          path: ./tpcds1g
+      - name: Install Java 8
+        uses: actions/setup-java@v1
+        with:
+          java-version: 8
+      - name: Run TPCDSQueryBenchmark
+        run: |
+          SPARK_GENERATE_BENCHMARK_FILES=1 build/sbt "sql/test:runMain org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark --data-location `pwd`/tpcds1g --cbo"
+      - name: Upload benchmark result to report
+        if: always()
+        uses: actions/upload-artifact@v2
+        with:
+          name: TPC-DS 1G benchmark result
+          path: "sql/core/benchmarks/TPCDSQueryBenchmark-results.txt"
