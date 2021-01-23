@@ -38,7 +38,7 @@ jobs:
       - name: Build tpcds-kit
         run: cd tpcds-kit/tools && make OS=LINUX
       - name: Gen Data
-        run: cd spark-sql-perf && build/sbt "test:runMain com.databricks.spark.sql.GenTPCDSData `pwd`/../tpcds-kit/tools 1 `pwd`/tpcds1g parquet"
+        run: cd spark-sql-perf && build/sbt "test:runMain com.databricks.spark.sql.GenTPCDSData `pwd`/../tpcds-kit/tools 1 `pwd`/../tpcds1g parquet"
       - name: Run TPCDSQueryBenchmark
         run: |
           SPARK_GENERATE_BENCHMARK_FILES=1 build/sbt "sql/test:runMain org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark --data-location `pwd`/tpcds1g --query-filter q3 --cbo"
