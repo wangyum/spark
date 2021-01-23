@@ -38,10 +38,11 @@ jobs:
         uses: actions/setup-java@v1
         with:
           java-version: 8
-      - name: Benchmark with SBT
+      - name: Show Working directory
+        run: ls -l
+      - name: Run TPCDSQueryBenchmark
         run: |
-          ls -l
-          SPARK_GENERATE_BENCHMARK_FILES=1 build/sbt "sql/test:runMain org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark --data-location ./tpcds1g --cbo"
+          SPARK_GENERATE_BENCHMARK_FILES=1 build/sbt "sql/test:runMain org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark --data-location `pwd`/tpcds1g --cbo"
       - name: Upload benchmark result to report
         if: always()
         uses: actions/upload-artifact@v2
