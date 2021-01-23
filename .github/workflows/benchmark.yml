@@ -35,7 +35,7 @@ jobs:
       - name: Run TPCDSQueryBenchmark
         continue-on-error: true
         run: |
-          SPARK_GENERATE_BENCHMARK_FILES=1 build/sbt "sql/test:runMain org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark --data-location `pwd`/tpcds1g --cbo"
+          SPARK_GENERATE_BENCHMARK_FILES=1 build/sbt "sql/test:runMain org.apache.spark.sql.execution.benchmark.TPCDSQueryBenchmark --data-location `pwd`/tpcds1g --query-filter q3 --cbo"
       - name: Upload benchmark result to report
         if: always()
         continue-on-error: true
