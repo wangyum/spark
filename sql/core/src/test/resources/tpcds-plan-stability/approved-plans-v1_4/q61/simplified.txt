@@ -34,7 +34,7 @@ WholeStageCodegen (17)
                                                       BroadcastExchange #4
                                                         WholeStageCodegen (1)
                                                           Project [s_store_sk]
-                                                            Filter [s_store_sk,s_gmt_offset]
+                                                            Filter [s_gmt_offset,s_store_sk]
                                                               ColumnarToRow
                                                                 InputAdapter
                                                                   Scan parquet default.store [s_store_sk,s_gmt_offset]
@@ -42,7 +42,7 @@ WholeStageCodegen (17)
                                                   BroadcastExchange #5
                                                     WholeStageCodegen (2)
                                                       Project [p_promo_sk]
-                                                        Filter [p_promo_sk,p_channel_dmail,p_channel_email,p_channel_tv]
+                                                        Filter [p_channel_dmail,p_channel_email,p_channel_tv,p_promo_sk]
                                                           ColumnarToRow
                                                             InputAdapter
                                                               Scan parquet default.promotion [p_promo_sk,p_channel_dmail,p_channel_email,p_channel_tv]
@@ -65,7 +65,7 @@ WholeStageCodegen (17)
                                       BroadcastExchange #7
                                         WholeStageCodegen (5)
                                           Project [ca_address_sk]
-                                            Filter [ca_address_sk,ca_gmt_offset]
+                                            Filter [ca_gmt_offset,ca_address_sk]
                                               ColumnarToRow
                                                 InputAdapter
                                                   Scan parquet default.customer_address [ca_address_sk,ca_gmt_offset]
@@ -73,7 +73,7 @@ WholeStageCodegen (17)
                                   BroadcastExchange #8
                                     WholeStageCodegen (6)
                                       Project [i_item_sk]
-                                        Filter [i_item_sk,i_category]
+                                        Filter [i_category,i_item_sk]
                                           ColumnarToRow
                                             InputAdapter
                                               Scan parquet default.item [i_item_sk,i_category]

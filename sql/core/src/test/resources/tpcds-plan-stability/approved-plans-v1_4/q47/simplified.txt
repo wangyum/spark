@@ -4,7 +4,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
       BroadcastHashJoin [i_category,i_brand,s_store_name,s_company_name,rn,i_category,i_brand,s_store_name,s_company_name,rn]
         Project [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales,avg_monthly_sales,rn,sum_sales]
           BroadcastHashJoin [i_category,i_brand,s_store_name,s_company_name,rn,i_category,i_brand,s_store_name,s_company_name,rn]
-            Filter [d_year,rn,avg_monthly_sales,sum_sales]
+            Filter [d_year,avg_monthly_sales,sum_sales,rn]
               InputAdapter
                 Window [d_year,d_moy,i_category,i_brand,s_store_name,s_company_name]
                   WholeStageCodegen (8)
@@ -47,7 +47,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                                                               InputAdapter
                                                                 BroadcastExchange #5
                                                                   WholeStageCodegen (2)
-                                                                    Filter [d_date_sk,d_year,d_moy]
+                                                                    Filter [d_year,d_moy,d_date_sk]
                                                                       ColumnarToRow
                                                                         InputAdapter
                                                                           Scan parquet default.date_dim [d_date_sk,d_year,d_moy]

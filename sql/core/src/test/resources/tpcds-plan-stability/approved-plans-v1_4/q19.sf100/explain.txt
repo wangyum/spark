@@ -50,7 +50,7 @@ TakeOrderedAndProject (45)
 Output [3]: [d_date_sk#1, d_year#2, d_moy#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_moy), IsNotNull(d_year), EqualTo(d_moy,11), EqualTo(d_year,1998), IsNotNull(d_date_sk)]
+PushedFilters: [EqualTo(d_year,1998), EqualTo(d_moy,11), IsNotNull(d_moy), IsNotNull(d_year), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (2) ColumnarToRow [codegen id : 1]
@@ -58,7 +58,7 @@ Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
 
 (3) Filter [codegen id : 1]
 Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
-Condition : ((((isnotnull(d_moy#3) AND isnotnull(d_year#2)) AND (d_moy#3 = 11)) AND (d_year#2 = 1998)) AND isnotnull(d_date_sk#1))
+Condition : (((((d_year#2 = 1998) AND (d_moy#3 = 11)) AND isnotnull(d_moy#3)) AND isnotnull(d_year#2)) AND isnotnull(d_date_sk#1))
 
 (4) Project [codegen id : 1]
 Output [1]: [d_date_sk#1]
@@ -73,7 +73,7 @@ Output [5]: [ss_item_sk#5, ss_customer_sk#6, ss_store_sk#7, ss_ext_sales_price#8
 Batched: true
 Location: InMemoryFileIndex []
 PartitionFilters: [isnotnull(ss_sold_date_sk#9), dynamicpruningexpression(ss_sold_date_sk#9 IN dynamicpruning#10)]
-PushedFilters: [IsNotNull(ss_item_sk), IsNotNull(ss_customer_sk), IsNotNull(ss_store_sk)]
+PushedFilters: [IsNotNull(ss_customer_sk), IsNotNull(ss_store_sk), IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_item_sk:int,ss_customer_sk:int,ss_store_sk:int,ss_ext_sales_price:decimal(7,2)>
 
 (7) ColumnarToRow
@@ -81,7 +81,7 @@ Input [5]: [ss_item_sk#5, ss_customer_sk#6, ss_store_sk#7, ss_ext_sales_price#8,
 
 (8) Filter
 Input [5]: [ss_item_sk#5, ss_customer_sk#6, ss_store_sk#7, ss_ext_sales_price#8, ss_sold_date_sk#9]
-Condition : ((isnotnull(ss_item_sk#5) AND isnotnull(ss_customer_sk#6)) AND isnotnull(ss_store_sk#7))
+Condition : ((isnotnull(ss_customer_sk#6) AND isnotnull(ss_store_sk#7)) AND isnotnull(ss_item_sk#5))
 
 (9) BroadcastHashJoin [codegen id : 3]
 Left keys [1]: [d_date_sk#1]
@@ -153,7 +153,7 @@ Arguments: [c_current_addr_sk#16 ASC NULLS FIRST], false, 0
 Output [2]: [ca_address_sk#18, ca_zip#19]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_address_sk), IsNotNull(ca_zip)]
+PushedFilters: [IsNotNull(ca_zip), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_zip:string>
 
 (25) ColumnarToRow [codegen id : 7]
@@ -161,7 +161,7 @@ Input [2]: [ca_address_sk#18, ca_zip#19]
 
 (26) Filter [codegen id : 7]
 Input [2]: [ca_address_sk#18, ca_zip#19]
-Condition : (isnotnull(ca_address_sk#18) AND isnotnull(ca_zip#19))
+Condition : (isnotnull(ca_zip#19) AND isnotnull(ca_address_sk#18))
 
 (27) Exchange
 Input [2]: [ca_address_sk#18, ca_zip#19]
@@ -201,7 +201,7 @@ Input [6]: [ss_item_sk#5, ss_customer_sk#6, ss_ext_sales_price#8, s_zip#12, c_cu
 Output [6]: [i_item_sk#22, i_brand_id#23, i_brand#24, i_manufact_id#25, i_manufact#26, i_manager_id#27]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
-PushedFilters: [IsNotNull(i_manager_id), EqualTo(i_manager_id,8), IsNotNull(i_item_sk)]
+PushedFilters: [EqualTo(i_manager_id,8), IsNotNull(i_manager_id), IsNotNull(i_item_sk)]
 ReadSchema: struct<i_item_sk:int,i_brand_id:int,i_brand:string,i_manufact_id:int,i_manufact:string,i_manager_id:int>
 
 (36) ColumnarToRow [codegen id : 11]
@@ -209,7 +209,7 @@ Input [6]: [i_item_sk#22, i_brand_id#23, i_brand#24, i_manufact_id#25, i_manufac
 
 (37) Filter [codegen id : 11]
 Input [6]: [i_item_sk#22, i_brand_id#23, i_brand#24, i_manufact_id#25, i_manufact#26, i_manager_id#27]
-Condition : ((isnotnull(i_manager_id#27) AND (i_manager_id#27 = 8)) AND isnotnull(i_item_sk#22))
+Condition : (((i_manager_id#27 = 8) AND isnotnull(i_manager_id#27)) AND isnotnull(i_item_sk#22))
 
 (38) Project [codegen id : 11]
 Output [5]: [i_item_sk#22, i_brand_id#23, i_brand#24, i_manufact_id#25, i_manufact#26]

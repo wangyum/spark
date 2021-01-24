@@ -65,7 +65,7 @@ Output [4]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3
 Batched: true
 Location: InMemoryFileIndex []
 PartitionFilters: [isnotnull(wr_returned_date_sk#4), dynamicpruningexpression(wr_returned_date_sk#4 IN dynamicpruning#5)]
-PushedFilters: [IsNotNull(wr_returning_addr_sk), IsNotNull(wr_returning_customer_sk)]
+PushedFilters: [IsNotNull(wr_returning_customer_sk), IsNotNull(wr_returning_addr_sk)]
 ReadSchema: struct<wr_returning_customer_sk:bigint,wr_returning_addr_sk:bigint,wr_return_amt:decimal(7,2)>
 
 (2) ColumnarToRow [codegen id : 2]
@@ -73,13 +73,13 @@ Input [4]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3,
 
 (3) Filter [codegen id : 2]
 Input [4]: [wr_returning_customer_sk#1, wr_returning_addr_sk#2, wr_return_amt#3, wr_returned_date_sk#4]
-Condition : (isnotnull(wr_returning_addr_sk#2) AND isnotnull(wr_returning_customer_sk#1))
+Condition : (isnotnull(wr_returning_customer_sk#1) AND isnotnull(wr_returning_addr_sk#2))
 
 (4) Scan parquet default.date_dim
 Output [2]: [d_date_sk#6, d_year#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2002), IsNotNull(d_date_sk)]
+PushedFilters: [EqualTo(d_year,2002), IsNotNull(d_year), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
 (5) ColumnarToRow [codegen id : 1]
@@ -87,7 +87,7 @@ Input [2]: [d_date_sk#6, d_year#7]
 
 (6) Filter [codegen id : 1]
 Input [2]: [d_date_sk#6, d_year#7]
-Condition : ((isnotnull(d_year#7) AND (d_year#7 = 2002)) AND isnotnull(d_date_sk#6))
+Condition : (((d_year#7 = 2002) AND isnotnull(d_year#7)) AND isnotnull(d_date_sk#6))
 
 (7) Project [codegen id : 1]
 Output [1]: [d_date_sk#6]
@@ -118,7 +118,7 @@ Arguments: [wr_returning_addr_sk#2 ASC NULLS FIRST], false, 0
 Output [2]: [ca_address_sk#10, ca_state#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_address_sk), IsNotNull(ca_state)]
+PushedFilters: [IsNotNull(ca_state), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
 (14) ColumnarToRow [codegen id : 4]
@@ -126,7 +126,7 @@ Input [2]: [ca_address_sk#10, ca_state#11]
 
 (15) Filter [codegen id : 4]
 Input [2]: [ca_address_sk#10, ca_state#11]
-Condition : (isnotnull(ca_address_sk#10) AND isnotnull(ca_state#11))
+Condition : (isnotnull(ca_state#11) AND isnotnull(ca_address_sk#10))
 
 (16) Exchange
 Input [2]: [ca_address_sk#10, ca_state#11]
@@ -289,7 +289,7 @@ Condition : (isnotnull(c_customer_sk#34) AND isnotnull(c_current_addr_sk#36))
 Output [2]: [ca_address_sk#10, ca_state#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_state), EqualTo(ca_state,GA), IsNotNull(ca_address_sk)]
+PushedFilters: [EqualTo(ca_state,GA), IsNotNull(ca_state), IsNotNull(ca_address_sk)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
 (50) ColumnarToRow [codegen id : 15]
@@ -297,7 +297,7 @@ Input [2]: [ca_address_sk#10, ca_state#11]
 
 (51) Filter [codegen id : 15]
 Input [2]: [ca_address_sk#10, ca_state#11]
-Condition : ((isnotnull(ca_state#11) AND (ca_state#11 = GA)) AND isnotnull(ca_address_sk#10))
+Condition : (((ca_state#11 = GA) AND isnotnull(ca_state#11)) AND isnotnull(ca_address_sk#10))
 
 (52) Project [codegen id : 15]
 Output [1]: [ca_address_sk#10]

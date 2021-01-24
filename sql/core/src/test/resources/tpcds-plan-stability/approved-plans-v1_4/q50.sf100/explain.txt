@@ -41,7 +41,7 @@ Output [5]: [ss_item_sk#1, ss_customer_sk#2, ss_store_sk#3, ss_ticket_number#4, 
 Batched: true
 Location: InMemoryFileIndex []
 PartitionFilters: [isnotnull(ss_sold_date_sk#5)]
-PushedFilters: [IsNotNull(ss_ticket_number), IsNotNull(ss_item_sk), IsNotNull(ss_customer_sk), IsNotNull(ss_store_sk)]
+PushedFilters: [IsNotNull(ss_customer_sk), IsNotNull(ss_store_sk), IsNotNull(ss_ticket_number), IsNotNull(ss_item_sk)]
 ReadSchema: struct<ss_item_sk:int,ss_customer_sk:int,ss_store_sk:int,ss_ticket_number:int>
 
 (2) ColumnarToRow [codegen id : 3]
@@ -49,7 +49,7 @@ Input [5]: [ss_item_sk#1, ss_customer_sk#2, ss_store_sk#3, ss_ticket_number#4, s
 
 (3) Filter [codegen id : 3]
 Input [5]: [ss_item_sk#1, ss_customer_sk#2, ss_store_sk#3, ss_ticket_number#4, ss_sold_date_sk#5]
-Condition : (((isnotnull(ss_ticket_number#4) AND isnotnull(ss_item_sk#1)) AND isnotnull(ss_customer_sk#2)) AND isnotnull(ss_store_sk#3))
+Condition : (((isnotnull(ss_customer_sk#2) AND isnotnull(ss_store_sk#3)) AND isnotnull(ss_ticket_number#4)) AND isnotnull(ss_item_sk#1))
 
 (4) Scan parquet default.date_dim
 Output [1]: [d_date_sk#6]
@@ -118,7 +118,7 @@ Output [4]: [sr_item_sk#21, sr_customer_sk#22, sr_ticket_number#23, sr_returned_
 Batched: true
 Location: InMemoryFileIndex []
 PartitionFilters: [isnotnull(sr_returned_date_sk#24), dynamicpruningexpression(sr_returned_date_sk#24 IN dynamicpruning#25)]
-PushedFilters: [IsNotNull(sr_ticket_number), IsNotNull(sr_item_sk), IsNotNull(sr_customer_sk)]
+PushedFilters: [IsNotNull(sr_customer_sk), IsNotNull(sr_ticket_number), IsNotNull(sr_item_sk)]
 ReadSchema: struct<sr_item_sk:bigint,sr_customer_sk:bigint,sr_ticket_number:bigint>
 
 (19) ColumnarToRow [codegen id : 6]
@@ -126,13 +126,13 @@ Input [4]: [sr_item_sk#21, sr_customer_sk#22, sr_ticket_number#23, sr_returned_d
 
 (20) Filter [codegen id : 6]
 Input [4]: [sr_item_sk#21, sr_customer_sk#22, sr_ticket_number#23, sr_returned_date_sk#24]
-Condition : ((isnotnull(sr_ticket_number#23) AND isnotnull(sr_item_sk#21)) AND isnotnull(sr_customer_sk#22))
+Condition : ((isnotnull(sr_customer_sk#22) AND isnotnull(sr_ticket_number#23)) AND isnotnull(sr_item_sk#21))
 
 (21) Scan parquet default.date_dim
 Output [3]: [d_date_sk#26, d_year#27, d_moy#28]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,2001), EqualTo(d_moy,8), IsNotNull(d_date_sk)]
+PushedFilters: [EqualTo(d_year,2001), EqualTo(d_moy,8), IsNotNull(d_year), IsNotNull(d_moy), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (22) ColumnarToRow [codegen id : 5]
@@ -140,7 +140,7 @@ Input [3]: [d_date_sk#26, d_year#27, d_moy#28]
 
 (23) Filter [codegen id : 5]
 Input [3]: [d_date_sk#26, d_year#27, d_moy#28]
-Condition : ((((isnotnull(d_year#27) AND isnotnull(d_moy#28)) AND (d_year#27 = 2001)) AND (d_moy#28 = 8)) AND isnotnull(d_date_sk#26))
+Condition : (((((d_year#27 = 2001) AND (d_moy#28 = 8)) AND isnotnull(d_year#27)) AND isnotnull(d_moy#28)) AND isnotnull(d_date_sk#26))
 
 (24) Project [codegen id : 5]
 Output [1]: [d_date_sk#26]

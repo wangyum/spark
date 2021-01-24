@@ -66,7 +66,7 @@ WholeStageCodegen (14)
                                   BroadcastExchange #8
                                     WholeStageCodegen (10)
                                       Project [ca_address_sk]
-                                        Filter [ca_address_sk,ca_state]
+                                        Filter [ca_state,ca_address_sk]
                                           ColumnarToRow
                                             InputAdapter
                                               Scan parquet default.customer_address [ca_address_sk,ca_state]
@@ -74,7 +74,7 @@ WholeStageCodegen (14)
                               BroadcastExchange #9
                                 WholeStageCodegen (11)
                                   Project [web_site_sk]
-                                    Filter [web_site_sk,web_company_name]
+                                    Filter [web_company_name,web_site_sk]
                                       ColumnarToRow
                                         InputAdapter
                                           Scan parquet default.web_site [web_site_sk,web_company_name]
