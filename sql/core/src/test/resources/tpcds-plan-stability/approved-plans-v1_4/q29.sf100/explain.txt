@@ -316,7 +316,7 @@ Input [11]: [ss_quantity#6, s_store_id#12, s_store_name#13, i_item_id#17, i_item
 (58) HashAggregate [codegen id : 17]
 Input [7]: [ss_quantity#6, sr_return_quantity#25, cs_quantity#35, s_store_id#12, s_store_name#13, i_item_id#17, i_item_desc#18]
 Keys [4]: [i_item_id#17, i_item_desc#18, s_store_id#12, s_store_name#13]
-Functions [3]: [partial_sum(cast(ss_quantity#6 as bigint)), partial_sum(cast(sr_return_quantity#25 as bigint)), partial_sum(cast(cs_quantity#35 as bigint))]
+Functions [3]: [partial_sum(ss_quantity#6), partial_sum(sr_return_quantity#25), partial_sum(cs_quantity#35)]
 Aggregate Attributes [3]: [sum#40, sum#41, sum#42]
 Results [7]: [i_item_id#17, i_item_desc#18, s_store_id#12, s_store_name#13, sum#43, sum#44, sum#45]
 
@@ -327,9 +327,9 @@ Arguments: hashpartitioning(i_item_id#17, i_item_desc#18, s_store_id#12, s_store
 (60) HashAggregate [codegen id : 18]
 Input [7]: [i_item_id#17, i_item_desc#18, s_store_id#12, s_store_name#13, sum#43, sum#44, sum#45]
 Keys [4]: [i_item_id#17, i_item_desc#18, s_store_id#12, s_store_name#13]
-Functions [3]: [sum(cast(ss_quantity#6 as bigint)), sum(cast(sr_return_quantity#25 as bigint)), sum(cast(cs_quantity#35 as bigint))]
-Aggregate Attributes [3]: [sum(cast(ss_quantity#6 as bigint))#47, sum(cast(sr_return_quantity#25 as bigint))#48, sum(cast(cs_quantity#35 as bigint))#49]
-Results [7]: [i_item_id#17, i_item_desc#18, s_store_id#12, s_store_name#13, sum(cast(ss_quantity#6 as bigint))#47 AS store_sales_quantity#50, sum(cast(sr_return_quantity#25 as bigint))#48 AS store_returns_quantity#51, sum(cast(cs_quantity#35 as bigint))#49 AS catalog_sales_quantity#52]
+Functions [3]: [sum(ss_quantity#6), sum(sr_return_quantity#25), sum(cs_quantity#35)]
+Aggregate Attributes [3]: [sum(ss_quantity#6)#47, sum(sr_return_quantity#25)#48, sum(cs_quantity#35)#49]
+Results [7]: [i_item_id#17, i_item_desc#18, s_store_id#12, s_store_name#13, sum(ss_quantity#6)#47 AS store_sales_quantity#50, sum(sr_return_quantity#25)#48 AS store_returns_quantity#51, sum(cs_quantity#35)#49 AS catalog_sales_quantity#52]
 
 (61) TakeOrderedAndProject
 Input [7]: [i_item_id#17, i_item_desc#18, s_store_id#12, s_store_name#13, store_sales_quantity#50, store_returns_quantity#51, catalog_sales_quantity#52]
