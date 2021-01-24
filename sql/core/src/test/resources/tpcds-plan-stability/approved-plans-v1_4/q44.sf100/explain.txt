@@ -41,7 +41,7 @@ TakeOrderedAndProject (36)
 Output [3]: [ss_item_sk#1, ss_store_sk#2, ss_net_profit#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_store_sk), EqualTo(ss_store_sk,4)]
+PushedFilters: [EqualTo(ss_store_sk,4), IsNotNull(ss_store_sk)]
 ReadSchema: struct<ss_item_sk:int,ss_store_sk:int,ss_net_profit:decimal(7,2)>
 
 (2) ColumnarToRow [codegen id : 1]
@@ -49,7 +49,7 @@ Input [3]: [ss_item_sk#1, ss_store_sk#2, ss_net_profit#3]
 
 (3) Filter [codegen id : 1]
 Input [3]: [ss_item_sk#1, ss_store_sk#2, ss_net_profit#3]
-Condition : (isnotnull(ss_store_sk#2) AND (ss_store_sk#2 = 4))
+Condition : ((ss_store_sk#2 = 4) AND isnotnull(ss_store_sk#2))
 
 (4) Project [codegen id : 1]
 Output [2]: [ss_item_sk#1, ss_net_profit#3]
@@ -95,7 +95,7 @@ Arguments: [rank(rank_col#11) windowspecdefinition(rank_col#11 ASC NULLS FIRST, 
 
 (13) Filter [codegen id : 10]
 Input [3]: [item_sk#10, rank_col#11, rnk#16]
-Condition : ((isnotnull(rnk#16) AND (rnk#16 < 11)) AND isnotnull(item_sk#10))
+Condition : ((isnotnull(rnk#16) AND isnotnull(item_sk#10)) AND (rnk#16 < 11))
 
 (14) Project [codegen id : 10]
 Output [2]: [item_sk#10, rnk#16]
@@ -133,7 +133,7 @@ Arguments: [rank(rank_col#21) windowspecdefinition(rank_col#21 DESC NULLS LAST, 
 
 (22) Filter [codegen id : 7]
 Input [3]: [item_sk#20, rank_col#21, rnk#24]
-Condition : ((isnotnull(rnk#24) AND (rnk#24 < 11)) AND isnotnull(item_sk#20))
+Condition : ((isnotnull(rnk#24) AND isnotnull(item_sk#20)) AND (rnk#24 < 11))
 
 (23) Project [codegen id : 7]
 Output [2]: [item_sk#20, rnk#24]
@@ -211,7 +211,7 @@ Subquery:1 Hosting operator id = 8 Hosting Expression = Subquery scalar-subquery
 Output [3]: [ss_addr_sk#33, ss_store_sk#2, ss_net_profit#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
-PushedFilters: [IsNotNull(ss_store_sk), EqualTo(ss_store_sk,4), IsNull(ss_addr_sk)]
+PushedFilters: [IsNull(ss_addr_sk), EqualTo(ss_store_sk,4), IsNotNull(ss_store_sk)]
 ReadSchema: struct<ss_addr_sk:int,ss_store_sk:int,ss_net_profit:decimal(7,2)>
 
 (38) ColumnarToRow [codegen id : 1]
@@ -219,7 +219,7 @@ Input [3]: [ss_addr_sk#33, ss_store_sk#2, ss_net_profit#3]
 
 (39) Filter [codegen id : 1]
 Input [3]: [ss_addr_sk#33, ss_store_sk#2, ss_net_profit#3]
-Condition : ((isnotnull(ss_store_sk#2) AND (ss_store_sk#2 = 4)) AND isnull(ss_addr_sk#33))
+Condition : ((isnull(ss_addr_sk#33) AND (ss_store_sk#2 = 4)) AND isnotnull(ss_store_sk#2))
 
 (40) Project [codegen id : 1]
 Output [2]: [ss_store_sk#2, ss_net_profit#3]

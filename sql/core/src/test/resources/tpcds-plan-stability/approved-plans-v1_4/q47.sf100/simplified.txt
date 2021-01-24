@@ -12,7 +12,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                       InputAdapter
                         Exchange [i_category,i_brand,s_store_name,s_company_name,rn] #1
                           WholeStageCodegen (12)
-                            Filter [d_year,avg_monthly_sales,sum_sales,rn]
+                            Filter [d_year,rn,avg_monthly_sales,sum_sales]
                               InputAdapter
                                 Window [d_year,d_moy,i_category,i_brand,s_store_name,s_company_name]
                                   WholeStageCodegen (11)

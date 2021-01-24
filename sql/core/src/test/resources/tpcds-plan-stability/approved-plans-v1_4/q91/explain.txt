@@ -93,7 +93,7 @@ Input [8]: [cc_call_center_sk#1, cc_call_center_id#2, cc_name#3, cc_manager#4, c
 Output [3]: [d_date_sk#10, d_year#11, d_moy#12]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,1998), EqualTo(d_moy,11), IsNotNull(d_date_sk)]
+PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), IsNotNull(d_date_sk), EqualTo(d_year,1998), EqualTo(d_moy,11)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (11) ColumnarToRow [codegen id : 2]
@@ -101,7 +101,7 @@ Input [3]: [d_date_sk#10, d_year#11, d_moy#12]
 
 (12) Filter [codegen id : 2]
 Input [3]: [d_date_sk#10, d_year#11, d_moy#12]
-Condition : ((((isnotnull(d_year#11) AND isnotnull(d_moy#12)) AND (d_year#11 = 1998)) AND (d_moy#12 = 11)) AND isnotnull(d_date_sk#10))
+Condition : ((((isnotnull(d_year#11) AND isnotnull(d_moy#12)) AND isnotnull(d_date_sk#10)) AND (d_year#11 = 1998)) AND (d_moy#12 = 11))
 
 (13) Project [codegen id : 2]
 Output [1]: [d_date_sk#10]
@@ -151,7 +151,7 @@ Input [9]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_returning_customer_
 Output [2]: [ca_address_sk#19, ca_gmt_offset#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_gmt_offset), EqualTo(ca_gmt_offset,-7.00), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk), IsNotNull(ca_gmt_offset), EqualTo(ca_gmt_offset,-7.00)]
 ReadSchema: struct<ca_address_sk:int,ca_gmt_offset:decimal(5,2)>
 
 (24) ColumnarToRow [codegen id : 4]
@@ -159,7 +159,7 @@ Input [2]: [ca_address_sk#19, ca_gmt_offset#20]
 
 (25) Filter [codegen id : 4]
 Input [2]: [ca_address_sk#19, ca_gmt_offset#20]
-Condition : ((isnotnull(ca_gmt_offset#20) AND (ca_gmt_offset#20 = -7.00)) AND isnotnull(ca_address_sk#19))
+Condition : ((isnotnull(ca_address_sk#19) AND isnotnull(ca_gmt_offset#20)) AND (ca_gmt_offset#20 = -7.00))
 
 (26) Project [codegen id : 4]
 Output [1]: [ca_address_sk#19]
@@ -182,7 +182,7 @@ Input [8]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_net_loss#8, c_curre
 Output [3]: [cd_demo_sk#22, cd_marital_status#23, cd_education_status#24]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_demographics]
-PushedFilters: [Or(And(EqualTo(cd_marital_status,M),EqualTo(cd_education_status,Unknown)),And(EqualTo(cd_marital_status,W),EqualTo(cd_education_status,Advanced Degree))), IsNotNull(cd_demo_sk)]
+PushedFilters: [IsNotNull(cd_demo_sk), Or(And(EqualTo(cd_marital_status,M),EqualTo(cd_education_status,Unknown)),And(EqualTo(cd_marital_status,W),EqualTo(cd_education_status,Advanced Degree)))]
 ReadSchema: struct<cd_demo_sk:int,cd_marital_status:string,cd_education_status:string>
 
 (31) ColumnarToRow [codegen id : 5]
@@ -190,7 +190,7 @@ Input [3]: [cd_demo_sk#22, cd_marital_status#23, cd_education_status#24]
 
 (32) Filter [codegen id : 5]
 Input [3]: [cd_demo_sk#22, cd_marital_status#23, cd_education_status#24]
-Condition : ((((cd_marital_status#23 = M) AND (cd_education_status#24 = Unknown)) OR ((cd_marital_status#23 = W) AND (cd_education_status#24 = Advanced Degree))) AND isnotnull(cd_demo_sk#22))
+Condition : (isnotnull(cd_demo_sk#22) AND (((cd_marital_status#23 = M) AND (cd_education_status#24 = Unknown)) OR ((cd_marital_status#23 = W) AND (cd_education_status#24 = Advanced Degree))))
 
 (33) BroadcastExchange
 Input [3]: [cd_demo_sk#22, cd_marital_status#23, cd_education_status#24]
@@ -209,7 +209,7 @@ Input [9]: [cc_call_center_id#2, cc_name#3, cc_manager#4, cr_net_loss#8, c_curre
 Output [2]: [hd_demo_sk#26, hd_buy_potential#27]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/household_demographics]
-PushedFilters: [IsNotNull(hd_buy_potential), StringStartsWith(hd_buy_potential,Unknown), IsNotNull(hd_demo_sk)]
+PushedFilters: [IsNotNull(hd_demo_sk), IsNotNull(hd_buy_potential), StringStartsWith(hd_buy_potential,Unknown)]
 ReadSchema: struct<hd_demo_sk:int,hd_buy_potential:string>
 
 (37) ColumnarToRow [codegen id : 6]
@@ -217,7 +217,7 @@ Input [2]: [hd_demo_sk#26, hd_buy_potential#27]
 
 (38) Filter [codegen id : 6]
 Input [2]: [hd_demo_sk#26, hd_buy_potential#27]
-Condition : ((isnotnull(hd_buy_potential#27) AND StartsWith(hd_buy_potential#27, Unknown)) AND isnotnull(hd_demo_sk#26))
+Condition : ((isnotnull(hd_demo_sk#26) AND isnotnull(hd_buy_potential#27)) AND StartsWith(hd_buy_potential#27, Unknown))
 
 (39) Project [codegen id : 6]
 Output [1]: [hd_demo_sk#26]

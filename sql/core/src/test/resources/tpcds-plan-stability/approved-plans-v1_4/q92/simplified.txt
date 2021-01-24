@@ -11,7 +11,7 @@ WholeStageCodegen (7)
                     BroadcastHashJoin [i_item_sk,ws_item_sk,ws_ext_discount_amt,(1.3 * avg(ws_ext_discount_amt))]
                       Project [ws_sold_date_sk,ws_ext_discount_amt,i_item_sk]
                         BroadcastHashJoin [ws_item_sk,i_item_sk]
-                          Filter [ws_item_sk,ws_ext_discount_amt,ws_sold_date_sk]
+                          Filter [ws_item_sk,ws_sold_date_sk,ws_ext_discount_amt]
                             ColumnarToRow
                               InputAdapter
                                 Scan parquet default.web_sales [ws_sold_date_sk,ws_item_sk,ws_ext_discount_amt]

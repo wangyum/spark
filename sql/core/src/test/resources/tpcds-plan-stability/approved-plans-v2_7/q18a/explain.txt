@@ -176,7 +176,7 @@ Condition : (((isnotnull(cs_bill_cdemo_sk#3) AND isnotnull(cs_bill_customer_sk#2
 Output [4]: [cd_demo_sk#10, cd_gender#11, cd_education_status#12, cd_dep_count#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_demographics]
-PushedFilters: [IsNotNull(cd_gender), IsNotNull(cd_education_status), EqualTo(cd_gender,M), EqualTo(cd_education_status,College), IsNotNull(cd_demo_sk)]
+PushedFilters: [IsNotNull(cd_demo_sk), IsNotNull(cd_gender), IsNotNull(cd_education_status), EqualTo(cd_gender,M), EqualTo(cd_education_status,College)]
 ReadSchema: struct<cd_demo_sk:int,cd_gender:string,cd_education_status:string,cd_dep_count:int>
 
 (5) ColumnarToRow [codegen id : 1]
@@ -184,7 +184,7 @@ Input [4]: [cd_demo_sk#10, cd_gender#11, cd_education_status#12, cd_dep_count#13
 
 (6) Filter [codegen id : 1]
 Input [4]: [cd_demo_sk#10, cd_gender#11, cd_education_status#12, cd_dep_count#13]
-Condition : ((((isnotnull(cd_gender#11) AND isnotnull(cd_education_status#12)) AND (cd_gender#11 = M)) AND (cd_education_status#12 = College)) AND isnotnull(cd_demo_sk#10))
+Condition : ((((isnotnull(cd_demo_sk#10) AND isnotnull(cd_gender#11)) AND isnotnull(cd_education_status#12)) AND (cd_gender#11 = M)) AND (cd_education_status#12 = College))
 
 (7) Project [codegen id : 1]
 Output [2]: [cd_demo_sk#10, cd_dep_count#13]
@@ -207,7 +207,7 @@ Input [11]: [cs_sold_date_sk#1, cs_bill_customer_sk#2, cs_bill_cdemo_sk#3, cs_it
 Output [5]: [c_customer_sk#15, c_current_cdemo_sk#16, c_current_addr_sk#17, c_birth_month#18, c_birth_year#19]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer]
-PushedFilters: [In(c_birth_month, [9,5,12,4,1,10]), IsNotNull(c_customer_sk), IsNotNull(c_current_cdemo_sk), IsNotNull(c_current_addr_sk)]
+PushedFilters: [IsNotNull(c_customer_sk), IsNotNull(c_current_cdemo_sk), IsNotNull(c_current_addr_sk), In(c_birth_month, [9,5,12,4,1,10])]
 ReadSchema: struct<c_customer_sk:int,c_current_cdemo_sk:int,c_current_addr_sk:int,c_birth_month:int,c_birth_year:int>
 
 (12) ColumnarToRow [codegen id : 2]
@@ -215,7 +215,7 @@ Input [5]: [c_customer_sk#15, c_current_cdemo_sk#16, c_current_addr_sk#17, c_bir
 
 (13) Filter [codegen id : 2]
 Input [5]: [c_customer_sk#15, c_current_cdemo_sk#16, c_current_addr_sk#17, c_birth_month#18, c_birth_year#19]
-Condition : (((c_birth_month#18 IN (9,5,12,4,1,10) AND isnotnull(c_customer_sk#15)) AND isnotnull(c_current_cdemo_sk#16)) AND isnotnull(c_current_addr_sk#17))
+Condition : (((isnotnull(c_customer_sk#15) AND isnotnull(c_current_cdemo_sk#16)) AND isnotnull(c_current_addr_sk#17)) AND c_birth_month#18 IN (9,5,12,4,1,10))
 
 (14) Project [codegen id : 2]
 Output [4]: [c_customer_sk#15, c_current_cdemo_sk#16, c_current_addr_sk#17, c_birth_year#19]
@@ -265,7 +265,7 @@ Input [12]: [cs_sold_date_sk#1, cs_item_sk#4, cs_quantity#5, cs_list_price#6, cs
 Output [4]: [ca_address_sk#23, ca_county#24, ca_state#25, ca_country#26]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [In(ca_state, [ND,WI,AL,NC,OK,MS,TN]), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk), In(ca_state, [ND,WI,AL,NC,OK,MS,TN])]
 ReadSchema: struct<ca_address_sk:int,ca_county:string,ca_state:string,ca_country:string>
 
 (25) ColumnarToRow [codegen id : 4]
@@ -273,7 +273,7 @@ Input [4]: [ca_address_sk#23, ca_county#24, ca_state#25, ca_country#26]
 
 (26) Filter [codegen id : 4]
 Input [4]: [ca_address_sk#23, ca_county#24, ca_state#25, ca_country#26]
-Condition : (ca_state#25 IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#23))
+Condition : (isnotnull(ca_address_sk#23) AND ca_state#25 IN (ND,WI,AL,NC,OK,MS,TN))
 
 (27) BroadcastExchange
 Input [4]: [ca_address_sk#23, ca_county#24, ca_state#25, ca_country#26]
@@ -292,7 +292,7 @@ Input [14]: [cs_sold_date_sk#1, cs_item_sk#4, cs_quantity#5, cs_list_price#6, cs
 Output [2]: [d_date_sk#28, d_year#29]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2001), IsNotNull(d_date_sk)]
+PushedFilters: [IsNotNull(d_year), IsNotNull(d_date_sk), EqualTo(d_year,2001)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
 (31) ColumnarToRow [codegen id : 5]
@@ -300,7 +300,7 @@ Input [2]: [d_date_sk#28, d_year#29]
 
 (32) Filter [codegen id : 5]
 Input [2]: [d_date_sk#28, d_year#29]
-Condition : ((isnotnull(d_year#29) AND (d_year#29 = 2001)) AND isnotnull(d_date_sk#28))
+Condition : ((isnotnull(d_year#29) AND isnotnull(d_date_sk#28)) AND (d_year#29 = 2001))
 
 (33) Project [codegen id : 5]
 Output [1]: [d_date_sk#28]
@@ -418,7 +418,7 @@ Input [12]: [cs_sold_date_sk#1, cs_item_sk#4, cs_quantity#5, cs_list_price#6, cs
 Output [3]: [ca_address_sk#23, ca_state#25, ca_country#26]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [In(ca_state, [ND,WI,AL,NC,OK,MS,TN]), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk), In(ca_state, [ND,WI,AL,NC,OK,MS,TN])]
 ReadSchema: struct<ca_address_sk:int,ca_state:string,ca_country:string>
 
 (59) ColumnarToRow [codegen id : 12]
@@ -426,7 +426,7 @@ Input [3]: [ca_address_sk#23, ca_state#25, ca_country#26]
 
 (60) Filter [codegen id : 12]
 Input [3]: [ca_address_sk#23, ca_state#25, ca_country#26]
-Condition : (ca_state#25 IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#23))
+Condition : (isnotnull(ca_address_sk#23) AND ca_state#25 IN (ND,WI,AL,NC,OK,MS,TN))
 
 (61) BroadcastExchange
 Input [3]: [ca_address_sk#23, ca_state#25, ca_country#26]
@@ -537,7 +537,7 @@ Input [12]: [cs_sold_date_sk#1, cs_item_sk#4, cs_quantity#5, cs_list_price#6, cs
 Output [3]: [ca_address_sk#23, ca_state#25, ca_country#26]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [In(ca_state, [ND,WI,AL,NC,OK,MS,TN]), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk), In(ca_state, [ND,WI,AL,NC,OK,MS,TN])]
 ReadSchema: struct<ca_address_sk:int,ca_state:string,ca_country:string>
 
 (86) ColumnarToRow [codegen id : 20]
@@ -545,7 +545,7 @@ Input [3]: [ca_address_sk#23, ca_state#25, ca_country#26]
 
 (87) Filter [codegen id : 20]
 Input [3]: [ca_address_sk#23, ca_state#25, ca_country#26]
-Condition : (ca_state#25 IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#23))
+Condition : (isnotnull(ca_address_sk#23) AND ca_state#25 IN (ND,WI,AL,NC,OK,MS,TN))
 
 (88) Project [codegen id : 20]
 Output [2]: [ca_address_sk#23, ca_country#26]
@@ -660,7 +660,7 @@ Input [12]: [cs_sold_date_sk#1, cs_item_sk#4, cs_quantity#5, cs_list_price#6, cs
 Output [2]: [ca_address_sk#23, ca_state#25]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [In(ca_state, [ND,WI,AL,NC,OK,MS,TN]), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk), In(ca_state, [ND,WI,AL,NC,OK,MS,TN])]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
 (114) ColumnarToRow [codegen id : 28]
@@ -668,7 +668,7 @@ Input [2]: [ca_address_sk#23, ca_state#25]
 
 (115) Filter [codegen id : 28]
 Input [2]: [ca_address_sk#23, ca_state#25]
-Condition : (ca_state#25 IN (ND,WI,AL,NC,OK,MS,TN) AND isnotnull(ca_address_sk#23))
+Condition : (isnotnull(ca_address_sk#23) AND ca_state#25 IN (ND,WI,AL,NC,OK,MS,TN))
 
 (116) Project [codegen id : 28]
 Output [1]: [ca_address_sk#23]

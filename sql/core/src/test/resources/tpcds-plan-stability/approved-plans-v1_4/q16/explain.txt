@@ -12,19 +12,19 @@
                         :  +- * BroadcastHashJoin Inner BuildRight (26)
                         :     :- * Project (20)
                         :     :  +- * BroadcastHashJoin Inner BuildRight (19)
-                        :     :     :- * BroadcastHashJoin LeftAnti BuildRight (13)
-                        :     :     :  :- * Project (9)
-                        :     :     :  :  +- * BroadcastHashJoin LeftSemi BuildRight (8)
-                        :     :     :  :     :- * Filter (3)
-                        :     :     :  :     :  +- * ColumnarToRow (2)
-                        :     :     :  :     :     +- Scan parquet default.catalog_sales (1)
-                        :     :     :  :     +- BroadcastExchange (7)
-                        :     :     :  :        +- * Project (6)
-                        :     :     :  :           +- * ColumnarToRow (5)
-                        :     :     :  :              +- Scan parquet default.catalog_sales (4)
-                        :     :     :  +- BroadcastExchange (12)
-                        :     :     :     +- * ColumnarToRow (11)
-                        :     :     :        +- Scan parquet default.catalog_returns (10)
+                        :     :     :- * Project (13)
+                        :     :     :  +- * BroadcastHashJoin LeftSemi BuildRight (12)
+                        :     :     :     :- * BroadcastHashJoin LeftAnti BuildRight (7)
+                        :     :     :     :  :- * Filter (3)
+                        :     :     :     :  :  +- * ColumnarToRow (2)
+                        :     :     :     :  :     +- Scan parquet default.catalog_sales (1)
+                        :     :     :     :  +- BroadcastExchange (6)
+                        :     :     :     :     +- * ColumnarToRow (5)
+                        :     :     :     :        +- Scan parquet default.catalog_returns (4)
+                        :     :     :     +- BroadcastExchange (11)
+                        :     :     :        +- * Project (10)
+                        :     :     :           +- * ColumnarToRow (9)
+                        :     :     :              +- Scan parquet default.catalog_sales (8)
                         :     :     +- BroadcastExchange (18)
                         :     :        +- * Project (17)
                         :     :           +- * Filter (16)
@@ -56,55 +56,55 @@ Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_wareho
 Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7]
 Condition : ((isnotnull(cs_ship_date_sk#1) AND isnotnull(cs_ship_addr_sk#2)) AND isnotnull(cs_call_center_sk#3))
 
-(4) Scan parquet default.catalog_sales
+(4) Scan parquet default.catalog_returns
+Output [1]: [cr_order_number#8]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/catalog_returns]
+ReadSchema: struct<cr_order_number:int>
+
+(5) ColumnarToRow [codegen id : 1]
+Input [1]: [cr_order_number#8]
+
+(6) BroadcastExchange
+Input [1]: [cr_order_number#8]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [id=#9]
+
+(7) BroadcastHashJoin [codegen id : 6]
+Left keys [1]: [cs_order_number#5]
+Right keys [1]: [cr_order_number#8]
+Join condition: None
+
+(8) Scan parquet default.catalog_sales
 Output [2]: [cs_warehouse_sk#4, cs_order_number#5]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/catalog_sales]
 ReadSchema: struct<cs_warehouse_sk:int,cs_order_number:int>
 
-(5) ColumnarToRow [codegen id : 1]
+(9) ColumnarToRow [codegen id : 2]
 Input [2]: [cs_warehouse_sk#4, cs_order_number#5]
 
-(6) Project [codegen id : 1]
-Output [2]: [cs_warehouse_sk#4 AS cs_warehouse_sk#4#8, cs_order_number#5 AS cs_order_number#5#9]
+(10) Project [codegen id : 2]
+Output [2]: [cs_warehouse_sk#4 AS cs_warehouse_sk#4#10, cs_order_number#5 AS cs_order_number#5#11]
 Input [2]: [cs_warehouse_sk#4, cs_order_number#5]
 
-(7) BroadcastExchange
-Input [2]: [cs_warehouse_sk#4#8, cs_order_number#5#9]
-Arguments: HashedRelationBroadcastMode(List(cast(input[1, int, true] as bigint)),false), [id=#10]
+(11) BroadcastExchange
+Input [2]: [cs_warehouse_sk#4#10, cs_order_number#5#11]
+Arguments: HashedRelationBroadcastMode(List(cast(input[1, int, true] as bigint)),false), [id=#12]
 
-(8) BroadcastHashJoin [codegen id : 6]
+(12) BroadcastHashJoin [codegen id : 6]
 Left keys [1]: [cs_order_number#5]
-Right keys [1]: [cs_order_number#5#9]
-Join condition: NOT (cs_warehouse_sk#4 = cs_warehouse_sk#4#8)
+Right keys [1]: [cs_order_number#5#11]
+Join condition: NOT (cs_warehouse_sk#4 = cs_warehouse_sk#4#10)
 
-(9) Project [codegen id : 6]
+(13) Project [codegen id : 6]
 Output [6]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7]
 Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_warehouse_sk#4, cs_order_number#5, cs_ext_ship_cost#6, cs_net_profit#7]
-
-(10) Scan parquet default.catalog_returns
-Output [1]: [cr_order_number#11]
-Batched: true
-Location [not included in comparison]/{warehouse_dir}/catalog_returns]
-ReadSchema: struct<cr_order_number:int>
-
-(11) ColumnarToRow [codegen id : 2]
-Input [1]: [cr_order_number#11]
-
-(12) BroadcastExchange
-Input [1]: [cr_order_number#11]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [id=#12]
-
-(13) BroadcastHashJoin [codegen id : 6]
-Left keys [1]: [cs_order_number#5]
-Right keys [1]: [cr_order_number#11]
-Join condition: None
 
 (14) Scan parquet default.date_dim
 Output [2]: [d_date_sk#13, d_date#14]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_date), GreaterThanOrEqual(d_date,2002-02-01), LessThanOrEqual(d_date,2002-04-02), IsNotNull(d_date_sk)]
+PushedFilters: [IsNotNull(d_date), IsNotNull(d_date_sk), GreaterThanOrEqual(d_date,2002-02-01), LessThanOrEqual(d_date,2002-04-02)]
 ReadSchema: struct<d_date_sk:int,d_date:date>
 
 (15) ColumnarToRow [codegen id : 3]
@@ -112,7 +112,7 @@ Input [2]: [d_date_sk#13, d_date#14]
 
 (16) Filter [codegen id : 3]
 Input [2]: [d_date_sk#13, d_date#14]
-Condition : (((isnotnull(d_date#14) AND (d_date#14 >= 11719)) AND (d_date#14 <= 11779)) AND isnotnull(d_date_sk#13))
+Condition : (((isnotnull(d_date#14) AND isnotnull(d_date_sk#13)) AND (d_date#14 >= 11719)) AND (d_date#14 <= 11779))
 
 (17) Project [codegen id : 3]
 Output [1]: [d_date_sk#13]
@@ -135,7 +135,7 @@ Input [7]: [cs_ship_date_sk#1, cs_ship_addr_sk#2, cs_call_center_sk#3, cs_order_
 Output [2]: [ca_address_sk#16, ca_state#17]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
-PushedFilters: [IsNotNull(ca_state), EqualTo(ca_state,GA), IsNotNull(ca_address_sk)]
+PushedFilters: [IsNotNull(ca_address_sk), IsNotNull(ca_state), EqualTo(ca_state,GA)]
 ReadSchema: struct<ca_address_sk:int,ca_state:string>
 
 (22) ColumnarToRow [codegen id : 4]
@@ -143,7 +143,7 @@ Input [2]: [ca_address_sk#16, ca_state#17]
 
 (23) Filter [codegen id : 4]
 Input [2]: [ca_address_sk#16, ca_state#17]
-Condition : ((isnotnull(ca_state#17) AND (ca_state#17 = GA)) AND isnotnull(ca_address_sk#16))
+Condition : ((isnotnull(ca_address_sk#16) AND isnotnull(ca_state#17)) AND (ca_state#17 = GA))
 
 (24) Project [codegen id : 4]
 Output [1]: [ca_address_sk#16]
@@ -166,7 +166,7 @@ Input [6]: [cs_ship_addr_sk#2, cs_call_center_sk#3, cs_order_number#5, cs_ext_sh
 Output [2]: [cc_call_center_sk#19, cc_county#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/call_center]
-PushedFilters: [IsNotNull(cc_county), EqualTo(cc_county,Williamson County), IsNotNull(cc_call_center_sk)]
+PushedFilters: [IsNotNull(cc_call_center_sk), IsNotNull(cc_county), EqualTo(cc_county,Williamson County)]
 ReadSchema: struct<cc_call_center_sk:int,cc_county:string>
 
 (29) ColumnarToRow [codegen id : 5]
@@ -174,7 +174,7 @@ Input [2]: [cc_call_center_sk#19, cc_county#20]
 
 (30) Filter [codegen id : 5]
 Input [2]: [cc_call_center_sk#19, cc_county#20]
-Condition : ((isnotnull(cc_county#20) AND (cc_county#20 = Williamson County)) AND isnotnull(cc_call_center_sk#19))
+Condition : ((isnotnull(cc_call_center_sk#19) AND isnotnull(cc_county#20)) AND (cc_county#20 = Williamson County))
 
 (31) Project [codegen id : 5]
 Output [1]: [cc_call_center_sk#19]

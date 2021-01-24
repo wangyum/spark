@@ -55,7 +55,7 @@ Condition : (((isnotnull(ss_sold_date_sk#1) AND isnotnull(ss_store_sk#4)) AND is
 Output [3]: [d_date_sk#6, d_year#7, d_dom#8]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
-PushedFilters: [IsNotNull(d_dom), GreaterThanOrEqual(d_dom,1), LessThanOrEqual(d_dom,2), In(d_year, [1999,2000,2001]), IsNotNull(d_date_sk)]
+PushedFilters: [In(d_year, [1999,2000,2001]), IsNotNull(d_dom), IsNotNull(d_date_sk), GreaterThanOrEqual(d_dom,1), LessThanOrEqual(d_dom,2)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_dom:int>
 
 (5) ColumnarToRow [codegen id : 1]
@@ -63,7 +63,7 @@ Input [3]: [d_date_sk#6, d_year#7, d_dom#8]
 
 (6) Filter [codegen id : 1]
 Input [3]: [d_date_sk#6, d_year#7, d_dom#8]
-Condition : ((((isnotnull(d_dom#8) AND (d_dom#8 >= 1)) AND (d_dom#8 <= 2)) AND d_year#7 IN (1999,2000,2001)) AND isnotnull(d_date_sk#6))
+Condition : ((((d_year#7 IN (1999,2000,2001) AND isnotnull(d_dom#8)) AND isnotnull(d_date_sk#6)) AND (d_dom#8 >= 1)) AND (d_dom#8 <= 2))
 
 (7) Project [codegen id : 1]
 Output [1]: [d_date_sk#6]
@@ -86,7 +86,7 @@ Input [6]: [ss_sold_date_sk#1, ss_customer_sk#2, ss_hdemo_sk#3, ss_store_sk#4, s
 Output [2]: [s_store_sk#10, s_county#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
-PushedFilters: [In(s_county, [Williamson County,Franklin Parish,Bronx County,Orange County]), IsNotNull(s_store_sk)]
+PushedFilters: [IsNotNull(s_store_sk), In(s_county, [Williamson County,Franklin Parish,Bronx County,Orange County])]
 ReadSchema: struct<s_store_sk:int,s_county:string>
 
 (12) ColumnarToRow [codegen id : 2]
@@ -94,7 +94,7 @@ Input [2]: [s_store_sk#10, s_county#11]
 
 (13) Filter [codegen id : 2]
 Input [2]: [s_store_sk#10, s_county#11]
-Condition : (s_county#11 IN (Williamson County,Franklin Parish,Bronx County,Orange County) AND isnotnull(s_store_sk#10))
+Condition : (isnotnull(s_store_sk#10) AND s_county#11 IN (Williamson County,Franklin Parish,Bronx County,Orange County))
 
 (14) Project [codegen id : 2]
 Output [1]: [s_store_sk#10]
@@ -117,7 +117,7 @@ Input [5]: [ss_customer_sk#2, ss_hdemo_sk#3, ss_store_sk#4, ss_ticket_number#5, 
 Output [4]: [hd_demo_sk#13, hd_buy_potential#14, hd_dep_count#15, hd_vehicle_count#16]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/household_demographics]
-PushedFilters: [IsNotNull(hd_vehicle_count), IsNotNull(hd_dep_count), Or(EqualTo(hd_buy_potential,>10000),EqualTo(hd_buy_potential,unknown)), GreaterThan(hd_vehicle_count,0), GreaterThan(hd_vehicle_count,0), IsNotNull(hd_demo_sk)]
+PushedFilters: [IsNotNull(hd_vehicle_count), IsNotNull(hd_dep_count), IsNotNull(hd_demo_sk), GreaterThan(hd_vehicle_count,0), GreaterThan(hd_vehicle_count,0), Or(EqualTo(hd_buy_potential,>10000),EqualTo(hd_buy_potential,unknown))]
 ReadSchema: struct<hd_demo_sk:int,hd_buy_potential:string,hd_dep_count:int,hd_vehicle_count:int>
 
 (19) ColumnarToRow [codegen id : 3]
@@ -125,7 +125,7 @@ Input [4]: [hd_demo_sk#13, hd_buy_potential#14, hd_dep_count#15, hd_vehicle_coun
 
 (20) Filter [codegen id : 3]
 Input [4]: [hd_demo_sk#13, hd_buy_potential#14, hd_dep_count#15, hd_vehicle_count#16]
-Condition : (((((isnotnull(hd_vehicle_count#16) AND isnotnull(hd_dep_count#15)) AND ((hd_buy_potential#14 = >10000) OR (hd_buy_potential#14 = unknown))) AND (hd_vehicle_count#16 > 0)) AND ((cast(hd_dep_count#15 as double) / cast(hd_vehicle_count#16 as double)) > 1.0)) AND isnotnull(hd_demo_sk#13))
+Condition : (((((isnotnull(hd_vehicle_count#16) AND isnotnull(hd_dep_count#15)) AND isnotnull(hd_demo_sk#13)) AND (hd_vehicle_count#16 > 0)) AND ((cast(hd_dep_count#15 as double) / cast(hd_vehicle_count#16 as double)) > 1.0)) AND ((hd_buy_potential#14 = >10000) OR (hd_buy_potential#14 = unknown)))
 
 (21) Project [codegen id : 3]
 Output [1]: [hd_demo_sk#13]

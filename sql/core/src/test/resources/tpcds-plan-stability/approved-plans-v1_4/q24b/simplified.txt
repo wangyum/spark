@@ -105,7 +105,7 @@ WholeStageCodegen (8)
                                       InputAdapter
                                         BroadcastExchange #5
                                           WholeStageCodegen (3)
-                                            Filter [i_color,i_item_sk]
+                                            Filter [i_item_sk,i_color]
                                               ColumnarToRow
                                                 InputAdapter
                                                   Scan parquet default.item [i_item_sk,i_current_price,i_size,i_color,i_units,i_manager_id]

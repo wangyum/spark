@@ -39,7 +39,7 @@ TakeOrderedAndProject [c_last_name,c_first_name,sales]
                                                             BroadcastExchange #4
                                                               WholeStageCodegen (1)
                                                                 Project [d_date_sk,d_date]
-                                                                  Filter [d_year,d_date_sk]
+                                                                  Filter [d_date_sk,d_year]
                                                                     ColumnarToRow
                                                                       InputAdapter
                                                                         Scan parquet default.date_dim [d_date_sk,d_date,d_year]
@@ -86,7 +86,7 @@ TakeOrderedAndProject [c_last_name,c_first_name,sales]
                                                                   BroadcastExchange #12
                                                                     WholeStageCodegen (2)
                                                                       Project [d_date_sk]
-                                                                        Filter [d_year,d_date_sk]
+                                                                        Filter [d_date_sk,d_year]
                                                                           ColumnarToRow
                                                                             InputAdapter
                                                                               Scan parquet default.date_dim [d_date_sk,d_year]

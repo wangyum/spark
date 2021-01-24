@@ -101,7 +101,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                         Union
                                                           WholeStageCodegen (13)
                                                             Project [ws_web_site_sk,ws_sold_date_sk,ws_ext_sales_price,ws_net_profit]
-                                                              Filter [ws_sold_date_sk,ws_web_site_sk]
+                                                              Filter [ws_web_site_sk,ws_sold_date_sk]
                                                                 ColumnarToRow
                                                                   InputAdapter
                                                                     Scan parquet default.web_sales [ws_sold_date_sk,ws_web_site_sk,ws_ext_sales_price,ws_net_profit]
