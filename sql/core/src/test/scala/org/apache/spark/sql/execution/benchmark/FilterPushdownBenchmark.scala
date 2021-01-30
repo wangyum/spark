@@ -21,6 +21,8 @@ import java.io.File
 
 import scala.util.Random
 
+import org.apache.parquet.hadoop.ParquetOutputFormat
+
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, SparkSession}
@@ -102,7 +104,10 @@ object FilterPushdownBenchmark extends SqlBasedBenchmark {
     spark.read.orc(orcPath).createOrReplaceTempView("orcTable")
 
     df.write.mode("overwrite")
-      .option("parquet.block.size", blockSize).parquet(parquetPath)
+      .option(ParquetOutputFormat.BLOCK_SIZE, blockSize)
+      .option(ParquetOutputFormat.BLOOM_FILTER_ENABLED, false)
+      .option(ParquetOutputFormat.PAGE_WRITE_CHECKSUM_ENABLED, false)
+      .parquet(parquetPath)
     spark.read.parquet(parquetPath).createOrReplaceTempView("parquetTable")
   }
 
