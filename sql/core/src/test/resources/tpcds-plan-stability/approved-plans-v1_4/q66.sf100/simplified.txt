@@ -75,7 +75,7 @@ TakeOrderedAndProject [w_warehouse_name,w_warehouse_sq_ft,w_city,w_county,w_stat
                                                 ColumnarToRow
                                                   InputAdapter
                                                     Scan parquet default.catalog_sales [cs_sold_time_sk,cs_ship_mode_sk,cs_warehouse_sk,cs_quantity,cs_sales_price,cs_net_paid_inc_tax,cs_sold_date_sk]
-                                                      ReusedSubquery [d_date_sk] #1
+                                                      ReusedSubquery [d_date_sk] #2
                                               InputAdapter
                                                 ReusedExchange [sm_ship_mode_sk] #4
                                           InputAdapter

@@ -40,7 +40,7 @@ WholeStageCodegen (7)
                                               ColumnarToRow
                                                 InputAdapter
                                                   Scan parquet default.web_sales [ws_item_sk,ws_ext_discount_amt,ws_sold_date_sk]
-                                                    ReusedSubquery [d_date_sk] #1
+                                                    ReusedSubquery [d_date_sk] #2
                                             InputAdapter
                                               BroadcastExchange #2
                                                 WholeStageCodegen (2)

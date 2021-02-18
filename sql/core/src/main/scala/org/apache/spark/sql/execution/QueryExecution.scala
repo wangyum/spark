@@ -362,8 +362,8 @@ object QueryExecution {
       DisableUnnecessaryBucketedScan,
       ApplyColumnarRulesAndInsertTransitions(sparkSession.sessionState.columnarRules),
       CollapseCodegenStages(),
-      ReuseExchange,
-      ReuseSubquery
+      ReuseSubquery,
+      ReuseExchange
     )
   }
 

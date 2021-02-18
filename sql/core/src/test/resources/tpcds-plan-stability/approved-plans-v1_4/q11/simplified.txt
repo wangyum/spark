@@ -93,7 +93,7 @@ TakeOrderedAndProject [customer_preferred_cust_flag]
                                                 ColumnarToRow
                                                   InputAdapter
                                                     Scan parquet default.web_sales [ws_bill_customer_sk,ws_ext_discount_amt,ws_ext_list_price,ws_sold_date_sk]
-                                                      ReusedSubquery [d_date_sk] #1
+                                                      ReusedSubquery [d_date_sk] #3
                                     InputAdapter
                                       ReusedExchange [d_date_sk,d_year] #3
         InputAdapter
@@ -119,6 +119,6 @@ TakeOrderedAndProject [customer_preferred_cust_flag]
                                         ColumnarToRow
                                           InputAdapter
                                             Scan parquet default.web_sales [ws_bill_customer_sk,ws_ext_discount_amt,ws_ext_list_price,ws_sold_date_sk]
-                                              ReusedSubquery [d_date_sk] #2
+                                              ReusedSubquery [d_date_sk] #4
                             InputAdapter
                               ReusedExchange [d_date_sk,d_year] #7

@@ -304,7 +304,7 @@ Arguments: hashpartitioning(item_sk#39, 5), ENSURE_REQUIREMENTS, [id=#43]
 Input [4]: [item_sk#39, d_date#34, sumss#40, rk#42]
 Arguments: [item_sk#39 ASC NULLS FIRST], false, 0
 
-(50) ReusedExchange [Reuses operator id: unknown]
+(50) ReusedExchange [Reuses operator id: 43]
 Output [4]: [item_sk#44, d_date#45, sumss#46, ss_item_sk#30]
 
 (51) Sort [codegen id : 24]

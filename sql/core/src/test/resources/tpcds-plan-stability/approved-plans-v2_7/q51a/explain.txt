@@ -285,7 +285,7 @@ Condition : isnotnull(rk#42)
 Output [4]: [item_sk#39, d_date#34, sumss#40, rk#42]
 Input [5]: [item_sk#39, d_date#34, sumss#40, ss_item_sk#30, rk#42]
 
-(46) ReusedExchange [Reuses operator id: unknown]
+(46) ReusedExchange [Reuses operator id: 41]
 Output [4]: [item_sk#43, d_date#44, sumss#45, ss_item_sk#30]
 
 (47) Sort [codegen id : 20]

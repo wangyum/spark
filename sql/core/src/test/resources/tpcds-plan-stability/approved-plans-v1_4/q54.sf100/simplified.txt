@@ -60,7 +60,7 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                                       ColumnarToRow
                                                                         InputAdapter
                                                                           Scan parquet default.web_sales [ws_item_sk,ws_bill_customer_sk,ws_sold_date_sk]
-                                                                            ReusedSubquery [d_date_sk] #1
+                                                                            ReusedSubquery [d_date_sk] #2
                                                             InputAdapter
                                                               BroadcastExchange #5
                                                                 WholeStageCodegen (5)
@@ -99,14 +99,14 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                         ColumnarToRow
                                           InputAdapter
                                             Scan parquet default.store_sales [ss_customer_sk,ss_ext_sales_price,ss_sold_date_sk]
-                                              SubqueryBroadcast [d_date_sk] #2
+                                              SubqueryBroadcast [d_date_sk] #3
                                                 ReusedExchange [d_date_sk] #9
                                       InputAdapter
                                         BroadcastExchange #9
                                           WholeStageCodegen (12)
                                             Project [d_date_sk]
                                               Filter [d_month_seq,d_date_sk]
-                                                Subquery #3
+                                                Subquery #4
                                                   WholeStageCodegen (2)
                                                     HashAggregate [(d_month_seq + 1)]
                                                       InputAdapter
@@ -118,7 +118,7 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                                   ColumnarToRow
                                                                     InputAdapter
                                                                       Scan parquet default.date_dim [d_month_seq,d_year,d_moy]
-                                                Subquery #4
+                                                Subquery #5
                                                   WholeStageCodegen (2)
                                                     HashAggregate [(d_month_seq + 3)]
                                                       InputAdapter

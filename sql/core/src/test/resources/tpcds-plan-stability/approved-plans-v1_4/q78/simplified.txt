@@ -72,7 +72,7 @@ TakeOrderedAndProject [ratio,ss_qty,ss_wc,ss_sp,other_chan_qty,other_chan_wholes
                                                           ColumnarToRow
                                                             InputAdapter
                                                               Scan parquet default.web_sales [ws_item_sk,ws_bill_customer_sk,ws_order_number,ws_quantity,ws_wholesale_cost,ws_sales_price,ws_sold_date_sk]
-                                                                ReusedSubquery [d_date_sk] #1
+                                                                ReusedSubquery [d_date_sk] #2
                                               WholeStageCodegen (11)
                                                 Sort [wr_order_number,wr_item_sk]
                                                   InputAdapter
@@ -109,7 +109,7 @@ TakeOrderedAndProject [ratio,ss_qty,ss_wc,ss_sp,other_chan_qty,other_chan_wholes
                                                   ColumnarToRow
                                                     InputAdapter
                                                       Scan parquet default.catalog_sales [cs_bill_customer_sk,cs_item_sk,cs_order_number,cs_quantity,cs_wholesale_cost,cs_sales_price,cs_sold_date_sk]
-                                                        ReusedSubquery [d_date_sk] #1
+                                                        ReusedSubquery [d_date_sk] #2
                                       WholeStageCodegen (19)
                                         Sort [cr_order_number,cr_item_sk]
                                           InputAdapter

@@ -48,7 +48,7 @@ TakeOrderedAndProject [c_customer_id]
                                                   ColumnarToRow
                                                     InputAdapter
                                                       Scan parquet default.store_returns [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk]
-                                                        ReusedSubquery [d_date_sk] #1
+                                                        ReusedSubquery [d_date_sk] #2
                                                 InputAdapter
                                                   ReusedExchange [d_date_sk] #2
             InputAdapter

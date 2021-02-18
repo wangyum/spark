@@ -91,7 +91,7 @@ WholeStageCodegen (30)
                                                                                             ColumnarToRow
                                                                                               InputAdapter
                                                                                                 Scan parquet default.catalog_sales [cs_bill_customer_sk,cs_sold_date_sk]
-                                                                                                  ReusedSubquery [d_date_sk] #1
+                                                                                                  ReusedSubquery [d_date_sk] #2
                                                                                           InputAdapter
                                                                                             ReusedExchange [d_date_sk,d_date] #8
                                                                           InputAdapter
@@ -123,7 +123,7 @@ WholeStageCodegen (30)
                                                                     ColumnarToRow
                                                                       InputAdapter
                                                                         Scan parquet default.web_sales [ws_bill_customer_sk,ws_sold_date_sk]
-                                                                          ReusedSubquery [d_date_sk] #1
+                                                                          ReusedSubquery [d_date_sk] #2
                                                                   InputAdapter
                                                                     ReusedExchange [d_date_sk,d_date] #8
                                                   InputAdapter

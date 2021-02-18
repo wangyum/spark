@@ -41,7 +41,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                 ColumnarToRow
                                                                   InputAdapter
                                                                     Scan parquet default.store_returns [sr_store_sk,sr_return_amt,sr_net_loss,sr_returned_date_sk]
-                                                                      ReusedSubquery [d_date_sk] #1
+                                                                      ReusedSubquery [d_date_sk] #2
                                                       InputAdapter
                                                         BroadcastExchange #5
                                                           WholeStageCodegen (3)
@@ -75,7 +75,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                 ColumnarToRow
                                                                   InputAdapter
                                                                     Scan parquet default.catalog_sales [cs_catalog_page_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk]
-                                                                      SubqueryBroadcast [d_date_sk] #2
+                                                                      SubqueryBroadcast [d_date_sk] #3
                                                                         ReusedExchange [d_date_sk] #4
                                                           WholeStageCodegen (8)
                                                             Project [cr_catalog_page_sk,cr_returned_date_sk,cr_return_amount,cr_net_loss]
@@ -83,7 +83,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                 ColumnarToRow
                                                                   InputAdapter
                                                                     Scan parquet default.catalog_returns [cr_catalog_page_sk,cr_return_amount,cr_net_loss,cr_returned_date_sk]
-                                                                      ReusedSubquery [d_date_sk] #2
+                                                                      ReusedSubquery [d_date_sk] #4
                                                       InputAdapter
                                                         BroadcastExchange #7
                                                           WholeStageCodegen (9)
@@ -111,7 +111,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                 ColumnarToRow
                                                                   InputAdapter
                                                                     Scan parquet default.web_sales [ws_web_site_sk,ws_ext_sales_price,ws_net_profit,ws_sold_date_sk]
-                                                                      ReusedSubquery [d_date_sk] #1
+                                                                      ReusedSubquery [d_date_sk] #2
                                                           WholeStageCodegen (18)
                                                             Project [ws_web_site_sk,wr_returned_date_sk,wr_return_amt,wr_net_loss]
                                                               SortMergeJoin [wr_item_sk,wr_order_number,ws_item_sk,ws_order_number]
@@ -124,7 +124,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                                             ColumnarToRow
                                                                               InputAdapter
                                                                                 Scan parquet default.web_returns [wr_item_sk,wr_order_number,wr_return_amt,wr_net_loss,wr_returned_date_sk]
-                                                                                  ReusedSubquery [d_date_sk] #1
+                                                                                  ReusedSubquery [d_date_sk] #2
                                                                 InputAdapter
                                                                   WholeStageCodegen (17)
                                                                     Sort [ws_item_sk,ws_order_number]

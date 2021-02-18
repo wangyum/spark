@@ -59,7 +59,7 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,ca_st
                                                       ColumnarToRow
                                                         InputAdapter
                                                           Scan parquet default.catalog_returns [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk]
-                                                            ReusedSubquery [d_date_sk] #1
+                                                            ReusedSubquery [d_date_sk] #2
                                                     InputAdapter
                                                       ReusedExchange [d_date_sk] #2
                                                 InputAdapter

@@ -120,7 +120,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                                                 ColumnarToRow
                                                                   InputAdapter
                                                                     Scan parquet default.web_sales [ws_bill_customer_sk,ws_ext_discount_amt,ws_ext_list_price,ws_sold_date_sk]
-                                                                      ReusedSubquery [d_date_sk] #1
+                                                                      ReusedSubquery [d_date_sk] #3
                                                               InputAdapter
                                                                 ReusedExchange [d_date_sk,d_year] #4
                                               InputAdapter
@@ -153,7 +153,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                                     ColumnarToRow
                                                       InputAdapter
                                                         Scan parquet default.web_sales [ws_bill_customer_sk,ws_ext_discount_amt,ws_ext_list_price,ws_sold_date_sk]
-                                                          ReusedSubquery [d_date_sk] #2
+                                                          ReusedSubquery [d_date_sk] #4
                                                   InputAdapter
                                                     ReusedExchange [d_date_sk,d_year] #9
                                   InputAdapter

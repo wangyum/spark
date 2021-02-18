@@ -46,7 +46,7 @@ WholeStageCodegen (11)
                                         ColumnarToRow
                                           InputAdapter
                                             Scan parquet default.catalog_sales [cs_sold_time_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk]
-                                              ReusedSubquery [d_date_sk] #1
+                                              ReusedSubquery [d_date_sk] #2
                                       InputAdapter
                                         ReusedExchange [d_date_sk] #4
                                 WholeStageCodegen (7)
@@ -56,7 +56,7 @@ WholeStageCodegen (11)
                                         ColumnarToRow
                                           InputAdapter
                                             Scan parquet default.store_sales [ss_sold_time_sk,ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
-                                              ReusedSubquery [d_date_sk] #1
+                                              ReusedSubquery [d_date_sk] #2
                                       InputAdapter
                                         ReusedExchange [d_date_sk] #4
                         InputAdapter
