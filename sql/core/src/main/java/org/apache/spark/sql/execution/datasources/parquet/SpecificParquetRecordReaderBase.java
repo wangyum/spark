@@ -165,7 +165,8 @@ public abstract class SpecificParquetRecordReaderBase<T> extends RecordReader<Vo
       if (accu.isDefined() && accu.get().getClass().getSimpleName().equals("NumRowGroupsAcc")) {
         @SuppressWarnings("unchecked")
         AccumulatorV2<Integer, Integer> intAccum = (AccumulatorV2<Integer, Integer>) accu.get();
-        intAccum.add(blocks.size());
+        // The RowGroup may be filtered be DICTIONARY and BLOOMFILTER.
+        intAccum.add(reader.getRowGroups().size());
       }
     }
   }

@@ -613,7 +613,7 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
           testTimestampPushdown(microsData, java8Api)
         }
 
-        // spark.sql.parquet.outputTimestampType = INT96 doesn't support pushdown
+        // spark.sql.parquet.outputTimestampType = INT96
         withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key ->
           ParquetOutputTimestampType.INT96.toString) {
           import testImplicits._
@@ -1570,6 +1570,33 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
           checkAnswer(
             spark.sql("SELECT * FROM t1 WHERE col LIKE '4%'"),
             Row("42"))
+        }
+      }
+    }
+  }
+
+  test("Pushdown spark.sql.parquet.outputTimestampType = INT96") {
+    withSQLConf(
+      ParquetOutputFormat.BLOOM_FILTER_ENABLED -> "false",
+      ParquetOutputFormat.BLOOM_FILTER_ENABLED + "#ts" -> "true",
+      SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> ParquetOutputTimestampType.INT96.toString) {
+      withTempPath { dir =>
+        val path = s"${dir.getCanonicalPath}/table"
+        spark.range(100).selectExpr("cast(id % 2 as timestamp) as ts").write.parquet(path)
+        Seq(true).foreach { enablePushDown =>
+          withSQLConf(ParquetInputFormat.BLOOM_FILTERING_ENABLED -> enablePushDown.toString) {
+            val accu = new NumRowGroupsAcc
+            sparkContext.register(accu)
+            val df = spark.read.parquet(path).filter("ts = cast(5 as timestamp)")
+            df.foreachPartition((it: Iterator[Row]) => it.foreach(v => accu.add(0)))
+
+            if (enablePushDown) {
+              assert(accu.value == 0)
+            } else {
+              assert(accu.value > 0)
+            }
+            AccumulatorContext.remove(accu.id)
+          }
         }
       }
     }
