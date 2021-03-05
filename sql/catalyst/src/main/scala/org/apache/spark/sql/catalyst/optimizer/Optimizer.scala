@@ -588,32 +588,6 @@ object LimitPushDown extends Rule[LogicalPlan] {
     }
   }
 
-  // Add extra limits below JOIN:
-  // 1. For LEFT OUTER and RIGHT OUTER JOIN, we push limits to the left and right sides,
-  //    respectively.
-  // 2. For INNER and CROSS JOIN, we push limits to both the left and right sides if join
-  //    condition is empty.
-  // 3. For LEFT SEMI and LEFT ANTI JOIN, we push limits to the left side if join condition
-  //    is empty.
-  // It's not safe to push limits below FULL OUTER JOIN in the general case without a more
-  // invasive rewrite. We also need to ensure that this limit pushdown rule will not eventually
-  // introduce limits on both sides if it is applied multiple times. Therefore:
-  //   - If one side is already limited, stack another limit on top if the new limit is smaller.
-  //     The redundant limit will be collapsed by the CombineLimits rule.
-  private def pushLocalLimitThroughJoin(limitExpr: Expression, join: Join): Join = {
-    join.joinType match {
-      case RightOuter => join.copy(right = maybePushLocalLimit(limitExpr, join.right))
-      case LeftOuter => join.copy(left = maybePushLocalLimit(limitExpr, join.left))
-      case _: InnerLike if join.condition.isEmpty =>
-        join.copy(
-          left = maybePushLocalLimit(limitExpr, join.left),
-          right = maybePushLocalLimit(limitExpr, join.right))
-      case LeftSemi | LeftAnti if join.condition.isEmpty =>
-        join.copy(left = maybePushLocalLimit(limitExpr, join.left))
-      case _ => join
-    }
-  }
-
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     // Adding extra Limits below UNION ALL for children which are not Limit or do not have Limit
     // descendants whose maxRow is larger. This heuristic is valid assuming there does not exist any
@@ -623,11 +597,35 @@ object LimitPushDown extends Rule[LogicalPlan] {
     // pushdown Limit.
     case LocalLimit(exp, u: Union) =>
       LocalLimit(exp, u.copy(children = u.children.map(maybePushLocalLimit(exp, _))))
+    // Add extra limits below JOIN:
+    // 1. For LEFT OUTER and RIGHT OUTER JOIN, we push limits to the left and right sides,
+    //    respectively.
+    // 2. For INNER and CROSS JOIN, we push limits to both the left and right sides if join
+    //    condition is empty.
+    // 3. For LEFT SEMI and LEFT ANTI JOIN, we push limits to the left side if join condition
+    //    is empty.
+    // It's not safe to push limits below FULL OUTER JOIN in the general case without a more
+    // invasive rewrite. We also need to ensure that this limit pushdown rule will not eventually
+    // introduce limits on both sides if it is applied multiple times. Therefore:
+    //   - If one side is already limited, stack another limit on top if the new limit is smaller.
+    //     The redundant limit will be collapsed by the CombineLimits rule.
+    case LocalLimit(exp, join @ Join(left, right, joinType, conditionOpt, _)) =>
+      val newJoin = joinType match {
+        case RightOuter => join.copy(right = maybePushLocalLimit(exp, right))
+        case LeftOuter => join.copy(left = maybePushLocalLimit(exp, left))
+        case _: InnerLike if conditionOpt.isEmpty =>
+          join.copy(
+            left = maybePushLocalLimit(exp, left),
+            right = maybePushLocalLimit(exp, right))
+        case LeftSemi | LeftAnti if conditionOpt.isEmpty =>
+          join.copy(left = maybePushLocalLimit(exp, left))
+        case _ => join
+      }
+      LocalLimit(exp, newJoin)
 
-    case LocalLimit(exp, join: Join) =>
-      LocalLimit(exp, pushLocalLimitThroughJoin(exp, join))
-    case LocalLimit(exp, project @ Project(_, join: Join)) =>
-      LocalLimit(exp, project.copy(child = pushLocalLimitThroughJoin(exp, join)))
+    // Add extra limits below Project if its child is not LeafNode(e.g.: LogicalRelation).
+    case LocalLimit(exp, project @ Project(_, child)) if !child.isInstanceOf[LeafNode] =>
+      LocalLimit(exp, project.copy(child = maybePushLocalLimit(exp, child)))
   }
 }
 
