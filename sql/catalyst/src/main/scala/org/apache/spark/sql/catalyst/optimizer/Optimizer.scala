@@ -560,7 +560,7 @@ object RemoveNoopUnion extends Rule[LogicalPlan] {
 }
 
 /**
- * Pushes down [[LocalLimit]] beneath UNION ALL and joins.
+ * Pushes down [[LocalLimit]] beneath UNION ALL, joins and Project.
  */
 object LimitPushDown extends Rule[LogicalPlan] {
 
