@@ -231,7 +231,7 @@ class LimitPushdownSuite extends PlanTest {
     }
   }
 
-  test("SPARK-34622 Fix Push down limit through join if join output is not match the LocalLimit") {
+  test("SPARK-34622: Fix Push down limit through join if join output is not match the LocalLimit") {
     val joinCondition = Some("x.a".attr === "y.a".attr && "x.b".attr === "y.b".attr)
     val originalQuery = x.join(y, LeftOuter, joinCondition).select("x.a".attr).limit(5)
     val optimized = Optimize.execute(originalQuery.analyze)
