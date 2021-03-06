@@ -1,37 +1,35 @@
 == Physical Plan ==
-CollectLimit (33)
-+- * Project (32)
-   +- * LocalLimit (31)
-      +- * Project (30)
-         +- * BroadcastHashJoin Inner BuildRight (29)
-            :- * Project (27)
-            :  +- * BroadcastHashJoin Inner BuildRight (26)
-            :     :- * Project (10)
-            :     :  +- * BroadcastHashJoin Inner BuildRight (9)
-            :     :     :- * Filter (3)
-            :     :     :  +- * ColumnarToRow (2)
-            :     :     :     +- Scan parquet default.catalog_sales (1)
-            :     :     +- BroadcastExchange (8)
-            :     :        +- * Project (7)
-            :     :           +- * Filter (6)
-            :     :              +- * ColumnarToRow (5)
-            :     :                 +- Scan parquet default.item (4)
-            :     +- BroadcastExchange (25)
-            :        +- * Filter (24)
-            :           +- * HashAggregate (23)
-            :              +- Exchange (22)
-            :                 +- * HashAggregate (21)
-            :                    +- * Project (20)
-            :                       +- * BroadcastHashJoin Inner BuildRight (19)
-            :                          :- * Filter (13)
-            :                          :  +- * ColumnarToRow (12)
-            :                          :     +- Scan parquet default.catalog_sales (11)
-            :                          +- BroadcastExchange (18)
-            :                             +- * Project (17)
-            :                                +- * Filter (16)
-            :                                   +- * ColumnarToRow (15)
-            :                                      +- Scan parquet default.date_dim (14)
-            +- ReusedExchange (28)
+CollectLimit (31)
++- * Project (30)
+   +- * BroadcastHashJoin Inner BuildRight (29)
+      :- * Project (27)
+      :  +- * BroadcastHashJoin Inner BuildRight (26)
+      :     :- * Project (10)
+      :     :  +- * BroadcastHashJoin Inner BuildRight (9)
+      :     :     :- * Filter (3)
+      :     :     :  +- * ColumnarToRow (2)
+      :     :     :     +- Scan parquet default.catalog_sales (1)
+      :     :     +- BroadcastExchange (8)
+      :     :        +- * Project (7)
+      :     :           +- * Filter (6)
+      :     :              +- * ColumnarToRow (5)
+      :     :                 +- Scan parquet default.item (4)
+      :     +- BroadcastExchange (25)
+      :        +- * Filter (24)
+      :           +- * HashAggregate (23)
+      :              +- Exchange (22)
+      :                 +- * HashAggregate (21)
+      :                    +- * Project (20)
+      :                       +- * BroadcastHashJoin Inner BuildRight (19)
+      :                          :- * Filter (13)
+      :                          :  +- * ColumnarToRow (12)
+      :                          :     +- Scan parquet default.catalog_sales (11)
+      :                          +- BroadcastExchange (18)
+      :                             +- * Project (17)
+      :                                +- * Filter (16)
+      :                                   +- * ColumnarToRow (15)
+      :                                      +- Scan parquet default.date_dim (14)
+      +- ReusedExchange (28)
 
 
 (1) Scan parquet default.catalog_sales
@@ -170,28 +168,20 @@ Right keys [1]: [d_date_sk#8]
 Join condition: None
 
 (30) Project [codegen id : 6]
-Output: []
+Output [1]: [1 AS excess discount amount #20]
 Input [2]: [cs_sold_date_sk#3, d_date_sk#8]
 
-(31) LocalLimit [codegen id : 6]
-Input: []
-Arguments: 100
-
-(32) Project [codegen id : 6]
-Output [1]: [1 AS excess discount amount #20]
-Input: []
-
-(33) CollectLimit
+(31) CollectLimit
 Input [1]: [excess discount amount #20]
 Arguments: 100
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#3 IN dynamicpruning#4
-ReusedExchange (34)
+ReusedExchange (32)
 
 
-(34) ReusedExchange [Reuses operator id: 18]
+(32) ReusedExchange [Reuses operator id: 18]
 Output [1]: [d_date_sk#8]
 
 Subquery:2 Hosting operator id = 11 Hosting Expression = cs_sold_date_sk#3 IN dynamicpruning#4

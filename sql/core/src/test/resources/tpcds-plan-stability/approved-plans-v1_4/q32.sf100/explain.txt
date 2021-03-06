@@ -1,37 +1,35 @@
 == Physical Plan ==
-CollectLimit (33)
-+- * Project (32)
-   +- * LocalLimit (31)
-      +- * Project (30)
-         +- * BroadcastHashJoin Inner BuildRight (29)
-            :- * Project (27)
-            :  +- * BroadcastHashJoin Inner BuildLeft (26)
-            :     :- BroadcastExchange (22)
-            :     :  +- * Project (21)
-            :     :     +- * BroadcastHashJoin Inner BuildLeft (20)
-            :     :        :- BroadcastExchange (5)
-            :     :        :  +- * Project (4)
-            :     :        :     +- * Filter (3)
-            :     :        :        +- * ColumnarToRow (2)
-            :     :        :           +- Scan parquet default.item (1)
-            :     :        +- * Filter (19)
-            :     :           +- * HashAggregate (18)
-            :     :              +- Exchange (17)
-            :     :                 +- * HashAggregate (16)
-            :     :                    +- * Project (15)
-            :     :                       +- * BroadcastHashJoin Inner BuildRight (14)
-            :     :                          :- * Filter (8)
-            :     :                          :  +- * ColumnarToRow (7)
-            :     :                          :     +- Scan parquet default.catalog_sales (6)
-            :     :                          +- BroadcastExchange (13)
-            :     :                             +- * Project (12)
-            :     :                                +- * Filter (11)
-            :     :                                   +- * ColumnarToRow (10)
-            :     :                                      +- Scan parquet default.date_dim (9)
-            :     +- * Filter (25)
-            :        +- * ColumnarToRow (24)
-            :           +- Scan parquet default.catalog_sales (23)
-            +- ReusedExchange (28)
+CollectLimit (31)
++- * Project (30)
+   +- * BroadcastHashJoin Inner BuildRight (29)
+      :- * Project (27)
+      :  +- * BroadcastHashJoin Inner BuildLeft (26)
+      :     :- BroadcastExchange (22)
+      :     :  +- * Project (21)
+      :     :     +- * BroadcastHashJoin Inner BuildLeft (20)
+      :     :        :- BroadcastExchange (5)
+      :     :        :  +- * Project (4)
+      :     :        :     +- * Filter (3)
+      :     :        :        +- * ColumnarToRow (2)
+      :     :        :           +- Scan parquet default.item (1)
+      :     :        +- * Filter (19)
+      :     :           +- * HashAggregate (18)
+      :     :              +- Exchange (17)
+      :     :                 +- * HashAggregate (16)
+      :     :                    +- * Project (15)
+      :     :                       +- * BroadcastHashJoin Inner BuildRight (14)
+      :     :                          :- * Filter (8)
+      :     :                          :  +- * ColumnarToRow (7)
+      :     :                          :     +- Scan parquet default.catalog_sales (6)
+      :     :                          +- BroadcastExchange (13)
+      :     :                             +- * Project (12)
+      :     :                                +- * Filter (11)
+      :     :                                   +- * ColumnarToRow (10)
+      :     :                                      +- Scan parquet default.date_dim (9)
+      :     +- * Filter (25)
+      :        +- * ColumnarToRow (24)
+      :           +- Scan parquet default.catalog_sales (23)
+      +- ReusedExchange (28)
 
 
 (1) Scan parquet default.item
@@ -170,28 +168,20 @@ Right keys [1]: [d_date_sk#8]
 Join condition: None
 
 (30) Project [codegen id : 6]
-Output: []
+Output [1]: [1 AS excess discount amount #20]
 Input [2]: [cs_sold_date_sk#6, d_date_sk#8]
 
-(31) LocalLimit [codegen id : 6]
-Input: []
-Arguments: 100
-
-(32) Project [codegen id : 6]
-Output [1]: [1 AS excess discount amount #20]
-Input: []
-
-(33) CollectLimit
+(31) CollectLimit
 Input [1]: [excess discount amount #20]
 Arguments: 100
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 6 Hosting Expression = cs_sold_date_sk#6 IN dynamicpruning#7
-ReusedExchange (34)
+ReusedExchange (32)
 
 
-(34) ReusedExchange [Reuses operator id: 13]
+(32) ReusedExchange [Reuses operator id: 13]
 Output [1]: [d_date_sk#8]
 
 Subquery:2 Hosting operator id = 23 Hosting Expression = cs_sold_date_sk#6 IN dynamicpruning#7
