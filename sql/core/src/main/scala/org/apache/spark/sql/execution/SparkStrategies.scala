@@ -573,6 +573,8 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
               normalizedGroupingExpressions,
               aggExpressions,
               resultExpressions,
+              groupingExpressions.nonEmpty && child.find(_.isInstanceOf[Expand]).isEmpty &&
+                child.deterministic,
               planLater(child))
           } else {
             // functionsWithDistinct is guaranteed to be non-empty. Even though it may contain
