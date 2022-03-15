@@ -74,7 +74,7 @@ object AggUtils {
       aggregateAttributes: Seq[Attribute] = Nil,
       initialInputBufferOffset: Int = 0,
       resultExpressions: Seq[NamedExpression] = Nil,
-      isSupportPartialAgg: Boolean = false,
+      isPartialAgg: Boolean = false,
       child: SparkPlan): SparkPlan = {
     val useHash = Aggregate.supportsHashAggregate(
       aggregateExpressions.flatMap(_.aggregateFunction.aggBufferAttributes))
@@ -90,7 +90,7 @@ object AggUtils {
         aggregateAttributes = aggregateAttributes,
         initialInputBufferOffset = initialInputBufferOffset,
         resultExpressions = resultExpressions,
-        isSupportPartialAgg = isSupportPartialAgg,
+        isPartialAgg = isPartialAgg,
         child = child)
     } else {
       val objectHashEnabled = child.conf.useObjectHashAggregation
@@ -126,7 +126,6 @@ object AggUtils {
       groupingExpressions: Seq[NamedExpression],
       aggregateExpressions: Seq[AggregateExpression],
       resultExpressions: Seq[NamedExpression],
-      isSupportPartialAgg: Boolean,
       child: SparkPlan): Seq[SparkPlan] = {
     // Check if we can use HashAggregate.
 
@@ -147,7 +146,7 @@ object AggUtils {
         aggregateAttributes = partialAggregateAttributes,
         initialInputBufferOffset = 0,
         resultExpressions = partialResultExpressions,
-        isSupportPartialAgg = isSupportPartialAgg,
+        isPartialAgg = true,
         child = child)
 
     // If we have session window expression in aggregation, we add MergingSessionExec to
