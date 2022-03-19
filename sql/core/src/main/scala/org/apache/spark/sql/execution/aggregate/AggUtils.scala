@@ -20,7 +20,7 @@ package org.apache.spark.sql.execution.aggregate
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.util.Utils
@@ -72,6 +72,7 @@ object AggUtils {
       aggregateAttributes: Seq[Attribute] = Nil,
       initialInputBufferOffset: Int = 0,
       resultExpressions: Seq[NamedExpression] = Nil,
+      isPartialAgg: Boolean = false,
       child: SparkPlan): SparkPlan = {
     val useHash = HashAggregateExec.supportsAggregate(
       aggregateExpressions.flatMap(_.aggregateFunction.aggBufferAttributes))
@@ -87,6 +88,7 @@ object AggUtils {
         aggregateAttributes = aggregateAttributes,
         initialInputBufferOffset = initialInputBufferOffset,
         resultExpressions = resultExpressions,
+        isPartialAgg = isPartialAgg,
         child = child)
     } else {
       val objectHashEnabled = child.conf.useObjectHashAggregation
@@ -122,6 +124,7 @@ object AggUtils {
       groupingExpressions: Seq[NamedExpression],
       aggregateExpressions: Seq[AggregateExpression],
       resultExpressions: Seq[NamedExpression],
+      partialOnly: Boolean,
       child: SparkPlan): Seq[SparkPlan] = {
     // Check if we can use HashAggregate.
 
@@ -142,6 +145,7 @@ object AggUtils {
         aggregateAttributes = partialAggregateAttributes,
         initialInputBufferOffset = 0,
         resultExpressions = partialResultExpressions,
+        isPartialAgg = true,
         child = child)
 
     // If we have session window expression in aggregation, we add MergingSessionExec to
@@ -164,7 +168,18 @@ object AggUtils {
         resultExpressions = resultExpressions,
         child = interExec)
 
-    finalAggregate :: Nil
+    if (partialOnly) {
+      val projectList = partialResultExpressions.zip(resultExpressions).map {
+        case (a: Attribute, alias: Alias) =>
+          Alias(a, alias.name)(alias.exprId, alias.qualifier, alias.explicitMetadata)
+        case (a, _) =>
+          a
+      }
+
+      ProjectExec(projectList, partialAggregate) :: Nil
+    } else {
+      finalAggregate :: Nil
+    }
   }
 
   def planAggregateWithOneDistinct(

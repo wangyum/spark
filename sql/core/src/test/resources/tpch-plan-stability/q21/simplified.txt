@@ -28,17 +28,19 @@ TakeOrderedAndProject [numwait,s_name]
                                     InputAdapter
                                       BroadcastExchange #3
                                         WholeStageCodegen (1)
-                                          ColumnarToRow
-                                            InputAdapter
-                                              Scan parquet default.lineitem [l_orderkey,l_suppkey]
+                                          HashAggregate [l_orderkey,l_suppkey]
+                                            ColumnarToRow
+                                              InputAdapter
+                                                Scan parquet default.lineitem [l_orderkey,l_suppkey]
                                   InputAdapter
                                     BroadcastExchange #4
                                       WholeStageCodegen (2)
-                                        Project [l_orderkey,l_suppkey]
-                                          Filter [l_receiptdate,l_commitdate]
-                                            ColumnarToRow
-                                              InputAdapter
-                                                Scan parquet default.lineitem [l_orderkey,l_suppkey,l_commitdate,l_receiptdate]
+                                        HashAggregate [l_orderkey,l_suppkey]
+                                          Project [l_orderkey,l_suppkey]
+                                            Filter [l_receiptdate,l_commitdate]
+                                              ColumnarToRow
+                                                InputAdapter
+                                                  Scan parquet default.lineitem [l_orderkey,l_suppkey,l_commitdate,l_receiptdate]
                       InputAdapter
                         BroadcastExchange #5
                           WholeStageCodegen (4)

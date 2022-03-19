@@ -4,17 +4,18 @@ WholeStageCodegen (3)
       Exchange #1
         WholeStageCodegen (2)
           HashAggregate [p_type,l_extendedprice,l_discount] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
-            Project [l_extendedprice,l_discount,p_type]
+            Project
               BroadcastHashJoin [l_partkey,p_partkey]
-                Project [l_partkey,l_extendedprice,l_discount]
+                HashAggregate [l_partkey]
                   Filter [l_shipdate,l_partkey]
                     ColumnarToRow
                       InputAdapter
-                        Scan parquet default.lineitem [l_partkey,l_extendedprice,l_discount,l_shipdate]
+                        Scan parquet default.lineitem [l_orderkey,l_partkey,l_suppkey,l_linenumber,l_quantity,l_extendedprice,l_discount,l_tax,l_returnflag,l_linestatus,l_shipdate,l_commitdate,l_receiptdate,l_shipinstruct,l_shipmode,l_comment]
                 InputAdapter
                   BroadcastExchange #2
                     WholeStageCodegen (1)
-                      Filter [p_partkey]
-                        ColumnarToRow
-                          InputAdapter
-                            Scan parquet default.part [p_partkey,p_type]
+                      HashAggregate [p_partkey]
+                        Filter [p_partkey]
+                          ColumnarToRow
+                            InputAdapter
+                              Scan parquet default.part [p_partkey,p_name,p_mfgr,p_brand,p_type,p_size,p_container,p_retailprice,p_comment]

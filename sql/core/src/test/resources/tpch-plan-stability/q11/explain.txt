@@ -128,74 +128,121 @@ Arguments: [value#17 DESC NULLS LAST], true, 0
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 20 Hosting Expression = Subquery scalar-subquery#18, [id=#19]
-* HashAggregate (34)
-+- Exchange (33)
-   +- * HashAggregate (32)
-      +- * Project (31)
-         +- * BroadcastHashJoin Inner BuildRight (30)
-            :- * Project (28)
-            :  +- * BroadcastHashJoin Inner BuildRight (27)
+* HashAggregate (41)
++- Exchange (40)
+   +- * HashAggregate (39)
+      +- * Project (38)
+         +- * BroadcastHashJoin Inner BuildRight (37)
+            :- * HashAggregate (31)
+            :  +- * BroadcastHashJoin Inner BuildRight (30)
             :     :- * Filter (25)
             :     :  +- * ColumnarToRow (24)
             :     :     +- Scan parquet default.partsupp (23)
-            :     +- ReusedExchange (26)
-            +- ReusedExchange (29)
+            :     +- BroadcastExchange (29)
+            :        +- * Filter (28)
+            :           +- * ColumnarToRow (27)
+            :              +- Scan parquet default.supplier (26)
+            +- BroadcastExchange (36)
+               +- * HashAggregate (35)
+                  +- * Filter (34)
+                     +- * ColumnarToRow (33)
+                        +- Scan parquet default.nation (32)
 
 
 (23) Scan parquet default.partsupp
-Output [3]: [ps_suppkey#21, ps_availqty#22, ps_supplycost#23]
+Output [5]: [ps_partkey#21, ps_suppkey#22, ps_availqty#23, ps_supplycost#24, ps_comment#25]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/partsupp]
 PushedFilters: [IsNotNull(ps_suppkey)]
-ReadSchema: struct<ps_suppkey:bigint,ps_availqty:int,ps_supplycost:decimal(10,0)>
+ReadSchema: struct<ps_partkey:bigint,ps_suppkey:bigint,ps_availqty:int,ps_supplycost:decimal(10,0),ps_comment:string>
 
 (24) ColumnarToRow [codegen id : 3]
-Input [3]: [ps_suppkey#21, ps_availqty#22, ps_supplycost#23]
+Input [5]: [ps_partkey#21, ps_suppkey#22, ps_availqty#23, ps_supplycost#24, ps_comment#25]
 
 (25) Filter [codegen id : 3]
-Input [3]: [ps_suppkey#21, ps_availqty#22, ps_supplycost#23]
-Condition : isnotnull(ps_suppkey#21)
+Input [5]: [ps_partkey#21, ps_suppkey#22, ps_availqty#23, ps_supplycost#24, ps_comment#25]
+Condition : isnotnull(ps_suppkey#22)
 
-(26) ReusedExchange [Reuses operator id: 7]
-Output [2]: [s_suppkey#24, s_nationkey#25]
+(26) Scan parquet default.supplier
+Output [7]: [s_suppkey#26, s_name#27, s_address#28, s_nationkey#29, s_phone#30, s_acctbal#31, s_comment#32]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/supplier]
+PushedFilters: [IsNotNull(s_suppkey), IsNotNull(s_nationkey)]
+ReadSchema: struct<s_suppkey:bigint,s_name:string,s_address:string,s_nationkey:bigint,s_phone:string,s_acctbal:decimal(10,0),s_comment:string>
 
-(27) BroadcastHashJoin [codegen id : 3]
-Left keys [1]: [ps_suppkey#21]
-Right keys [1]: [s_suppkey#24]
-Join condition: None
+(27) ColumnarToRow [codegen id : 1]
+Input [7]: [s_suppkey#26, s_name#27, s_address#28, s_nationkey#29, s_phone#30, s_acctbal#31, s_comment#32]
 
-(28) Project [codegen id : 3]
-Output [3]: [ps_availqty#22, ps_supplycost#23, s_nationkey#25]
-Input [5]: [ps_suppkey#21, ps_availqty#22, ps_supplycost#23, s_suppkey#24, s_nationkey#25]
+(28) Filter [codegen id : 1]
+Input [7]: [s_suppkey#26, s_name#27, s_address#28, s_nationkey#29, s_phone#30, s_acctbal#31, s_comment#32]
+Condition : (isnotnull(s_suppkey#26) AND isnotnull(s_nationkey#29))
 
-(29) ReusedExchange [Reuses operator id: 14]
-Output [1]: [n_nationkey#26]
+(29) BroadcastExchange
+Input [7]: [s_suppkey#26, s_name#27, s_address#28, s_nationkey#29, s_phone#30, s_acctbal#31, s_comment#32]
+Arguments: HashedRelationBroadcastMode(List(input[0, bigint, false]),false), [id=#33]
 
 (30) BroadcastHashJoin [codegen id : 3]
-Left keys [1]: [s_nationkey#25]
-Right keys [1]: [n_nationkey#26]
+Left keys [1]: [ps_suppkey#22]
+Right keys [1]: [s_suppkey#26]
 Join condition: None
 
-(31) Project [codegen id : 3]
-Output [2]: [ps_availqty#22, ps_supplycost#23]
-Input [4]: [ps_availqty#22, ps_supplycost#23, s_nationkey#25, n_nationkey#26]
+(31) HashAggregate [codegen id : 3]
+Input [12]: [ps_partkey#21, ps_suppkey#22, ps_availqty#23, ps_supplycost#24, ps_comment#25, s_suppkey#26, s_name#27, s_address#28, s_nationkey#29, s_phone#30, s_acctbal#31, s_comment#32]
+Keys [1]: [s_nationkey#29]
+Functions: []
+Aggregate Attributes: []
+Results [1]: [s_nationkey#29]
 
-(32) HashAggregate [codegen id : 3]
-Input [2]: [ps_availqty#22, ps_supplycost#23]
+(32) Scan parquet default.nation
+Output [4]: [n_nationkey#34, n_name#35, n_regionkey#36, n_comment#37]
+Batched: true
+Location [not included in comparison]/{warehouse_dir}/nation]
+PushedFilters: [IsNotNull(n_name), EqualTo(n_name,GERMANY), IsNotNull(n_nationkey)]
+ReadSchema: struct<n_nationkey:bigint,n_name:string,n_regionkey:bigint,n_comment:string>
+
+(33) ColumnarToRow [codegen id : 2]
+Input [4]: [n_nationkey#34, n_name#35, n_regionkey#36, n_comment#37]
+
+(34) Filter [codegen id : 2]
+Input [4]: [n_nationkey#34, n_name#35, n_regionkey#36, n_comment#37]
+Condition : ((isnotnull(n_name#35) AND (n_name#35 = GERMANY)) AND isnotnull(n_nationkey#34))
+
+(35) HashAggregate [codegen id : 2]
+Input [4]: [n_nationkey#34, n_name#35, n_regionkey#36, n_comment#37]
+Keys [1]: [n_nationkey#34]
+Functions: []
+Aggregate Attributes: []
+Results [1]: [n_nationkey#34]
+
+(36) BroadcastExchange
+Input [1]: [n_nationkey#34]
+Arguments: HashedRelationBroadcastMode(List(input[0, bigint, true]),false), [id=#38]
+
+(37) BroadcastHashJoin [codegen id : 3]
+Left keys [1]: [s_nationkey#29]
+Right keys [1]: [n_nationkey#34]
+Join condition: None
+
+(38) Project [codegen id : 3]
+Output: []
+Input [2]: [s_nationkey#29, n_nationkey#34]
+
+(39) HashAggregate [codegen id : 3]
+Input: []
 Keys: []
-Functions [1]: [partial_sum(CheckOverflow((promote_precision(ps_supplycost#23) * promote_precision(cast(ps_availqty#22 as decimal(10,0)))), DecimalType(21,0)))]
-Aggregate Attributes [2]: [sum#27, isEmpty#28]
-Results [2]: [sum#29, isEmpty#30]
+Functions [1]: [partial_sum(CheckOverflow((promote_precision(ps_supplycost#24) * promote_precision(cast(ps_availqty#23 as decimal(10,0)))), DecimalType(21,0)))]
+Aggregate Attributes [2]: [sum#39, isEmpty#40]
+Results [2]: [sum#41, isEmpty#42]
 
-(33) Exchange
-Input [2]: [sum#29, isEmpty#30]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, [id=#31]
+(40) Exchange
+Input [2]: [sum#41, isEmpty#42]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, [id=#43]
 
-(34) HashAggregate [codegen id : 4]
-Input [2]: [sum#29, isEmpty#30]
+(41) HashAggregate [codegen id : 4]
+Input [2]: [sum#41, isEmpty#42]
 Keys: []
-Functions [1]: [sum(CheckOverflow((promote_precision(ps_supplycost#23) * promote_precision(cast(ps_availqty#22 as decimal(10,0)))), DecimalType(21,0)))]
-Aggregate Attributes [1]: [sum(CheckOverflow((promote_precision(ps_supplycost#23) * promote_precision(cast(ps_availqty#22 as decimal(10,0)))), DecimalType(21,0)))#32]
-Results [1]: [CheckOverflow((promote_precision(cast(sum(CheckOverflow((promote_precision(ps_supplycost#23) * promote_precision(cast(ps_availqty#22 as decimal(10,0)))), DecimalType(21,0)))#32 as decimal(38,10))) * 0.0001000000), DecimalType(38,6)) AS (sum((ps_supplycost * ps_availqty)) * 0.0001000000)#33]
+Functions [1]: [sum(CheckOverflow((promote_precision(ps_supplycost#24) * promote_precision(cast(ps_availqty#23 as decimal(10,0)))), DecimalType(21,0)))]
+Aggregate Attributes [1]: [sum(CheckOverflow((promote_precision(ps_supplycost#24) * promote_precision(cast(ps_availqty#23 as decimal(10,0)))), DecimalType(21,0)))#44]
+Results [1]: [CheckOverflow((promote_precision(cast(sum(CheckOverflow((promote_precision(ps_supplycost#24) * promote_precision(cast(ps_availqty#23 as decimal(10,0)))), DecimalType(21,0)))#44 as decimal(38,10))) * 0.0001000000), DecimalType(38,6)) AS (sum((ps_supplycost * ps_availqty)) * 0.0001000000)#45]
 
 

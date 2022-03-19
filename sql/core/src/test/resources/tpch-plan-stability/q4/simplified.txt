@@ -18,8 +18,9 @@ WholeStageCodegen (4)
                         InputAdapter
                           BroadcastExchange #3
                             WholeStageCodegen (1)
-                              Project [l_orderkey]
-                                Filter [l_commitdate,l_receiptdate]
-                                  ColumnarToRow
-                                    InputAdapter
-                                      Scan parquet default.lineitem [l_orderkey,l_commitdate,l_receiptdate]
+                              HashAggregate [l_orderkey]
+                                Project [l_orderkey]
+                                  Filter [l_commitdate,l_receiptdate]
+                                    ColumnarToRow
+                                      InputAdapter
+                                        Scan parquet default.lineitem [l_orderkey,l_commitdate,l_receiptdate]

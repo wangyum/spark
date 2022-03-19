@@ -1,175 +1,199 @@
 == Physical Plan ==
-TakeOrderedAndProject (30)
-+- * HashAggregate (29)
-   +- Exchange (28)
-      +- * HashAggregate (27)
-         +- * Project (26)
-            +- * BroadcastHashJoin Inner BuildRight (25)
-               :- * Project (18)
-               :  +- * BroadcastHashJoin Inner BuildRight (17)
+TakeOrderedAndProject (33)
++- * HashAggregate (32)
+   +- Exchange (31)
+      +- * HashAggregate (30)
+         +- * Project (29)
+            +- * BroadcastHashJoin Inner BuildRight (28)
+               :- * HashAggregate (19)
+               :  +- * BroadcastHashJoin Inner BuildRight (18)
                :     :- * Filter (3)
                :     :  +- * ColumnarToRow (2)
                :     :     +- Scan parquet default.customer (1)
-               :     +- BroadcastExchange (16)
-               :        +- * BroadcastHashJoin LeftSemi BuildRight (15)
+               :     +- BroadcastExchange (17)
+               :        +- * BroadcastHashJoin LeftSemi BuildRight (16)
                :           :- * Filter (6)
                :           :  +- * ColumnarToRow (5)
                :           :     +- Scan parquet default.orders (4)
-               :           +- BroadcastExchange (14)
-               :              +- * Project (13)
-               :                 +- * Filter (12)
-               :                    +- * HashAggregate (11)
-               :                       +- Exchange (10)
-               :                          +- * HashAggregate (9)
-               :                             +- * ColumnarToRow (8)
-               :                                +- Scan parquet default.lineitem (7)
-               +- BroadcastExchange (24)
-                  +- * BroadcastHashJoin LeftSemi BuildRight (23)
-                     :- * Filter (21)
-                     :  +- * ColumnarToRow (20)
-                     :     +- Scan parquet default.lineitem (19)
-                     +- ReusedExchange (22)
+               :           +- BroadcastExchange (15)
+               :              +- * HashAggregate (14)
+               :                 +- * Project (13)
+               :                    +- * Filter (12)
+               :                       +- * HashAggregate (11)
+               :                          +- Exchange (10)
+               :                             +- * HashAggregate (9)
+               :                                +- * ColumnarToRow (8)
+               :                                   +- Scan parquet default.lineitem (7)
+               +- BroadcastExchange (27)
+                  +- * Project (26)
+                     +- * HashAggregate (25)
+                        +- * BroadcastHashJoin LeftSemi BuildRight (24)
+                           :- * Filter (22)
+                           :  +- * ColumnarToRow (21)
+                           :     +- Scan parquet default.lineitem (20)
+                           +- ReusedExchange (23)
 
 
 (1) Scan parquet default.customer
-Output [2]: [c_custkey#1, c_name#2]
+Output [8]: [c_custkey#1, c_name#2, c_address#3, c_nationkey#4, c_phone#5, c_acctbal#6, c_mktsegment#7, c_comment#8]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer]
 PushedFilters: [IsNotNull(c_custkey)]
-ReadSchema: struct<c_custkey:bigint,c_name:string>
+ReadSchema: struct<c_custkey:bigint,c_name:string,c_address:string,c_nationkey:bigint,c_phone:string,c_acctbal:decimal(10,0),c_mktsegment:string,c_comment:string>
 
 (2) ColumnarToRow [codegen id : 7]
-Input [2]: [c_custkey#1, c_name#2]
+Input [8]: [c_custkey#1, c_name#2, c_address#3, c_nationkey#4, c_phone#5, c_acctbal#6, c_mktsegment#7, c_comment#8]
 
 (3) Filter [codegen id : 7]
-Input [2]: [c_custkey#1, c_name#2]
+Input [8]: [c_custkey#1, c_name#2, c_address#3, c_nationkey#4, c_phone#5, c_acctbal#6, c_mktsegment#7, c_comment#8]
 Condition : isnotnull(c_custkey#1)
 
 (4) Scan parquet default.orders
-Output [4]: [o_orderkey#3, o_custkey#4, o_totalprice#5, o_orderdate#6]
+Output [9]: [o_orderkey#9, o_custkey#10, o_orderstatus#11, o_totalprice#12, o_orderdate#13, o_orderpriority#14, o_clerk#15, o_shippriority#16, o_comment#17]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/orders]
 PushedFilters: [IsNotNull(o_custkey), IsNotNull(o_orderkey)]
-ReadSchema: struct<o_orderkey:bigint,o_custkey:bigint,o_totalprice:decimal(10,0),o_orderdate:date>
+ReadSchema: struct<o_orderkey:bigint,o_custkey:bigint,o_orderstatus:string,o_totalprice:decimal(10,0),o_orderdate:date,o_orderpriority:string,o_clerk:string,o_shippriority:int,o_comment:string>
 
 (5) ColumnarToRow [codegen id : 3]
-Input [4]: [o_orderkey#3, o_custkey#4, o_totalprice#5, o_orderdate#6]
+Input [9]: [o_orderkey#9, o_custkey#10, o_orderstatus#11, o_totalprice#12, o_orderdate#13, o_orderpriority#14, o_clerk#15, o_shippriority#16, o_comment#17]
 
 (6) Filter [codegen id : 3]
-Input [4]: [o_orderkey#3, o_custkey#4, o_totalprice#5, o_orderdate#6]
-Condition : (isnotnull(o_custkey#4) AND isnotnull(o_orderkey#3))
+Input [9]: [o_orderkey#9, o_custkey#10, o_orderstatus#11, o_totalprice#12, o_orderdate#13, o_orderpriority#14, o_clerk#15, o_shippriority#16, o_comment#17]
+Condition : (isnotnull(o_custkey#10) AND isnotnull(o_orderkey#9))
 
 (7) Scan parquet default.lineitem
-Output [2]: [l_orderkey#7, l_quantity#8]
+Output [2]: [l_orderkey#18, l_quantity#19]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/lineitem]
 ReadSchema: struct<l_orderkey:bigint,l_quantity:decimal(10,0)>
 
 (8) ColumnarToRow [codegen id : 1]
-Input [2]: [l_orderkey#7, l_quantity#8]
+Input [2]: [l_orderkey#18, l_quantity#19]
 
 (9) HashAggregate [codegen id : 1]
-Input [2]: [l_orderkey#7, l_quantity#8]
-Keys [1]: [l_orderkey#7]
-Functions [1]: [partial_sum(l_quantity#8)]
-Aggregate Attributes [2]: [sum#9, isEmpty#10]
-Results [3]: [l_orderkey#7, sum#11, isEmpty#12]
+Input [2]: [l_orderkey#18, l_quantity#19]
+Keys [1]: [l_orderkey#18]
+Functions [1]: [partial_sum(l_quantity#19)]
+Aggregate Attributes [2]: [sum#20, isEmpty#21]
+Results [3]: [l_orderkey#18, sum#22, isEmpty#23]
 
 (10) Exchange
-Input [3]: [l_orderkey#7, sum#11, isEmpty#12]
-Arguments: hashpartitioning(l_orderkey#7, 5), ENSURE_REQUIREMENTS, [id=#13]
+Input [3]: [l_orderkey#18, sum#22, isEmpty#23]
+Arguments: hashpartitioning(l_orderkey#18, 5), ENSURE_REQUIREMENTS, [id=#24]
 
 (11) HashAggregate [codegen id : 2]
-Input [3]: [l_orderkey#7, sum#11, isEmpty#12]
-Keys [1]: [l_orderkey#7]
-Functions [1]: [sum(l_quantity#8)]
-Aggregate Attributes [1]: [sum(l_quantity#8)#14]
-Results [2]: [l_orderkey#7, sum(l_quantity#8)#14 AS sum(l_quantity#15)#16]
+Input [3]: [l_orderkey#18, sum#22, isEmpty#23]
+Keys [1]: [l_orderkey#18]
+Functions [1]: [sum(l_quantity#19)]
+Aggregate Attributes [1]: [sum(l_quantity#19)#25]
+Results [2]: [l_orderkey#18, sum(l_quantity#19)#25 AS sum(l_quantity#26)#27]
 
 (12) Filter [codegen id : 2]
-Input [2]: [l_orderkey#7, sum(l_quantity#15)#16]
-Condition : (isnotnull(sum(l_quantity#15)#16) AND (sum(l_quantity#15)#16 > 300))
+Input [2]: [l_orderkey#18, sum(l_quantity#26)#27]
+Condition : (isnotnull(sum(l_quantity#26)#27) AND (sum(l_quantity#26)#27 > 300))
 
 (13) Project [codegen id : 2]
-Output [1]: [l_orderkey#7]
-Input [2]: [l_orderkey#7, sum(l_quantity#15)#16]
+Output [1]: [l_orderkey#18]
+Input [2]: [l_orderkey#18, sum(l_quantity#26)#27]
 
-(14) BroadcastExchange
-Input [1]: [l_orderkey#7]
-Arguments: HashedRelationBroadcastMode(List(input[0, bigint, true]),false), [id=#17]
+(14) HashAggregate [codegen id : 2]
+Input [1]: [l_orderkey#18]
+Keys [1]: [l_orderkey#18]
+Functions: []
+Aggregate Attributes: []
+Results [1]: [l_orderkey#18]
 
-(15) BroadcastHashJoin [codegen id : 3]
-Left keys [1]: [o_orderkey#3]
-Right keys [1]: [l_orderkey#7]
+(15) BroadcastExchange
+Input [1]: [l_orderkey#18]
+Arguments: HashedRelationBroadcastMode(List(input[0, bigint, true]),false), [id=#28]
+
+(16) BroadcastHashJoin [codegen id : 3]
+Left keys [1]: [o_orderkey#9]
+Right keys [1]: [l_orderkey#18]
 Join condition: None
 
-(16) BroadcastExchange
-Input [4]: [o_orderkey#3, o_custkey#4, o_totalprice#5, o_orderdate#6]
-Arguments: HashedRelationBroadcastMode(List(input[1, bigint, false]),false), [id=#18]
+(17) BroadcastExchange
+Input [9]: [o_orderkey#9, o_custkey#10, o_orderstatus#11, o_totalprice#12, o_orderdate#13, o_orderpriority#14, o_clerk#15, o_shippriority#16, o_comment#17]
+Arguments: HashedRelationBroadcastMode(List(input[1, bigint, false]),false), [id=#29]
 
-(17) BroadcastHashJoin [codegen id : 7]
+(18) BroadcastHashJoin [codegen id : 7]
 Left keys [1]: [c_custkey#1]
-Right keys [1]: [o_custkey#4]
+Right keys [1]: [o_custkey#10]
 Join condition: None
 
-(18) Project [codegen id : 7]
-Output [5]: [c_custkey#1, c_name#2, o_orderkey#3, o_totalprice#5, o_orderdate#6]
-Input [6]: [c_custkey#1, c_name#2, o_orderkey#3, o_custkey#4, o_totalprice#5, o_orderdate#6]
+(19) HashAggregate [codegen id : 7]
+Input [17]: [c_custkey#1, c_name#2, c_address#3, c_nationkey#4, c_phone#5, c_acctbal#6, c_mktsegment#7, c_comment#8, o_orderkey#9, o_custkey#10, o_orderstatus#11, o_totalprice#12, o_orderdate#13, o_orderpriority#14, o_clerk#15, o_shippriority#16, o_comment#17]
+Keys [6]: [o_orderkey#9, c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12]
+Functions: []
+Aggregate Attributes: []
+Results [6]: [o_orderkey#9, c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12]
 
-(19) Scan parquet default.lineitem
-Output [2]: [l_orderkey#19, l_quantity#15]
+(20) Scan parquet default.lineitem
+Output [16]: [l_orderkey#30, l_partkey#31, l_suppkey#32, l_linenumber#33, l_quantity#26, l_extendedprice#34, l_discount#35, l_tax#36, l_returnflag#37, l_linestatus#38, l_shipdate#39, l_commitdate#40, l_receiptdate#41, l_shipinstruct#42, l_shipmode#43, l_comment#44]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/lineitem]
 PushedFilters: [IsNotNull(l_orderkey)]
-ReadSchema: struct<l_orderkey:bigint,l_quantity:decimal(10,0)>
+ReadSchema: struct<l_orderkey:bigint,l_partkey:bigint,l_suppkey:bigint,l_linenumber:int,l_quantity:decimal(10,0),l_extendedprice:decimal(10,0),l_discount:decimal(10,0),l_tax:decimal(10,0),l_returnflag:string,l_linestatus:string,l_shipdate:date,l_commitdate:date,l_receiptdate:date,l_shipinstruct:string,l_shipmode:string,l_comment:string>
 
-(20) ColumnarToRow [codegen id : 6]
-Input [2]: [l_orderkey#19, l_quantity#15]
+(21) ColumnarToRow [codegen id : 6]
+Input [16]: [l_orderkey#30, l_partkey#31, l_suppkey#32, l_linenumber#33, l_quantity#26, l_extendedprice#34, l_discount#35, l_tax#36, l_returnflag#37, l_linestatus#38, l_shipdate#39, l_commitdate#40, l_receiptdate#41, l_shipinstruct#42, l_shipmode#43, l_comment#44]
 
-(21) Filter [codegen id : 6]
-Input [2]: [l_orderkey#19, l_quantity#15]
-Condition : isnotnull(l_orderkey#19)
+(22) Filter [codegen id : 6]
+Input [16]: [l_orderkey#30, l_partkey#31, l_suppkey#32, l_linenumber#33, l_quantity#26, l_extendedprice#34, l_discount#35, l_tax#36, l_returnflag#37, l_linestatus#38, l_shipdate#39, l_commitdate#40, l_receiptdate#41, l_shipinstruct#42, l_shipmode#43, l_comment#44]
+Condition : isnotnull(l_orderkey#30)
 
-(22) ReusedExchange [Reuses operator id: 14]
-Output [1]: [l_orderkey#7]
+(23) ReusedExchange [Reuses operator id: 15]
+Output [1]: [l_orderkey#18]
 
-(23) BroadcastHashJoin [codegen id : 6]
-Left keys [1]: [l_orderkey#19]
-Right keys [1]: [l_orderkey#7]
+(24) BroadcastHashJoin [codegen id : 6]
+Left keys [1]: [l_orderkey#30]
+Right keys [1]: [l_orderkey#18]
 Join condition: None
 
-(24) BroadcastExchange
-Input [2]: [l_orderkey#19, l_quantity#15]
-Arguments: HashedRelationBroadcastMode(List(input[0, bigint, false]),false), [id=#20]
+(25) HashAggregate [codegen id : 6]
+Input [16]: [l_orderkey#30, l_partkey#31, l_suppkey#32, l_linenumber#33, l_quantity#26, l_extendedprice#34, l_discount#35, l_tax#36, l_returnflag#37, l_linestatus#38, l_shipdate#39, l_commitdate#40, l_receiptdate#41, l_shipinstruct#42, l_shipmode#43, l_comment#44]
+Keys [1]: [l_orderkey#30]
+Functions [1]: [partial_sum(l_quantity#26)]
+Aggregate Attributes [2]: [sum#45, isEmpty#46]
+Results [3]: [l_orderkey#30, sum#47, isEmpty#48]
 
-(25) BroadcastHashJoin [codegen id : 7]
-Left keys [1]: [o_orderkey#3]
-Right keys [1]: [l_orderkey#19]
+(26) Project [codegen id : 6]
+Output [2]: [l_orderkey#30, sum#47 AS _pushedexpression#49]
+Input [3]: [l_orderkey#30, sum#47, isEmpty#48]
+
+(27) BroadcastExchange
+Input [2]: [l_orderkey#30, _pushedexpression#49]
+Arguments: HashedRelationBroadcastMode(List(input[0, bigint, true]),false), [id=#50]
+
+(28) BroadcastHashJoin [codegen id : 7]
+Left keys [1]: [o_orderkey#9]
+Right keys [1]: [l_orderkey#30]
 Join condition: None
 
-(26) Project [codegen id : 7]
-Output [6]: [c_custkey#1, c_name#2, o_orderkey#3, o_totalprice#5, o_orderdate#6, l_quantity#15]
-Input [7]: [c_custkey#1, c_name#2, o_orderkey#3, o_totalprice#5, o_orderdate#6, l_orderkey#19, l_quantity#15]
+(29) Project [codegen id : 7]
+Output [7]: [o_orderkey#9, c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12, _pushedexpression#49]
+Input [8]: [o_orderkey#9, c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12, l_orderkey#30, _pushedexpression#49]
 
-(27) HashAggregate [codegen id : 7]
-Input [6]: [c_custkey#1, c_name#2, o_orderkey#3, o_totalprice#5, o_orderdate#6, l_quantity#15]
-Keys [5]: [c_name#2, c_custkey#1, o_orderkey#3, o_orderdate#6, o_totalprice#5]
-Functions [1]: [partial_sum(l_quantity#15)]
-Aggregate Attributes [2]: [sum#21, isEmpty#22]
-Results [7]: [c_name#2, c_custkey#1, o_orderkey#3, o_orderdate#6, o_totalprice#5, sum#23, isEmpty#24]
+(30) HashAggregate [codegen id : 7]
+Input [7]: [o_orderkey#9, c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12, _pushedexpression#49]
+Keys [5]: [c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12]
+Functions [1]: [partial_sum(_pushedexpression#49)]
+Aggregate Attributes [2]: [sum#51, isEmpty#52]
+Results [7]: [c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12, sum#53, isEmpty#54]
 
-(28) Exchange
-Input [7]: [c_name#2, c_custkey#1, o_orderkey#3, o_orderdate#6, o_totalprice#5, sum#23, isEmpty#24]
-Arguments: hashpartitioning(c_name#2, c_custkey#1, o_orderkey#3, o_orderdate#6, o_totalprice#5, 5), ENSURE_REQUIREMENTS, [id=#25]
+(31) Exchange
+Input [7]: [c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12, sum#53, isEmpty#54]
+Arguments: hashpartitioning(c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12, 5), ENSURE_REQUIREMENTS, [id=#55]
 
-(29) HashAggregate [codegen id : 8]
-Input [7]: [c_name#2, c_custkey#1, o_orderkey#3, o_orderdate#6, o_totalprice#5, sum#23, isEmpty#24]
-Keys [5]: [c_name#2, c_custkey#1, o_orderkey#3, o_orderdate#6, o_totalprice#5]
-Functions [1]: [sum(l_quantity#15)]
-Aggregate Attributes [1]: [sum(l_quantity#15)#26]
-Results [6]: [c_name#2, c_custkey#1, o_orderkey#3, o_orderdate#6, o_totalprice#5, sum(l_quantity#15)#26 AS sum(l_quantity)#27]
+(32) HashAggregate [codegen id : 8]
+Input [7]: [c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12, sum#53, isEmpty#54]
+Keys [5]: [c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12]
+Functions [1]: [sum(_pushedexpression#49)]
+Aggregate Attributes [1]: [sum(_pushedexpression#49)#56]
+Results [6]: [c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12, cast(sum(_pushedexpression#49)#56 as decimal(20,0)) AS sum(l_quantity)#57]
 
-(30) TakeOrderedAndProject
-Input [6]: [c_name#2, c_custkey#1, o_orderkey#3, o_orderdate#6, o_totalprice#5, sum(l_quantity)#27]
-Arguments: 100, [o_totalprice#5 DESC NULLS LAST, o_orderdate#6 ASC NULLS FIRST], [c_name#2, c_custkey#1, o_orderkey#3, o_orderdate#6, o_totalprice#5, sum(l_quantity)#27]
+(33) TakeOrderedAndProject
+Input [6]: [c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12, sum(l_quantity)#57]
+Arguments: 100, [o_totalprice#12 DESC NULLS LAST, o_orderdate#13 ASC NULLS FIRST], [c_name#2, c_custkey#1, o_orderkey#9, o_orderdate#13, o_totalprice#12, sum(l_quantity)#57]
 

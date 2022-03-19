@@ -1,215 +1,256 @@
-WholeStageCodegen (43)
+WholeStageCodegen (54)
   Sort [ca_county]
     InputAdapter
       Exchange [ca_county] #1
-        WholeStageCodegen (42)
+        WholeStageCodegen (53)
           Project [ca_county,d_year,web_sales,web_sales,store_sales,store_sales,web_sales,store_sales]
-            BroadcastHashJoin [ca_county,ca_county,web_sales,web_sales,store_sales,store_sales,web_sales,store_sales]
-              Project [store_sales,store_sales,ca_county,d_year,store_sales]
-                BroadcastHashJoin [ca_county,ca_county]
-                  Project [ca_county,store_sales,store_sales]
-                    BroadcastHashJoin [ca_county,ca_county]
-                      HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ss_ext_sales_price)),store_sales,sum]
-                        InputAdapter
-                          Exchange [ca_county,d_qoy,d_year] #2
-                            WholeStageCodegen (6)
-                              HashAggregate [ca_county,d_qoy,d_year,ss_ext_sales_price] [sum,sum]
-                                Project [ss_ext_sales_price,d_year,d_qoy,ca_county]
-                                  SortMergeJoin [ss_addr_sk,ca_address_sk]
-                                    InputAdapter
-                                      WholeStageCodegen (3)
-                                        Sort [ss_addr_sk]
-                                          InputAdapter
-                                            Exchange [ss_addr_sk] #3
-                                              WholeStageCodegen (2)
-                                                Project [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy]
-                                                  BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                    Filter [ss_addr_sk]
-                                                      ColumnarToRow
-                                                        InputAdapter
-                                                          Scan parquet default.store_sales [ss_addr_sk,ss_ext_sales_price,ss_sold_date_sk]
-                                                            SubqueryBroadcast [d_date_sk] #1
-                                                              BroadcastExchange #4
-                                                                WholeStageCodegen (1)
-                                                                  Filter [d_qoy,d_year,d_date_sk]
-                                                                    ColumnarToRow
-                                                                      InputAdapter
-                                                                        Scan parquet default.date_dim [d_date_sk,d_year,d_qoy]
-                                                    InputAdapter
-                                                      ReusedExchange [d_date_sk,d_year,d_qoy] #4
-                                    InputAdapter
-                                      WholeStageCodegen (5)
-                                        Sort [ca_address_sk]
-                                          InputAdapter
-                                            Exchange [ca_address_sk] #5
-                                              WholeStageCodegen (4)
-                                                Filter [ca_address_sk,ca_county]
-                                                  ColumnarToRow
-                                                    InputAdapter
-                                                      Scan parquet default.customer_address [ca_address_sk,ca_county]
-                      InputAdapter
-                        BroadcastExchange #6
-                          WholeStageCodegen (13)
-                            HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ss_ext_sales_price)),store_sales,sum]
-                              InputAdapter
-                                Exchange [ca_county,d_qoy,d_year] #7
-                                  WholeStageCodegen (12)
-                                    HashAggregate [ca_county,d_qoy,d_year,ss_ext_sales_price] [sum,sum]
-                                      Project [ss_ext_sales_price,d_year,d_qoy,ca_county]
-                                        SortMergeJoin [ss_addr_sk,ca_address_sk]
-                                          InputAdapter
-                                            WholeStageCodegen (9)
-                                              Sort [ss_addr_sk]
-                                                InputAdapter
-                                                  Exchange [ss_addr_sk] #8
-                                                    WholeStageCodegen (8)
-                                                      Project [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy]
-                                                        BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                          Filter [ss_addr_sk]
-                                                            ColumnarToRow
-                                                              InputAdapter
-                                                                Scan parquet default.store_sales [ss_addr_sk,ss_ext_sales_price,ss_sold_date_sk]
-                                                                  SubqueryBroadcast [d_date_sk] #2
-                                                                    BroadcastExchange #9
-                                                                      WholeStageCodegen (1)
-                                                                        Filter [d_qoy,d_year,d_date_sk]
-                                                                          ColumnarToRow
-                                                                            InputAdapter
-                                                                              Scan parquet default.date_dim [d_date_sk,d_year,d_qoy]
-                                                          InputAdapter
-                                                            ReusedExchange [d_date_sk,d_year,d_qoy] #9
-                                          InputAdapter
-                                            WholeStageCodegen (11)
-                                              Sort [ca_address_sk]
-                                                InputAdapter
-                                                  ReusedExchange [ca_address_sk,ca_county] #5
-                  InputAdapter
-                    BroadcastExchange #10
-                      WholeStageCodegen (20)
-                        HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ss_ext_sales_price)),store_sales,sum]
-                          InputAdapter
-                            Exchange [ca_county,d_qoy,d_year] #11
-                              WholeStageCodegen (19)
-                                HashAggregate [ca_county,d_qoy,d_year,ss_ext_sales_price] [sum,sum]
-                                  Project [ss_ext_sales_price,d_year,d_qoy,ca_county]
-                                    SortMergeJoin [ss_addr_sk,ca_address_sk]
-                                      InputAdapter
-                                        WholeStageCodegen (16)
-                                          Sort [ss_addr_sk]
-                                            InputAdapter
-                                              Exchange [ss_addr_sk] #12
-                                                WholeStageCodegen (15)
-                                                  Project [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy]
-                                                    BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                      Filter [ss_addr_sk]
-                                                        ColumnarToRow
-                                                          InputAdapter
-                                                            Scan parquet default.store_sales [ss_addr_sk,ss_ext_sales_price,ss_sold_date_sk]
-                                                              SubqueryBroadcast [d_date_sk] #3
-                                                                BroadcastExchange #13
-                                                                  WholeStageCodegen (1)
-                                                                    Filter [d_qoy,d_year,d_date_sk]
-                                                                      ColumnarToRow
-                                                                        InputAdapter
-                                                                          Scan parquet default.date_dim [d_date_sk,d_year,d_qoy]
-                                                      InputAdapter
-                                                        ReusedExchange [d_date_sk,d_year,d_qoy] #13
-                                      InputAdapter
-                                        WholeStageCodegen (18)
-                                          Sort [ca_address_sk]
-                                            InputAdapter
-                                              ReusedExchange [ca_address_sk,ca_county] #5
+            SortMergeJoin [ca_county,ca_county,web_sales,web_sales,store_sales,store_sales]
               InputAdapter
-                BroadcastExchange #14
-                  WholeStageCodegen (41)
-                    Project [ca_county,web_sales,web_sales,web_sales]
-                      BroadcastHashJoin [ca_county,ca_county]
-                        Project [ca_county,web_sales,web_sales]
-                          BroadcastHashJoin [ca_county,ca_county]
-                            HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ws_ext_sales_price)),web_sales,sum]
-                              InputAdapter
-                                Exchange [ca_county,d_qoy,d_year] #15
-                                  WholeStageCodegen (26)
-                                    HashAggregate [ca_county,d_qoy,d_year,ws_ext_sales_price] [sum,sum]
-                                      Project [ws_ext_sales_price,d_year,d_qoy,ca_county]
-                                        SortMergeJoin [ws_bill_addr_sk,ca_address_sk]
-                                          InputAdapter
-                                            WholeStageCodegen (23)
-                                              Sort [ws_bill_addr_sk]
-                                                InputAdapter
-                                                  Exchange [ws_bill_addr_sk] #16
-                                                    WholeStageCodegen (22)
-                                                      Project [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy]
-                                                        BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
-                                                          Filter [ws_bill_addr_sk]
-                                                            ColumnarToRow
-                                                              InputAdapter
-                                                                Scan parquet default.web_sales [ws_bill_addr_sk,ws_ext_sales_price,ws_sold_date_sk]
-                                                                  ReusedSubquery [d_date_sk] #3
-                                                          InputAdapter
-                                                            ReusedExchange [d_date_sk,d_year,d_qoy] #13
-                                          InputAdapter
-                                            WholeStageCodegen (25)
-                                              Sort [ca_address_sk]
-                                                InputAdapter
-                                                  ReusedExchange [ca_address_sk,ca_county] #5
+                WholeStageCodegen (44)
+                  Project [ca_county,d_year,store_sales,store_sales,store_sales,ca_county,web_sales,web_sales]
+                    SortMergeJoin [ca_county,ca_county,web_sales,web_sales,store_sales,store_sales]
+                      InputAdapter
+                        WholeStageCodegen (35)
+                          SortMergeJoin [ca_county,ca_county]
                             InputAdapter
-                              BroadcastExchange #17
-                                WholeStageCodegen (33)
-                                  HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ws_ext_sales_price)),web_sales,sum]
+                              WholeStageCodegen (26)
+                                Project [ca_county,d_year,store_sales,store_sales,store_sales]
+                                  SortMergeJoin [ca_county,ca_county]
                                     InputAdapter
-                                      Exchange [ca_county,d_qoy,d_year] #18
-                                        WholeStageCodegen (32)
-                                          HashAggregate [ca_county,d_qoy,d_year,ws_ext_sales_price] [sum,sum]
-                                            Project [ws_ext_sales_price,d_year,d_qoy,ca_county]
+                                      WholeStageCodegen (17)
+                                        SortMergeJoin [ca_county,ca_county]
+                                          InputAdapter
+                                            WholeStageCodegen (8)
+                                              Sort [ca_county]
+                                                InputAdapter
+                                                  Exchange [ca_county] #2
+                                                    WholeStageCodegen (7)
+                                                      HashAggregate [ca_county,d_qoy,d_year,sum,isEmpty] [sum(_pushedexpression),store_sales,sum,isEmpty]
+                                                        InputAdapter
+                                                          Exchange [ca_county,d_qoy,d_year] #3
+                                                            WholeStageCodegen (6)
+                                                              HashAggregate [ca_county,d_qoy,d_year,_pushedexpression] [sum,isEmpty,sum,isEmpty]
+                                                                Project [d_qoy,d_year,ca_county]
+                                                                  SortMergeJoin [ss_addr_sk,ca_address_sk]
+                                                                    InputAdapter
+                                                                      WholeStageCodegen (3)
+                                                                        Sort [ss_addr_sk]
+                                                                          InputAdapter
+                                                                            Exchange [ss_addr_sk] #4
+                                                                              WholeStageCodegen (2)
+                                                                                HashAggregate [ss_addr_sk,d_qoy,d_year]
+                                                                                  Project [ss_addr_sk,d_qoy,d_year,sum]
+                                                                                    HashAggregate [ss_addr_sk,d_qoy,d_year,ss_ext_sales_price] [sum,sum]
+                                                                                      BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                                                        Filter [ss_addr_sk]
+                                                                                          ColumnarToRow
+                                                                                            InputAdapter
+                                                                                              Scan parquet default.store_sales [ss_sold_time_sk,ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_quantity,ss_wholesale_cost,ss_list_price,ss_sales_price,ss_ext_discount_amt,ss_ext_sales_price,ss_ext_wholesale_cost,ss_ext_list_price,ss_ext_tax,ss_coupon_amt,ss_net_paid,ss_net_paid_inc_tax,ss_net_profit,ss_sold_date_sk]
+                                                                                                SubqueryBroadcast [d_date_sk] #1
+                                                                                                  BroadcastExchange #5
+                                                                                                    WholeStageCodegen (1)
+                                                                                                      Filter [d_qoy,d_year,d_date_sk]
+                                                                                                        ColumnarToRow
+                                                                                                          InputAdapter
+                                                                                                            Scan parquet default.date_dim [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year]
+                                                                                        InputAdapter
+                                                                                          ReusedExchange [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year] #5
+                                                                    InputAdapter
+                                                                      WholeStageCodegen (5)
+                                                                        Sort [ca_address_sk]
+                                                                          InputAdapter
+                                                                            Exchange [ca_address_sk] #6
+                                                                              WholeStageCodegen (4)
+                                                                                HashAggregate [ca_address_sk,ca_county]
+                                                                                  HashAggregate [ca_address_sk,ca_county]
+                                                                                    Filter [ca_address_sk,ca_county]
+                                                                                      ColumnarToRow
+                                                                                        InputAdapter
+                                                                                          Scan parquet default.customer_address [ca_address_sk,ca_address_id,ca_street_number,ca_street_name,ca_street_type,ca_suite_number,ca_city,ca_county,ca_state,ca_zip,ca_country,ca_gmt_offset,ca_location_type]
+                                          InputAdapter
+                                            WholeStageCodegen (16)
+                                              Sort [ca_county]
+                                                InputAdapter
+                                                  Exchange [ca_county] #7
+                                                    WholeStageCodegen (15)
+                                                      HashAggregate [ca_county,d_qoy,d_year,sum,isEmpty] [sum(_pushedexpression),store_sales,sum,isEmpty]
+                                                        InputAdapter
+                                                          Exchange [ca_county,d_qoy,d_year] #8
+                                                            WholeStageCodegen (14)
+                                                              HashAggregate [ca_county,d_qoy,d_year,_pushedexpression] [sum,isEmpty,sum,isEmpty]
+                                                                Project [d_qoy,d_year,ca_county]
+                                                                  SortMergeJoin [ss_addr_sk,ca_address_sk]
+                                                                    InputAdapter
+                                                                      WholeStageCodegen (11)
+                                                                        Sort [ss_addr_sk]
+                                                                          InputAdapter
+                                                                            Exchange [ss_addr_sk] #9
+                                                                              WholeStageCodegen (10)
+                                                                                HashAggregate [ss_addr_sk,d_qoy,d_year]
+                                                                                  Project [ss_addr_sk,d_qoy,d_year,sum]
+                                                                                    HashAggregate [ss_addr_sk,d_qoy,d_year,ss_ext_sales_price] [sum,sum]
+                                                                                      BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                                                        Filter [ss_addr_sk]
+                                                                                          ColumnarToRow
+                                                                                            InputAdapter
+                                                                                              Scan parquet default.store_sales [ss_sold_time_sk,ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_quantity,ss_wholesale_cost,ss_list_price,ss_sales_price,ss_ext_discount_amt,ss_ext_sales_price,ss_ext_wholesale_cost,ss_ext_list_price,ss_ext_tax,ss_coupon_amt,ss_net_paid,ss_net_paid_inc_tax,ss_net_profit,ss_sold_date_sk]
+                                                                                                SubqueryBroadcast [d_date_sk] #2
+                                                                                                  BroadcastExchange #10
+                                                                                                    WholeStageCodegen (1)
+                                                                                                      Filter [d_qoy,d_year,d_date_sk]
+                                                                                                        ColumnarToRow
+                                                                                                          InputAdapter
+                                                                                                            Scan parquet default.date_dim [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year]
+                                                                                        InputAdapter
+                                                                                          ReusedExchange [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year] #10
+                                                                    InputAdapter
+                                                                      WholeStageCodegen (13)
+                                                                        Sort [ca_address_sk]
+                                                                          InputAdapter
+                                                                            ReusedExchange [ca_address_sk,ca_county] #6
+                                    InputAdapter
+                                      WholeStageCodegen (25)
+                                        Sort [ca_county]
+                                          InputAdapter
+                                            Exchange [ca_county] #11
+                                              WholeStageCodegen (24)
+                                                HashAggregate [ca_county,d_qoy,d_year,sum,isEmpty] [sum(_pushedexpression),store_sales,sum,isEmpty]
+                                                  InputAdapter
+                                                    Exchange [ca_county,d_qoy,d_year] #12
+                                                      WholeStageCodegen (23)
+                                                        HashAggregate [ca_county,d_qoy,d_year,_pushedexpression] [sum,isEmpty,sum,isEmpty]
+                                                          Project [d_qoy,d_year,ca_county]
+                                                            SortMergeJoin [ss_addr_sk,ca_address_sk]
+                                                              InputAdapter
+                                                                WholeStageCodegen (20)
+                                                                  Sort [ss_addr_sk]
+                                                                    InputAdapter
+                                                                      Exchange [ss_addr_sk] #13
+                                                                        WholeStageCodegen (19)
+                                                                          HashAggregate [ss_addr_sk,d_qoy,d_year]
+                                                                            Project [ss_addr_sk,d_qoy,d_year,sum]
+                                                                              HashAggregate [ss_addr_sk,d_qoy,d_year,ss_ext_sales_price] [sum,sum]
+                                                                                BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                                                  Filter [ss_addr_sk]
+                                                                                    ColumnarToRow
+                                                                                      InputAdapter
+                                                                                        Scan parquet default.store_sales [ss_sold_time_sk,ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_quantity,ss_wholesale_cost,ss_list_price,ss_sales_price,ss_ext_discount_amt,ss_ext_sales_price,ss_ext_wholesale_cost,ss_ext_list_price,ss_ext_tax,ss_coupon_amt,ss_net_paid,ss_net_paid_inc_tax,ss_net_profit,ss_sold_date_sk]
+                                                                                          SubqueryBroadcast [d_date_sk] #3
+                                                                                            BroadcastExchange #14
+                                                                                              WholeStageCodegen (1)
+                                                                                                Filter [d_qoy,d_year,d_date_sk]
+                                                                                                  ColumnarToRow
+                                                                                                    InputAdapter
+                                                                                                      Scan parquet default.date_dim [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year]
+                                                                                  InputAdapter
+                                                                                    ReusedExchange [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year] #14
+                                                              InputAdapter
+                                                                WholeStageCodegen (22)
+                                                                  Sort [ca_address_sk]
+                                                                    InputAdapter
+                                                                      ReusedExchange [ca_address_sk,ca_county] #6
+                            InputAdapter
+                              WholeStageCodegen (34)
+                                Sort [ca_county]
+                                  InputAdapter
+                                    Exchange [ca_county] #15
+                                      WholeStageCodegen (33)
+                                        HashAggregate [ca_county,d_qoy,d_year,sum,isEmpty] [sum(_pushedexpression),web_sales,sum,isEmpty]
+                                          InputAdapter
+                                            Exchange [ca_county,d_qoy,d_year] #16
+                                              WholeStageCodegen (32)
+                                                HashAggregate [ca_county,d_qoy,d_year,_pushedexpression] [sum,isEmpty,sum,isEmpty]
+                                                  Project [d_qoy,d_year,ca_county]
+                                                    SortMergeJoin [ws_bill_addr_sk,ca_address_sk]
+                                                      InputAdapter
+                                                        WholeStageCodegen (29)
+                                                          Sort [ws_bill_addr_sk]
+                                                            InputAdapter
+                                                              Exchange [ws_bill_addr_sk] #17
+                                                                WholeStageCodegen (28)
+                                                                  HashAggregate [ws_bill_addr_sk,d_qoy,d_year]
+                                                                    Project [ws_bill_addr_sk,d_qoy,d_year,sum]
+                                                                      HashAggregate [ws_bill_addr_sk,d_qoy,d_year,ws_ext_sales_price] [sum,sum]
+                                                                        BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
+                                                                          Filter [ws_bill_addr_sk]
+                                                                            ColumnarToRow
+                                                                              InputAdapter
+                                                                                Scan parquet default.web_sales [ws_sold_time_sk,ws_ship_date_sk,ws_item_sk,ws_bill_customer_sk,ws_bill_cdemo_sk,ws_bill_hdemo_sk,ws_bill_addr_sk,ws_ship_customer_sk,ws_ship_cdemo_sk,ws_ship_hdemo_sk,ws_ship_addr_sk,ws_web_page_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_promo_sk,ws_order_number,ws_quantity,ws_wholesale_cost,ws_list_price,ws_sales_price,ws_ext_discount_amt,ws_ext_sales_price,ws_ext_wholesale_cost,ws_ext_list_price,ws_ext_tax,ws_coupon_amt,ws_ext_ship_cost,ws_net_paid,ws_net_paid_inc_tax,ws_net_paid_inc_ship,ws_net_paid_inc_ship_tax,ws_net_profit,ws_sold_date_sk]
+                                                                                  ReusedSubquery [d_date_sk] #1
+                                                                          InputAdapter
+                                                                            ReusedExchange [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year] #5
+                                                      InputAdapter
+                                                        WholeStageCodegen (31)
+                                                          Sort [ca_address_sk]
+                                                            InputAdapter
+                                                              ReusedExchange [ca_address_sk,ca_county] #6
+                      InputAdapter
+                        WholeStageCodegen (43)
+                          Sort [ca_county]
+                            InputAdapter
+                              Exchange [ca_county] #18
+                                WholeStageCodegen (42)
+                                  HashAggregate [ca_county,d_qoy,d_year,sum,isEmpty] [sum(_pushedexpression),web_sales,sum,isEmpty]
+                                    InputAdapter
+                                      Exchange [ca_county,d_qoy,d_year] #19
+                                        WholeStageCodegen (41)
+                                          HashAggregate [ca_county,d_qoy,d_year,_pushedexpression] [sum,isEmpty,sum,isEmpty]
+                                            Project [d_qoy,d_year,ca_county]
                                               SortMergeJoin [ws_bill_addr_sk,ca_address_sk]
                                                 InputAdapter
-                                                  WholeStageCodegen (29)
+                                                  WholeStageCodegen (38)
                                                     Sort [ws_bill_addr_sk]
                                                       InputAdapter
-                                                        Exchange [ws_bill_addr_sk] #19
-                                                          WholeStageCodegen (28)
-                                                            Project [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy]
-                                                              BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
-                                                                Filter [ws_bill_addr_sk]
-                                                                  ColumnarToRow
+                                                        Exchange [ws_bill_addr_sk] #20
+                                                          WholeStageCodegen (37)
+                                                            HashAggregate [ws_bill_addr_sk,d_qoy,d_year]
+                                                              Project [ws_bill_addr_sk,d_qoy,d_year,sum]
+                                                                HashAggregate [ws_bill_addr_sk,d_qoy,d_year,ws_ext_sales_price] [sum,sum]
+                                                                  BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
+                                                                    Filter [ws_bill_addr_sk]
+                                                                      ColumnarToRow
+                                                                        InputAdapter
+                                                                          Scan parquet default.web_sales [ws_sold_time_sk,ws_ship_date_sk,ws_item_sk,ws_bill_customer_sk,ws_bill_cdemo_sk,ws_bill_hdemo_sk,ws_bill_addr_sk,ws_ship_customer_sk,ws_ship_cdemo_sk,ws_ship_hdemo_sk,ws_ship_addr_sk,ws_web_page_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_promo_sk,ws_order_number,ws_quantity,ws_wholesale_cost,ws_list_price,ws_sales_price,ws_ext_discount_amt,ws_ext_sales_price,ws_ext_wholesale_cost,ws_ext_list_price,ws_ext_tax,ws_coupon_amt,ws_ext_ship_cost,ws_net_paid,ws_net_paid_inc_tax,ws_net_paid_inc_ship,ws_net_paid_inc_ship_tax,ws_net_profit,ws_sold_date_sk]
+                                                                            ReusedSubquery [d_date_sk] #2
                                                                     InputAdapter
-                                                                      Scan parquet default.web_sales [ws_bill_addr_sk,ws_ext_sales_price,ws_sold_date_sk]
-                                                                        ReusedSubquery [d_date_sk] #1
-                                                                InputAdapter
-                                                                  ReusedExchange [d_date_sk,d_year,d_qoy] #4
+                                                                      ReusedExchange [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year] #10
                                                 InputAdapter
-                                                  WholeStageCodegen (31)
+                                                  WholeStageCodegen (40)
                                                     Sort [ca_address_sk]
                                                       InputAdapter
-                                                        ReusedExchange [ca_address_sk,ca_county] #5
-                        InputAdapter
-                          BroadcastExchange #20
-                            WholeStageCodegen (40)
-                              HashAggregate [ca_county,d_qoy,d_year,sum] [sum(UnscaledValue(ws_ext_sales_price)),web_sales,sum]
-                                InputAdapter
-                                  Exchange [ca_county,d_qoy,d_year] #21
-                                    WholeStageCodegen (39)
-                                      HashAggregate [ca_county,d_qoy,d_year,ws_ext_sales_price] [sum,sum]
-                                        Project [ws_ext_sales_price,d_year,d_qoy,ca_county]
-                                          SortMergeJoin [ws_bill_addr_sk,ca_address_sk]
-                                            InputAdapter
-                                              WholeStageCodegen (36)
-                                                Sort [ws_bill_addr_sk]
-                                                  InputAdapter
-                                                    Exchange [ws_bill_addr_sk] #22
-                                                      WholeStageCodegen (35)
-                                                        Project [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy]
+                                                        ReusedExchange [ca_address_sk,ca_county] #6
+              InputAdapter
+                WholeStageCodegen (52)
+                  Sort [ca_county]
+                    InputAdapter
+                      Exchange [ca_county] #21
+                        WholeStageCodegen (51)
+                          HashAggregate [ca_county,d_qoy,d_year,sum,isEmpty] [sum(_pushedexpression),web_sales,sum,isEmpty]
+                            InputAdapter
+                              Exchange [ca_county,d_qoy,d_year] #22
+                                WholeStageCodegen (50)
+                                  HashAggregate [ca_county,d_qoy,d_year,_pushedexpression] [sum,isEmpty,sum,isEmpty]
+                                    Project [d_qoy,d_year,ca_county]
+                                      SortMergeJoin [ws_bill_addr_sk,ca_address_sk]
+                                        InputAdapter
+                                          WholeStageCodegen (47)
+                                            Sort [ws_bill_addr_sk]
+                                              InputAdapter
+                                                Exchange [ws_bill_addr_sk] #23
+                                                  WholeStageCodegen (46)
+                                                    HashAggregate [ws_bill_addr_sk,d_qoy,d_year]
+                                                      Project [ws_bill_addr_sk,d_qoy,d_year,sum]
+                                                        HashAggregate [ws_bill_addr_sk,d_qoy,d_year,ws_ext_sales_price] [sum,sum]
                                                           BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
                                                             Filter [ws_bill_addr_sk]
                                                               ColumnarToRow
                                                                 InputAdapter
-                                                                  Scan parquet default.web_sales [ws_bill_addr_sk,ws_ext_sales_price,ws_sold_date_sk]
-                                                                    ReusedSubquery [d_date_sk] #2
+                                                                  Scan parquet default.web_sales [ws_sold_time_sk,ws_ship_date_sk,ws_item_sk,ws_bill_customer_sk,ws_bill_cdemo_sk,ws_bill_hdemo_sk,ws_bill_addr_sk,ws_ship_customer_sk,ws_ship_cdemo_sk,ws_ship_hdemo_sk,ws_ship_addr_sk,ws_web_page_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_promo_sk,ws_order_number,ws_quantity,ws_wholesale_cost,ws_list_price,ws_sales_price,ws_ext_discount_amt,ws_ext_sales_price,ws_ext_wholesale_cost,ws_ext_list_price,ws_ext_tax,ws_coupon_amt,ws_ext_ship_cost,ws_net_paid,ws_net_paid_inc_tax,ws_net_paid_inc_ship,ws_net_paid_inc_ship_tax,ws_net_profit,ws_sold_date_sk]
+                                                                    ReusedSubquery [d_date_sk] #3
                                                             InputAdapter
-                                                              ReusedExchange [d_date_sk,d_year,d_qoy] #9
-                                            InputAdapter
-                                              WholeStageCodegen (38)
-                                                Sort [ca_address_sk]
-                                                  InputAdapter
-                                                    ReusedExchange [ca_address_sk,ca_county] #5
+                                                              ReusedExchange [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year] #14
+                                        InputAdapter
+                                          WholeStageCodegen (49)
+                                            Sort [ca_address_sk]
+                                              InputAdapter
+                                                ReusedExchange [ca_address_sk,ca_county] #6

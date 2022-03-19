@@ -29,6 +29,7 @@ WholeStageCodegen (4)
                         InputAdapter
                           BroadcastExchange #4
                             WholeStageCodegen (1)
-                              ColumnarToRow
-                                InputAdapter
-                                  Scan parquet default.orders [o_custkey]
+                              HashAggregate [o_custkey]
+                                ColumnarToRow
+                                  InputAdapter
+                                    Scan parquet default.orders [o_custkey]

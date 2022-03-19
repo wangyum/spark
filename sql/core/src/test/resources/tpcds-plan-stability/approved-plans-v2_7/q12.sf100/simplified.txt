@@ -1,49 +1,57 @@
 TakeOrderedAndProject [i_category,i_class,i_item_id,i_item_desc,revenueratio,i_current_price,itemrevenue]
-  WholeStageCodegen (9)
+  WholeStageCodegen (12)
     Project [i_item_id,i_item_desc,i_category,i_class,i_current_price,itemrevenue,_w0,_we0]
       InputAdapter
         Window [_w1,i_class]
-          WholeStageCodegen (8)
+          WholeStageCodegen (11)
             Sort [i_class]
               InputAdapter
                 Exchange [i_class] #1
-                  WholeStageCodegen (7)
-                    HashAggregate [i_item_id,i_item_desc,i_category,i_class,i_current_price,sum] [sum(UnscaledValue(ws_ext_sales_price)),itemrevenue,_w0,_w1,sum]
+                  WholeStageCodegen (10)
+                    HashAggregate [i_item_id,i_item_desc,i_category,i_class,i_current_price,sum,isEmpty] [sum(_pushedexpression),itemrevenue,_w0,_w1,sum,isEmpty]
                       InputAdapter
                         Exchange [i_item_id,i_item_desc,i_category,i_class,i_current_price] #2
-                          WholeStageCodegen (6)
-                            HashAggregate [i_item_id,i_item_desc,i_category,i_class,i_current_price,ws_ext_sales_price] [sum,sum]
-                              Project [ws_ext_sales_price,i_item_id,i_item_desc,i_current_price,i_class,i_category]
-                                BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
-                                  Project [ws_ext_sales_price,ws_sold_date_sk,i_item_id,i_item_desc,i_current_price,i_class,i_category]
-                                    SortMergeJoin [ws_item_sk,i_item_sk]
-                                      InputAdapter
-                                        WholeStageCodegen (2)
-                                          Sort [ws_item_sk]
-                                            InputAdapter
-                                              Exchange [ws_item_sk] #3
-                                                WholeStageCodegen (1)
-                                                  Filter [ws_item_sk]
-                                                    ColumnarToRow
-                                                      InputAdapter
-                                                        Scan parquet default.web_sales [ws_item_sk,ws_ext_sales_price,ws_sold_date_sk]
-                                                          SubqueryBroadcast [d_date_sk] #1
-                                                            BroadcastExchange #4
-                                                              WholeStageCodegen (1)
-                                                                Project [d_date_sk]
-                                                                  Filter [d_date,d_date_sk]
-                                                                    ColumnarToRow
-                                                                      InputAdapter
-                                                                        Scan parquet default.date_dim [d_date_sk,d_date]
-                                      InputAdapter
-                                        WholeStageCodegen (4)
-                                          Sort [i_item_sk]
-                                            InputAdapter
-                                              Exchange [i_item_sk] #5
-                                                WholeStageCodegen (3)
-                                                  Filter [i_category,i_item_sk]
-                                                    ColumnarToRow
-                                                      InputAdapter
-                                                        Scan parquet default.item [i_item_sk,i_item_id,i_item_desc,i_current_price,i_class,i_category]
+                          WholeStageCodegen (9)
+                            HashAggregate [i_item_id,i_item_desc,i_category,i_class,i_current_price,_pushedexpression] [sum,isEmpty,sum,isEmpty]
+                              Project [i_item_id,i_item_desc,i_category,i_class,i_current_price,_pushedexpression]
+                                SortMergeJoin [ws_sold_date_sk,d_date_sk]
                                   InputAdapter
-                                    ReusedExchange [d_date_sk] #4
+                                    WholeStageCodegen (6)
+                                      Sort [ws_sold_date_sk]
+                                        InputAdapter
+                                          Exchange [ws_sold_date_sk] #3
+                                            WholeStageCodegen (5)
+                                              Project [ws_sold_date_sk,i_item_id,i_item_desc,i_category,i_class,i_current_price,sum]
+                                                HashAggregate [ws_sold_date_sk,i_item_id,i_item_desc,i_category,i_class,i_current_price,ws_ext_sales_price] [sum,sum]
+                                                  SortMergeJoin [ws_item_sk,i_item_sk]
+                                                    InputAdapter
+                                                      WholeStageCodegen (2)
+                                                        Sort [ws_item_sk]
+                                                          InputAdapter
+                                                            Exchange [ws_item_sk] #4
+                                                              WholeStageCodegen (1)
+                                                                Filter [ws_item_sk]
+                                                                  ColumnarToRow
+                                                                    InputAdapter
+                                                                      Scan parquet default.web_sales [ws_sold_time_sk,ws_ship_date_sk,ws_item_sk,ws_bill_customer_sk,ws_bill_cdemo_sk,ws_bill_hdemo_sk,ws_bill_addr_sk,ws_ship_customer_sk,ws_ship_cdemo_sk,ws_ship_hdemo_sk,ws_ship_addr_sk,ws_web_page_sk,ws_web_site_sk,ws_ship_mode_sk,ws_warehouse_sk,ws_promo_sk,ws_order_number,ws_quantity,ws_wholesale_cost,ws_list_price,ws_sales_price,ws_ext_discount_amt,ws_ext_sales_price,ws_ext_wholesale_cost,ws_ext_list_price,ws_ext_tax,ws_coupon_amt,ws_ext_ship_cost,ws_net_paid,ws_net_paid_inc_tax,ws_net_paid_inc_ship,ws_net_paid_inc_ship_tax,ws_net_profit,ws_sold_date_sk]
+                                                    InputAdapter
+                                                      WholeStageCodegen (4)
+                                                        Sort [i_item_sk]
+                                                          InputAdapter
+                                                            Exchange [i_item_sk] #5
+                                                              WholeStageCodegen (3)
+                                                                Filter [i_category,i_item_sk]
+                                                                  ColumnarToRow
+                                                                    InputAdapter
+                                                                      Scan parquet default.item [i_item_sk,i_item_id,i_rec_start_date,i_rec_end_date,i_item_desc,i_current_price,i_wholesale_cost,i_brand_id,i_brand,i_class_id,i_class,i_category_id,i_category,i_manufact_id,i_manufact,i_size,i_formulation,i_color,i_units,i_container,i_manager_id,i_product_name]
+                                  InputAdapter
+                                    WholeStageCodegen (8)
+                                      Sort [d_date_sk]
+                                        InputAdapter
+                                          Exchange [d_date_sk] #6
+                                            WholeStageCodegen (7)
+                                              HashAggregate [d_date_sk]
+                                                Filter [d_date,d_date_sk]
+                                                  ColumnarToRow
+                                                    InputAdapter
+                                                      Scan parquet default.date_dim [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year]

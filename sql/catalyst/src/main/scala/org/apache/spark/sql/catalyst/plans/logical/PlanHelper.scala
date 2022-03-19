@@ -44,6 +44,7 @@ object PlanHelper {
           if !plan.isInstanceOf[Window] => e
         case e: AggregateExpression
           if !(plan.isInstanceOf[Aggregate] ||
+               plan.isInstanceOf[PartialAggregate] ||
                plan.isInstanceOf[Window] ||
                plan.isInstanceOf[CollectMetrics] ||
                onlyInLateralSubquery(plan)) => e

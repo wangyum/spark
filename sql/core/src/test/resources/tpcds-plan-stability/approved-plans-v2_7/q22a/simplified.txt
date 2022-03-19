@@ -3,52 +3,52 @@ TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
     WholeStageCodegen (5)
       HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(qoh),qoh,sum,count]
         HashAggregate [i_product_name,i_brand,i_class,i_category,qoh] [sum,count,sum,count]
-          HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
+          HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(_pushedexpression),qoh,sum,count]
             InputAdapter
               Exchange [i_product_name,i_brand,i_class,i_category] #1
                 WholeStageCodegen (4)
-                  HashAggregate [i_product_name,i_brand,i_class,i_category,inv_quantity_on_hand] [sum,count,sum,count]
-                    Project [inv_quantity_on_hand,i_brand,i_class,i_category,i_product_name]
+                  HashAggregate [i_product_name,i_brand,i_class,i_category,_pushedexpression] [sum,count,sum,count]
+                    Project [i_product_name,i_brand,i_class,i_category,_pushedexpression]
                       BroadcastHashJoin [inv_warehouse_sk,w_warehouse_sk]
-                        Project [inv_warehouse_sk,inv_quantity_on_hand,i_brand,i_class,i_category,i_product_name]
-                          BroadcastHashJoin [inv_item_sk,i_item_sk]
-                            Project [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand]
+                        Project [inv_warehouse_sk,i_product_name,i_brand,i_class,i_category,sum]
+                          HashAggregate [inv_warehouse_sk,i_product_name,i_brand,i_class,i_category,inv_quantity_on_hand] [sum,count,sum,count]
+                            BroadcastHashJoin [inv_item_sk,i_item_sk]
                               BroadcastHashJoin [inv_date_sk,d_date_sk]
-                                Filter [inv_item_sk,inv_warehouse_sk]
+                                Filter [inv_warehouse_sk,inv_item_sk]
                                   ColumnarToRow
                                     InputAdapter
                                       Scan parquet default.inventory [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                         SubqueryBroadcast [d_date_sk] #1
                                           BroadcastExchange #2
                                             WholeStageCodegen (1)
-                                              Project [d_date_sk]
-                                                Filter [d_month_seq,d_date_sk]
-                                                  ColumnarToRow
-                                                    InputAdapter
-                                                      Scan parquet default.date_dim [d_date_sk,d_month_seq]
+                                              Filter [d_month_seq,d_date_sk]
+                                                ColumnarToRow
+                                                  InputAdapter
+                                                    Scan parquet default.date_dim [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year]
                                 InputAdapter
-                                  ReusedExchange [d_date_sk] #2
-                            InputAdapter
-                              BroadcastExchange #3
-                                WholeStageCodegen (2)
-                                  Filter [i_item_sk]
-                                    ColumnarToRow
-                                      InputAdapter
-                                        Scan parquet default.item [i_item_sk,i_brand,i_class,i_category,i_product_name]
+                                  ReusedExchange [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year] #2
+                              InputAdapter
+                                BroadcastExchange #3
+                                  WholeStageCodegen (2)
+                                    Filter [i_item_sk]
+                                      ColumnarToRow
+                                        InputAdapter
+                                          Scan parquet default.item [i_item_sk,i_item_id,i_rec_start_date,i_rec_end_date,i_item_desc,i_current_price,i_wholesale_cost,i_brand_id,i_brand,i_class_id,i_class,i_category_id,i_category,i_manufact_id,i_manufact,i_size,i_formulation,i_color,i_units,i_container,i_manager_id,i_product_name]
                         InputAdapter
                           BroadcastExchange #4
                             WholeStageCodegen (3)
-                              Filter [w_warehouse_sk]
-                                ColumnarToRow
-                                  InputAdapter
-                                    Scan parquet default.warehouse [w_warehouse_sk]
+                              HashAggregate [w_warehouse_sk]
+                                Filter [w_warehouse_sk]
+                                  ColumnarToRow
+                                    InputAdapter
+                                      Scan parquet default.warehouse [w_warehouse_sk,w_warehouse_id,w_warehouse_name,w_warehouse_sq_ft,w_street_number,w_street_name,w_street_type,w_suite_number,w_city,w_county,w_state,w_zip,w_country,w_gmt_offset]
     WholeStageCodegen (11)
       HashAggregate [i_product_name,i_brand,i_class,sum,count] [avg(qoh),i_category,qoh,sum,count]
         InputAdapter
           Exchange [i_product_name,i_brand,i_class] #5
             WholeStageCodegen (10)
               HashAggregate [i_product_name,i_brand,i_class,qoh] [sum,count,sum,count]
-                HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
+                HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(_pushedexpression),qoh,sum,count]
                   InputAdapter
                     ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
     WholeStageCodegen (17)
@@ -57,7 +57,7 @@ TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
           Exchange [i_product_name,i_brand] #6
             WholeStageCodegen (16)
               HashAggregate [i_product_name,i_brand,qoh] [sum,count,sum,count]
-                HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
+                HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(_pushedexpression),qoh,sum,count]
                   InputAdapter
                     ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
     WholeStageCodegen (23)
@@ -66,7 +66,7 @@ TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
           Exchange [i_product_name] #7
             WholeStageCodegen (22)
               HashAggregate [i_product_name,qoh] [sum,count,sum,count]
-                HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
+                HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(_pushedexpression),qoh,sum,count]
                   InputAdapter
                     ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
     WholeStageCodegen (29)
@@ -75,6 +75,6 @@ TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
           Exchange #8
             WholeStageCodegen (28)
               HashAggregate [qoh] [sum,count,sum,count]
-                HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
+                HashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [avg(_pushedexpression),qoh,sum,count]
                   InputAdapter
                     ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1

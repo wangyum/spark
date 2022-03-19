@@ -1007,6 +1007,46 @@ case class Aggregate(
   }
 }
 
+case class PartialAggregate(
+    groupingExpressions: Seq[Expression],
+    aggregateExpressions: Seq[NamedExpression],
+    child: LogicalPlan)
+  extends UnaryNode {
+
+  override lazy val resolved: Boolean = {
+    val hasWindowExpressions = aggregateExpressions.exists ( _.collect {
+      case window: WindowExpression => window
+    }.nonEmpty
+    )
+
+    !expressions.exists(!_.resolved) && childrenResolved && !hasWindowExpressions
+  }
+
+  override def output: Seq[Attribute] = aggregateExpressions.map(_.toAttribute)
+  override def metadataOutput: Seq[Attribute] = Nil
+  override def maxRows: Option[Long] = child.maxRows
+
+  final override val nodePatterns : Seq[TreePattern] = Seq(AGGREGATE)
+
+  override lazy val validConstraints: ExpressionSet = {
+    val nonAgg = aggregateExpressions.filter(!_.exists(_.isInstanceOf[AggregateExpression]))
+    getAllValidConstraints(nonAgg)
+  }
+
+  override protected def withNewChildInternal(newChild: LogicalPlan): PartialAggregate =
+    copy(child = newChild)
+
+  // Whether this Aggregate operator is group only. For example: SELECT a, a FROM t GROUP BY a
+  private[sql] def groupOnly: Boolean = {
+    // aggregateExpressions can be empty through Dateset.agg,
+    // so we should also check groupingExpressions is non empty
+    groupingExpressions.nonEmpty && aggregateExpressions.map {
+      case Alias(child, _) => child
+      case e => e
+    }.forall(a => a.foldable || groupingExpressions.exists(g => a.semanticEquals(g)))
+  }
+}
+
 case class Window(
     windowExpressions: Seq[NamedExpression],
     partitionSpec: Seq[Expression],

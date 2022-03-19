@@ -23,11 +23,12 @@ WholeStageCodegen (6)
                                     InputAdapter
                                       BroadcastExchange #4
                                         WholeStageCodegen (1)
-                                          Project [s_suppkey]
-                                            Filter [s_comment]
-                                              ColumnarToRow
-                                                InputAdapter
-                                                  Scan parquet default.supplier [s_suppkey,s_comment]
+                                          HashAggregate [s_suppkey]
+                                            Project [s_suppkey]
+                                              Filter [s_comment]
+                                                ColumnarToRow
+                                                  InputAdapter
+                                                    Scan parquet default.supplier [s_suppkey,s_comment]
                                   InputAdapter
                                     BroadcastExchange #5
                                       WholeStageCodegen (2)

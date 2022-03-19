@@ -84,6 +84,7 @@ abstract class Optimizer(catalogManager: CatalogManager)
         PushDownPredicates,
         PushDownLeftSemiAntiJoin,
         PushLeftSemiLeftAntiThroughJoin,
+        PushPartialAggregationThroughJoin,
         LimitPushDown,
         LimitPushDownThroughWindow,
         ColumnPruning,
@@ -249,6 +250,7 @@ abstract class Optimizer(catalogManager: CatalogManager)
       RemoveRedundantAliases,
       RemoveNoopOperators) :+
     // This batch must be executed after the `RewriteSubquery` batch, which creates joins.
+    Batch("DeduplicateRightSideOfLeftSemiAntiJoin", Once, DeduplicateRightSideOfLeftSemiAntiJoin) :+
     Batch("NormalizeFloatingNumbers", Once, NormalizeFloatingNumbers) :+
     Batch("ReplaceUpdateFieldsExpression", Once, ReplaceUpdateFieldsExpression)
 
@@ -781,6 +783,141 @@ object PushProjectionThroughUnion extends Rule[LogicalPlan] with PredicateHelper
     case Project(projectList, u: Union)
         if projectList.forall(_.deterministic) && u.children.nonEmpty =>
       u.copy(children = pushProjectionThroughUnion(projectList, u))
+  }
+}
+
+
+object PushPartialAggregationThroughJoin extends Rule[LogicalPlan] with PredicateHelper {
+
+  private def collectAggregateExprs(agg: Aggregate): Seq[AggregateExpression] = {
+    agg.aggregateExpressions.flatMap {
+      case Alias(child: AggregateExpression, _) =>
+        Seq(child)
+      case _ => Nil
+    }
+  }
+
+  private def split(attributes: Seq[Attribute], left: LogicalPlan, right: LogicalPlan) = {
+    val (leftAttributes, rest) = attributes.partition(_.references.subsetOf(left.outputSet))
+    val (rightAttributes, bothSideAttributes) =
+      rest.partition(expr => expr.references.subsetOf(right.outputSet))
+
+    (leftAttributes, rightAttributes, bothSideAttributes)
+  }
+
+  private def splitAggregateExpressions(agg: Aggregate, left: LogicalPlan, right: LogicalPlan) = {
+    val (leftAggExprs, rest) = collectAggregateExprs(agg)
+      .partition(e => e.references.size == 1 && e.references.subsetOf(left.outputSet))
+    val (rightAggExprs, others) =
+      rest.partition(e => e.references.size == 1 && e.references.subsetOf(right.outputSet))
+    (leftAggExprs, rightAggExprs, others)
+  }
+
+  def apply(plan: LogicalPlan): LogicalPlan = {
+    if (conf.getConf(SQLConf.PUSH_PARTIAL_AGGREGATION_THROUGH_JOIN_ENABLED)) {
+      plan.transformWithPruning(_.containsAllPatterns(JOIN, AGGREGATE)) {
+        case a @ Aggregate(_, _, j: Join)
+          if j.left.isInstanceOf[Aggregate] || j.right.isInstanceOf[Aggregate] ||
+            j.left.isInstanceOf[PartialAggregate] || j.right.isInstanceOf[PartialAggregate] =>
+          a
+
+        case a @ Aggregate(_, _, Project(_, j: Join))
+          if j.left.isInstanceOf[Aggregate] || j.right.isInstanceOf[Aggregate] &&
+            j.left.isInstanceOf[PartialAggregate] || j.right.isInstanceOf[PartialAggregate] =>
+          a
+
+        case a @ Aggregate(_, _, j@Join(_, _,
+        LeftOuter | Inner | RightOuter | FullOuter | Cross, condition, _))
+          if a.aggregateExpressions.forall(_.deterministic) &&
+            j.condition.forall(_.deterministic) &&
+            !a.aggregateExpressions.exists(ScalarSubquery.hasCorrelatedScalarSubquery) &&
+            collectAggregateExprs(a).forall { ae =>
+              !ae.isDistinct && ae.filter.isEmpty &&
+                ae.aggregateFunction.children.size == 1 &&
+                ae.aggregateFunction.children.forall(_.isInstanceOf[Attribute])
+            } =>
+          pushdownAgg(a, j)
+
+        case a @ Aggregate(_: Seq[Attribute]@unchecked, _,
+        Project(_: Seq[Attribute]@unchecked, j@Join(_, _,
+        LeftOuter | Inner | RightOuter | FullOuter | Cross, condition, _)))
+          if a.aggregateExpressions.forall(_.deterministic) && condition.forall(_.deterministic) &&
+            !a.aggregateExpressions.exists(ScalarSubquery.hasCorrelatedScalarSubquery) &&
+            collectAggregateExprs(a).forall { ae =>
+              !ae.isDistinct && ae.filter.isEmpty &&
+                ae.aggregateFunction.children.size == 1 &&
+                ae.aggregateFunction.children.forall(_.isInstanceOf[Attribute])
+            } =>
+          pushdownAgg(a, j)
+      }
+    } else {
+      plan
+    }
+  }
+
+  private def pushdownAgg(agg: Aggregate, join: Join): LogicalPlan = {
+    val (leftAggExprs, rightAggExprs, others) =
+      splitAggregateExpressions(agg, join.left, join.right)
+    val (leftGroupExprs, rightGroupExprs, bothSideGroupExprs) =
+      split(agg.groupingExpressions.map(_.asInstanceOf[Attribute]), join.left, join.right)
+
+    if (others.nonEmpty || bothSideGroupExprs.nonEmpty) {
+      agg
+    } else {
+      val (leftCondExprs, rightCondExprs, _) =
+        split(join.condition.map(_.references.toSeq).getOrElse(Nil), join.left, join.right)
+
+      val leftGroup = leftCondExprs ++ leftGroupExprs
+      val rightGroup = rightCondExprs ++ rightGroupExprs
+
+      val leftAggExprsMap = mutable.LinkedHashMap.empty[Expression, NamedExpression]
+      val rightAggExprsMap = mutable.LinkedHashMap.empty[Expression, NamedExpression]
+      leftAggExprs.foreach { e =>
+        leftAggExprsMap.put(e.canonicalized, Alias(e, s"_pushedexpression")())
+      }
+
+      rightAggExprs.foreach { e =>
+        rightAggExprsMap.put(e.canonicalized, Alias(e, s"_pushedexpression")())
+      }
+
+      val leftAgg = leftGroup ++ leftAggExprsMap.values
+      val rightAgg = rightGroup ++ rightAggExprsMap.values
+
+      val newAggExps = agg.aggregateExpressions.map {
+        case alias @ Alias(aliasChild, _) =>
+          leftAggExprsMap.get(aliasChild.canonicalized)
+            .orElse(rightAggExprsMap.get(aliasChild.canonicalized)).map { c =>
+            Alias(Cast(aliasChild.transform { case _: Attribute => c.toAttribute }, c.dataType),
+              alias.name)(alias.exprId, alias.qualifier, alias.explicitMetadata,
+              alias.nonInheritableMetadataKeys)
+          }.getOrElse(alias)
+        case ne: NamedExpression => ne
+      }
+
+      val leftAggregate = PartialAggregate(leftGroup, leftAgg, join.left)
+      val rightAggregate = PartialAggregate(rightGroup, rightAgg, join.right)
+
+      agg.copy(
+        aggregateExpressions = newAggExps,
+        child = join.copy(left = leftAggregate, right = rightAggregate))
+    }
+  }
+}
+
+object DeduplicateRightSideOfLeftSemiAntiJoin extends Rule[LogicalPlan] with JoinSelectionHelper {
+  def apply(plan: LogicalPlan): LogicalPlan = {
+    if (conf.getConf(SQLConf.DEDUPLICATE_SEMI_ANTI_JOIN_ENABLED)) {
+      plan.transform {
+        case j @ Join(_, agg: Aggregate, LeftSemiOrAnti(_), _, _) if agg.groupOnly =>
+          j
+        case j @ Join(_, _: PartialAggregate, LeftSemiOrAnti(_), _, _) =>
+          j
+        case j @ Join(_, right, LeftSemiOrAnti(_), _, _) =>
+          j.copy(right = PartialAggregate(right.output, right.output, right))
+      }
+    } else {
+      plan
+    }
   }
 }
 
@@ -1557,6 +1694,36 @@ object PushPredicateThroughNonJoin extends Rule[LogicalPlan] with PredicateHelpe
         val pushDownPredicate = pushDown.reduce(And)
         val replaced = replaceAlias(pushDownPredicate, aliasMap)
         val newAggregate = aggregate.copy(child = Filter(replaced, aggregate.child))
+        // If there is no more filter to stay up, just eliminate the filter.
+        // Otherwise, create "Filter(stayUp) <- Aggregate <- Filter(pushDownPredicate)".
+        if (stayUp.isEmpty) newAggregate else Filter(stayUp.reduce(And), newAggregate)
+      } else {
+        filter
+      }
+
+    case filter @ Filter(condition, partialAgg: PartialAggregate)
+        if partialAgg.aggregateExpressions.forall(_.deterministic)
+          && partialAgg.groupingExpressions.nonEmpty =>
+      val aliasMap =
+        getAliasMap(Aggregate(partialAgg.groupingExpressions, partialAgg.aggregateExpressions,
+          partialAgg.child))
+
+      // For each filter, expand the alias and check if the filter can be evaluated using
+      // attributes produced by the aggregate operator's child operator.
+      val (candidates, nonDeterministic) =
+      splitConjunctivePredicates(condition).partition(_.deterministic)
+
+      val (pushDown, rest) = candidates.partition { cond =>
+        val replaced = replaceAlias(cond, aliasMap)
+        cond.references.nonEmpty && replaced.references.subsetOf(partialAgg.child.outputSet)
+      }
+
+      val stayUp = rest ++ nonDeterministic
+
+      if (pushDown.nonEmpty) {
+        val pushDownPredicate = pushDown.reduce(And)
+        val replaced = replaceAlias(pushDownPredicate, aliasMap)
+        val newAggregate = partialAgg.copy(child = Filter(replaced, partialAgg.child))
         // If there is no more filter to stay up, just eliminate the filter.
         // Otherwise, create "Filter(stayUp) <- Aggregate <- Filter(pushDownPredicate)".
         if (stayUp.isEmpty) newAggregate else Filter(stayUp.reduce(And), newAggregate)

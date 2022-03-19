@@ -886,6 +886,14 @@ object FoldablePropagation extends Rule[LogicalPlan] {
         val newFoldableMap = collectFoldables(newAggregate.aggregateExpressions)
         (newAggregate, newFoldableMap)
 
+      case a: PartialAggregate =>
+        val (newChild, foldableMap) = propagateFoldables(a.child)
+        val newAggregate =
+          replaceFoldable(a.withNewChildren(Seq(newChild)).asInstanceOf[PartialAggregate],
+            foldableMap)
+        val newFoldableMap = collectFoldables(newAggregate.aggregateExpressions)
+        (newAggregate, newFoldableMap)
+
       // We can not replace the attributes in `Expand.output`. If there are other non-leaf
       // operators that have the `output` field, we should put them here too.
       case e: Expand =>

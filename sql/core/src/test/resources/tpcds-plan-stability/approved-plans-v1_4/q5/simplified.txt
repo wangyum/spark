@@ -9,122 +9,127 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                 InputAdapter
                   Union
                     WholeStageCodegen (6)
-                      HashAggregate [s_store_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                      HashAggregate [s_store_id,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(_pushedexpression),sum(_pushedexpression),sum(_pushedexpression),sum(_pushedexpression),sales,returns,profit,channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                         InputAdapter
                           Exchange [s_store_id] #2
                             WholeStageCodegen (5)
-                              HashAggregate [s_store_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                Project [sales_price,profit,return_amt,net_loss,s_store_id]
+                              HashAggregate [s_store_id,_pushedexpression,_pushedexpression,_pushedexpression,_pushedexpression] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
+                                Project [_pushedexpression,_pushedexpression,_pushedexpression,_pushedexpression,s_store_id]
                                   BroadcastHashJoin [store_sk,s_store_sk]
-                                    Project [store_sk,sales_price,profit,return_amt,net_loss]
-                                      BroadcastHashJoin [date_sk,d_date_sk]
-                                        InputAdapter
-                                          Union
-                                            WholeStageCodegen (1)
-                                              Project [ss_store_sk,ss_sold_date_sk,ss_ext_sales_price,ss_net_profit]
-                                                Filter [ss_store_sk]
-                                                  ColumnarToRow
-                                                    InputAdapter
-                                                      Scan parquet default.store_sales [ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
-                                                        SubqueryBroadcast [d_date_sk] #1
-                                                          BroadcastExchange #3
-                                                            WholeStageCodegen (1)
-                                                              Project [d_date_sk]
+                                    Project [store_sk,sum,sum,sum,sum]
+                                      HashAggregate [store_sk,sales_price,profit,return_amt,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
+                                        BroadcastHashJoin [date_sk,d_date_sk]
+                                          InputAdapter
+                                            Union
+                                              WholeStageCodegen (1)
+                                                Project [ss_store_sk,ss_sold_date_sk,ss_ext_sales_price,ss_net_profit]
+                                                  Filter [ss_store_sk]
+                                                    ColumnarToRow
+                                                      InputAdapter
+                                                        Scan parquet default.store_sales [ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
+                                                          SubqueryBroadcast [d_date_sk] #1
+                                                            BroadcastExchange #3
+                                                              WholeStageCodegen (1)
                                                                 Filter [d_date,d_date_sk]
                                                                   ColumnarToRow
                                                                     InputAdapter
-                                                                      Scan parquet default.date_dim [d_date_sk,d_date]
-                                            WholeStageCodegen (2)
-                                              Project [sr_store_sk,sr_returned_date_sk,sr_return_amt,sr_net_loss]
-                                                Filter [sr_store_sk]
-                                                  ColumnarToRow
-                                                    InputAdapter
-                                                      Scan parquet default.store_returns [sr_store_sk,sr_return_amt,sr_net_loss,sr_returned_date_sk]
-                                                        ReusedSubquery [d_date_sk] #1
-                                        InputAdapter
-                                          ReusedExchange [d_date_sk] #3
+                                                                      Scan parquet default.date_dim [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year]
+                                              WholeStageCodegen (2)
+                                                Project [sr_store_sk,sr_returned_date_sk,sr_return_amt,sr_net_loss]
+                                                  Filter [sr_store_sk]
+                                                    ColumnarToRow
+                                                      InputAdapter
+                                                        Scan parquet default.store_returns [sr_store_sk,sr_return_amt,sr_net_loss,sr_returned_date_sk]
+                                                          ReusedSubquery [d_date_sk] #1
+                                          InputAdapter
+                                            ReusedExchange [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year] #3
                                     InputAdapter
                                       BroadcastExchange #4
                                         WholeStageCodegen (4)
-                                          Filter [s_store_sk]
-                                            ColumnarToRow
-                                              InputAdapter
-                                                Scan parquet default.store [s_store_sk,s_store_id]
+                                          HashAggregate [s_store_sk,s_store_id]
+                                            Filter [s_store_sk]
+                                              ColumnarToRow
+                                                InputAdapter
+                                                  Scan parquet default.store [s_store_sk,s_store_id,s_rec_start_date,s_rec_end_date,s_closed_date_sk,s_store_name,s_number_employees,s_floor_space,s_hours,s_manager,s_market_id,s_geography_class,s_market_desc,s_market_manager,s_division_id,s_division_name,s_company_id,s_company_name,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip,s_country,s_gmt_offset,s_tax_percentage]
                     WholeStageCodegen (12)
-                      HashAggregate [cp_catalog_page_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                      HashAggregate [cp_catalog_page_id,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(_pushedexpression),sum(_pushedexpression),sum(_pushedexpression),sum(_pushedexpression),sales,returns,profit,channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                         InputAdapter
                           Exchange [cp_catalog_page_id] #5
                             WholeStageCodegen (11)
-                              HashAggregate [cp_catalog_page_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                Project [sales_price,profit,return_amt,net_loss,cp_catalog_page_id]
+                              HashAggregate [cp_catalog_page_id,_pushedexpression,_pushedexpression,_pushedexpression,_pushedexpression] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
+                                Project [_pushedexpression,_pushedexpression,_pushedexpression,_pushedexpression,cp_catalog_page_id]
                                   BroadcastHashJoin [page_sk,cp_catalog_page_sk]
-                                    Project [page_sk,sales_price,profit,return_amt,net_loss]
-                                      BroadcastHashJoin [date_sk,d_date_sk]
-                                        InputAdapter
-                                          Union
-                                            WholeStageCodegen (7)
-                                              Project [cs_catalog_page_sk,cs_sold_date_sk,cs_ext_sales_price,cs_net_profit]
-                                                Filter [cs_catalog_page_sk]
-                                                  ColumnarToRow
-                                                    InputAdapter
-                                                      Scan parquet default.catalog_sales [cs_catalog_page_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk]
-                                                        ReusedSubquery [d_date_sk] #1
-                                            WholeStageCodegen (8)
-                                              Project [cr_catalog_page_sk,cr_returned_date_sk,cr_return_amount,cr_net_loss]
-                                                Filter [cr_catalog_page_sk]
-                                                  ColumnarToRow
-                                                    InputAdapter
-                                                      Scan parquet default.catalog_returns [cr_catalog_page_sk,cr_return_amount,cr_net_loss,cr_returned_date_sk]
-                                                        ReusedSubquery [d_date_sk] #1
-                                        InputAdapter
-                                          ReusedExchange [d_date_sk] #3
+                                    Project [page_sk,sum,sum,sum,sum]
+                                      HashAggregate [page_sk,sales_price,profit,return_amt,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
+                                        BroadcastHashJoin [date_sk,d_date_sk]
+                                          InputAdapter
+                                            Union
+                                              WholeStageCodegen (7)
+                                                Project [cs_catalog_page_sk,cs_sold_date_sk,cs_ext_sales_price,cs_net_profit]
+                                                  Filter [cs_catalog_page_sk]
+                                                    ColumnarToRow
+                                                      InputAdapter
+                                                        Scan parquet default.catalog_sales [cs_catalog_page_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk]
+                                                          ReusedSubquery [d_date_sk] #1
+                                              WholeStageCodegen (8)
+                                                Project [cr_catalog_page_sk,cr_returned_date_sk,cr_return_amount,cr_net_loss]
+                                                  Filter [cr_catalog_page_sk]
+                                                    ColumnarToRow
+                                                      InputAdapter
+                                                        Scan parquet default.catalog_returns [cr_catalog_page_sk,cr_return_amount,cr_net_loss,cr_returned_date_sk]
+                                                          ReusedSubquery [d_date_sk] #1
+                                          InputAdapter
+                                            ReusedExchange [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year] #3
                                     InputAdapter
                                       BroadcastExchange #6
                                         WholeStageCodegen (10)
-                                          Filter [cp_catalog_page_sk]
-                                            ColumnarToRow
-                                              InputAdapter
-                                                Scan parquet default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
+                                          HashAggregate [cp_catalog_page_sk,cp_catalog_page_id]
+                                            Filter [cp_catalog_page_sk]
+                                              ColumnarToRow
+                                                InputAdapter
+                                                  Scan parquet default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id,cp_start_date_sk,cp_end_date_sk,cp_department,cp_catalog_number,cp_catalog_page_number,cp_description,cp_type]
                     WholeStageCodegen (19)
-                      HashAggregate [web_site_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                      HashAggregate [web_site_id,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(_pushedexpression),sum(_pushedexpression),sum(_pushedexpression),sum(_pushedexpression),sales,returns,profit,channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                         InputAdapter
                           Exchange [web_site_id] #7
                             WholeStageCodegen (18)
-                              HashAggregate [web_site_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                Project [sales_price,profit,return_amt,net_loss,web_site_id]
+                              HashAggregate [web_site_id,_pushedexpression,_pushedexpression,_pushedexpression,_pushedexpression] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
+                                Project [_pushedexpression,_pushedexpression,_pushedexpression,_pushedexpression,web_site_id]
                                   BroadcastHashJoin [wsr_web_site_sk,web_site_sk]
-                                    Project [wsr_web_site_sk,sales_price,profit,return_amt,net_loss]
-                                      BroadcastHashJoin [date_sk,d_date_sk]
-                                        InputAdapter
-                                          Union
-                                            WholeStageCodegen (13)
-                                              Project [ws_web_site_sk,ws_sold_date_sk,ws_ext_sales_price,ws_net_profit]
-                                                Filter [ws_web_site_sk]
-                                                  ColumnarToRow
+                                    Project [wsr_web_site_sk,sum,sum,sum,sum]
+                                      HashAggregate [wsr_web_site_sk,sales_price,profit,return_amt,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
+                                        BroadcastHashJoin [date_sk,d_date_sk]
+                                          InputAdapter
+                                            Union
+                                              WholeStageCodegen (13)
+                                                Project [ws_web_site_sk,ws_sold_date_sk,ws_ext_sales_price,ws_net_profit]
+                                                  Filter [ws_web_site_sk]
+                                                    ColumnarToRow
+                                                      InputAdapter
+                                                        Scan parquet default.web_sales [ws_web_site_sk,ws_ext_sales_price,ws_net_profit,ws_sold_date_sk]
+                                                          ReusedSubquery [d_date_sk] #1
+                                              WholeStageCodegen (15)
+                                                Project [ws_web_site_sk,wr_returned_date_sk,wr_return_amt,wr_net_loss]
+                                                  BroadcastHashJoin [wr_item_sk,wr_order_number,ws_item_sk,ws_order_number]
                                                     InputAdapter
-                                                      Scan parquet default.web_sales [ws_web_site_sk,ws_ext_sales_price,ws_net_profit,ws_sold_date_sk]
-                                                        ReusedSubquery [d_date_sk] #1
-                                            WholeStageCodegen (15)
-                                              Project [ws_web_site_sk,wr_returned_date_sk,wr_return_amt,wr_net_loss]
-                                                BroadcastHashJoin [wr_item_sk,wr_order_number,ws_item_sk,ws_order_number]
-                                                  InputAdapter
-                                                    BroadcastExchange #8
-                                                      WholeStageCodegen (14)
+                                                      BroadcastExchange #8
+                                                        WholeStageCodegen (14)
+                                                          ColumnarToRow
+                                                            InputAdapter
+                                                              Scan parquet default.web_returns [wr_item_sk,wr_order_number,wr_return_amt,wr_net_loss,wr_returned_date_sk]
+                                                                ReusedSubquery [d_date_sk] #1
+                                                    Project [ws_item_sk,ws_web_site_sk,ws_order_number]
+                                                      Filter [ws_item_sk,ws_order_number,ws_web_site_sk]
                                                         ColumnarToRow
                                                           InputAdapter
-                                                            Scan parquet default.web_returns [wr_item_sk,wr_order_number,wr_return_amt,wr_net_loss,wr_returned_date_sk]
-                                                              ReusedSubquery [d_date_sk] #1
-                                                  Project [ws_item_sk,ws_web_site_sk,ws_order_number]
-                                                    Filter [ws_item_sk,ws_order_number,ws_web_site_sk]
-                                                      ColumnarToRow
-                                                        InputAdapter
-                                                          Scan parquet default.web_sales [ws_item_sk,ws_web_site_sk,ws_order_number,ws_sold_date_sk]
-                                        InputAdapter
-                                          ReusedExchange [d_date_sk] #3
+                                                            Scan parquet default.web_sales [ws_item_sk,ws_web_site_sk,ws_order_number,ws_sold_date_sk]
+                                          InputAdapter
+                                            ReusedExchange [d_date_sk,d_date_id,d_date,d_month_seq,d_week_seq,d_quarter_seq,d_year,d_dow,d_moy,d_dom,d_qoy,d_fy_year,d_fy_quarter_seq,d_fy_week_seq,d_day_name,d_quarter_name,d_holiday,d_weekend,d_following_holiday,d_first_dom,d_last_dom,d_same_day_ly,d_same_day_lq,d_current_day,d_current_week,d_current_month,d_current_quarter,d_current_year] #3
                                     InputAdapter
                                       BroadcastExchange #9
                                         WholeStageCodegen (17)
-                                          Filter [web_site_sk]
-                                            ColumnarToRow
-                                              InputAdapter
-                                                Scan parquet default.web_site [web_site_sk,web_site_id]
+                                          HashAggregate [web_site_sk,web_site_id]
+                                            Filter [web_site_sk]
+                                              ColumnarToRow
+                                                InputAdapter
+                                                  Scan parquet default.web_site [web_site_sk,web_site_id,web_rec_start_date,web_rec_end_date,web_name,web_open_date_sk,web_close_date_sk,web_class,web_manager,web_mkt_id,web_mkt_class,web_mkt_desc,web_market_manager,web_company_id,web_company_name,web_street_number,web_street_name,web_street_type,web_suite_number,web_city,web_county,web_state,web_zip,web_country,web_gmt_offset,web_tax_percentage]

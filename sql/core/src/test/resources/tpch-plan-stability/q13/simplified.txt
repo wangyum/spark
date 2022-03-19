@@ -8,21 +8,25 @@ WholeStageCodegen (5)
               Exchange [c_count] #2
                 WholeStageCodegen (3)
                   HashAggregate [c_count] [count,count]
-                    HashAggregate [c_custkey,count] [count(o_orderkeyL),c_count,count]
+                    HashAggregate [c_custkey,count] [count(1),c_count,count]
                       InputAdapter
                         Exchange [c_custkey] #3
                           WholeStageCodegen (2)
-                            HashAggregate [c_custkey,o_orderkey] [count,count]
-                              Project [c_custkey,o_orderkey]
+                            HashAggregate [c_custkey] [count,count]
+                              Project [c_custkey]
                                 BroadcastHashJoin [c_custkey,o_custkey]
-                                  ColumnarToRow
-                                    InputAdapter
-                                      Scan parquet default.customer [c_custkey]
+                                  HashAggregate [c_custkey]
+                                    ColumnarToRow
+                                      InputAdapter
+                                        Scan parquet default.customer [c_custkey,c_name,c_address,c_nationkey,c_phone,c_acctbal,c_mktsegment,c_comment]
                                   InputAdapter
                                     BroadcastExchange #4
                                       WholeStageCodegen (1)
-                                        Project [o_orderkey,o_custkey]
-                                          Filter [o_comment,o_custkey]
-                                            ColumnarToRow
-                                              InputAdapter
-                                                Scan parquet default.orders [o_orderkey,o_custkey,o_comment]
+                                        Project [o_custkey]
+                                          Project [o_custkey,count]
+                                            HashAggregate [o_custkey,o_orderkey] [count,count]
+                                              Project [o_orderkey,o_custkey]
+                                                Filter [o_comment,o_custkey]
+                                                  ColumnarToRow
+                                                    InputAdapter
+                                                      Scan parquet default.orders [o_orderkey,o_custkey,o_comment]

@@ -1,18 +1,18 @@
 TakeOrderedAndProject [o_totalprice,o_orderdate,c_name,c_custkey,o_orderkey,sum(l_quantity)]
   WholeStageCodegen (8)
-    HashAggregate [c_name,c_custkey,o_orderkey,o_orderdate,o_totalprice,sum,isEmpty] [sum(l_quantity),sum(l_quantity),sum,isEmpty]
+    HashAggregate [c_name,c_custkey,o_orderkey,o_orderdate,o_totalprice,sum,isEmpty] [sum(_pushedexpression),sum(l_quantity),sum,isEmpty]
       InputAdapter
         Exchange [c_name,c_custkey,o_orderkey,o_orderdate,o_totalprice] #1
           WholeStageCodegen (7)
-            HashAggregate [c_name,c_custkey,o_orderkey,o_orderdate,o_totalprice,l_quantity] [sum,isEmpty,sum,isEmpty]
-              Project [c_custkey,c_name,o_orderkey,o_totalprice,o_orderdate,l_quantity]
+            HashAggregate [c_name,c_custkey,o_orderkey,o_orderdate,o_totalprice,_pushedexpression] [sum,isEmpty,sum,isEmpty]
+              Project [o_orderkey,c_name,c_custkey,o_orderdate,o_totalprice,_pushedexpression]
                 BroadcastHashJoin [o_orderkey,l_orderkey]
-                  Project [c_custkey,c_name,o_orderkey,o_totalprice,o_orderdate]
+                  HashAggregate [o_orderkey,c_name,c_custkey,o_orderdate,o_totalprice]
                     BroadcastHashJoin [c_custkey,o_custkey]
                       Filter [c_custkey]
                         ColumnarToRow
                           InputAdapter
-                            Scan parquet default.customer [c_custkey,c_name]
+                            Scan parquet default.customer [c_custkey,c_name,c_address,c_nationkey,c_phone,c_acctbal,c_mktsegment,c_comment]
                       InputAdapter
                         BroadcastExchange #2
                           WholeStageCodegen (3)
@@ -20,27 +20,30 @@ TakeOrderedAndProject [o_totalprice,o_orderdate,c_name,c_custkey,o_orderkey,sum(
                               Filter [o_custkey,o_orderkey]
                                 ColumnarToRow
                                   InputAdapter
-                                    Scan parquet default.orders [o_orderkey,o_custkey,o_totalprice,o_orderdate]
+                                    Scan parquet default.orders [o_orderkey,o_custkey,o_orderstatus,o_totalprice,o_orderdate,o_orderpriority,o_clerk,o_shippriority,o_comment]
                               InputAdapter
                                 BroadcastExchange #3
                                   WholeStageCodegen (2)
-                                    Project [l_orderkey]
-                                      Filter [sum(l_quantity)]
-                                        HashAggregate [l_orderkey,sum,isEmpty] [sum(l_quantity),sum(l_quantity),sum,isEmpty]
-                                          InputAdapter
-                                            Exchange [l_orderkey] #4
-                                              WholeStageCodegen (1)
-                                                HashAggregate [l_orderkey,l_quantity] [sum,isEmpty,sum,isEmpty]
-                                                  ColumnarToRow
-                                                    InputAdapter
-                                                      Scan parquet default.lineitem [l_orderkey,l_quantity]
+                                    HashAggregate [l_orderkey]
+                                      Project [l_orderkey]
+                                        Filter [sum(l_quantity)]
+                                          HashAggregate [l_orderkey,sum,isEmpty] [sum(l_quantity),sum(l_quantity),sum,isEmpty]
+                                            InputAdapter
+                                              Exchange [l_orderkey] #4
+                                                WholeStageCodegen (1)
+                                                  HashAggregate [l_orderkey,l_quantity] [sum,isEmpty,sum,isEmpty]
+                                                    ColumnarToRow
+                                                      InputAdapter
+                                                        Scan parquet default.lineitem [l_orderkey,l_quantity]
                   InputAdapter
                     BroadcastExchange #5
                       WholeStageCodegen (6)
-                        BroadcastHashJoin [l_orderkey,l_orderkey]
-                          Filter [l_orderkey]
-                            ColumnarToRow
+                        Project [l_orderkey,sum]
+                          HashAggregate [l_orderkey,l_quantity] [sum,isEmpty,sum,isEmpty]
+                            BroadcastHashJoin [l_orderkey,l_orderkey]
+                              Filter [l_orderkey]
+                                ColumnarToRow
+                                  InputAdapter
+                                    Scan parquet default.lineitem [l_orderkey,l_partkey,l_suppkey,l_linenumber,l_quantity,l_extendedprice,l_discount,l_tax,l_returnflag,l_linestatus,l_shipdate,l_commitdate,l_receiptdate,l_shipinstruct,l_shipmode,l_comment]
                               InputAdapter
-                                Scan parquet default.lineitem [l_orderkey,l_quantity]
-                          InputAdapter
-                            ReusedExchange [l_orderkey] #3
+                                ReusedExchange [l_orderkey] #3

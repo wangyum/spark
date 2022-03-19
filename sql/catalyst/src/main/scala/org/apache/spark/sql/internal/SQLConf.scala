@@ -341,6 +341,20 @@ object SQLConf {
       .booleanConf
       .createWithDefault(true)
 
+  val DEDUPLICATE_SEMI_ANTI_JOIN_ENABLED =
+    buildConf("spark.sql.optimizer.deduplicateRightSideOfLeftSemiAntiJoin.enabled")
+      .doc("When true, we will deduplicate the right side of left semi/anti join.")
+      .version("3.4.0")
+      .booleanConf
+      .createWithDefault(true)
+
+  val PUSH_PARTIAL_AGGREGATION_THROUGH_JOIN_ENABLED =
+    buildConf("spark.sql.optimizer.pushPartialAggregationThroughJoin.enabled")
+      .doc("When true, we will push partial aggregationThroughJoin.")
+      .version("3.4.0")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMPRESS_CACHED = buildConf("spark.sql.inMemoryColumnarStorage.compressed")
     .doc("When set to true Spark SQL will automatically select a compression codec for each " +
       "column based on statistics of the data.")
@@ -2907,6 +2921,18 @@ object SQLConf {
       .checkValue(bit => bit >= 10 && bit <= 30, "The bit value must be in [10, 30].")
       .createWithDefault(16)
 
+  val ADAPTIVE_PARTIAL_AGGREGATION_THRESHOLD =
+    buildConf("spark.sql.aggregate.adaptivePartialAggregationThreshold")
+      .internal()
+      .doc("Minimum number of processed rows before partial aggregation can be skipped. " +
+        "By setting this value to 0 adaptive partial aggregation can be disabled.")
+      .version("3.3.0")
+      .intConf
+      .checkValue(threshold => threshold >= 0 && threshold < (1 << 16),
+        "The threshold value must be bigger than or equal to 0 and less than " +
+          s"1 << ${FAST_HASH_AGGREGATE_MAX_ROWS_CAPACITY_BIT.key}.")
+      .createWithDefault(10000)
+
   val AVRO_COMPRESSION_CODEC = buildConf("spark.sql.avro.compression.codec")
     .doc("Compression codec used in writing of AVRO files. Supported codecs: " +
       "uncompressed, deflate, snappy, bzip2, xz and zstandard. Default codec is snappy.")
@@ -3951,6 +3977,8 @@ class SQLConf extends Serializable with Logging {
 
   def streamingSessionWindowMergeSessionInLocalPartition: Boolean =
     getConf(STREAMING_SESSION_WINDOW_MERGE_SESSIONS_IN_LOCAL_PARTITION)
+
+  def adaptivePartialAggregationThreshold: Int = getConf(ADAPTIVE_PARTIAL_AGGREGATION_THRESHOLD)
 
   def datetimeJava8ApiEnabled: Boolean = getConf(DATETIME_JAVA8API_ENABLED)
 
