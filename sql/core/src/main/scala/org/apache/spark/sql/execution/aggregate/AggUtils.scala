@@ -171,7 +171,8 @@ object AggUtils {
     if (partialOnly) {
       val projectList = partialResultExpressions.zip(resultExpressions).map {
         case (a: Attribute, alias: Alias) =>
-          Alias(a, alias.name)(alias.exprId, alias.qualifier, alias.explicitMetadata)
+          Alias(Cast(a, alias.child.dataType), alias.name)(
+            alias.exprId, alias.qualifier, alias.explicitMetadata)
         case (a, _) =>
           a
       }
