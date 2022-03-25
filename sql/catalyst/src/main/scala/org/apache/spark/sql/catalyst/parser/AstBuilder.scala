@@ -779,7 +779,7 @@ class AstBuilder extends SqlBaseParserBaseVisitor[AnyRef] with SQLConfHelper wit
         Filter(predicate, createProject())
       } else {
         // According to SQL standard, HAVING without GROUP BY means global aggregate.
-        withHavingClause(havingClause, Aggregate(Nil, namedExpressions, withFilter))
+        withHavingClause(havingClause, Aggregate(Nil, namedExpressions, false, withFilter))
       }
     } else if (aggregationClause != null) {
       val aggregate = withAggregationClause(aggregationClause, namedExpressions, withFilter)
@@ -983,7 +983,7 @@ class AstBuilder extends SqlBaseParserBaseVisitor[AnyRef] with SQLConfHelper wit
         val groupingSets =
           ctx.groupingSet.asScala.map(_.expression.asScala.map(e => expression(e)).toSeq)
         Aggregate(Seq(GroupingSets(groupingSets.toSeq, groupByExpressions)),
-          selectExpressions, query)
+          selectExpressions, false, query)
       } else {
         // GROUP BY .... (WITH CUBE | WITH ROLLUP)?
         val mappedGroupByExpressions = if (ctx.CUBE != null) {
@@ -993,7 +993,7 @@ class AstBuilder extends SqlBaseParserBaseVisitor[AnyRef] with SQLConfHelper wit
         } else {
           groupByExpressions
         }
-        Aggregate(mappedGroupByExpressions, selectExpressions, query)
+        Aggregate(mappedGroupByExpressions, selectExpressions, false, query)
       }
     } else {
       val groupByExpressions =
@@ -1006,7 +1006,7 @@ class AstBuilder extends SqlBaseParserBaseVisitor[AnyRef] with SQLConfHelper wit
               expression(groupByExpr.expression)
             }
           })
-      Aggregate(groupByExpressions.toSeq, selectExpressions, query)
+      Aggregate(groupByExpressions.toSeq, selectExpressions, false, query)
     }
   }
 
