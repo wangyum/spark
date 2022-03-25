@@ -195,6 +195,7 @@ class ColumnPruningSuite extends PlanTest {
       Aggregate(
         Seq('aa, 'gid),
         Seq(sum('c).as("sum")),
+        false,
         Expand(
           Seq(
             Seq('a, 'b, 'c, Literal.create(null, StringType), 1),
@@ -207,6 +208,7 @@ class ColumnPruningSuite extends PlanTest {
       Aggregate(
         Seq('aa, 'gid),
         Seq(sum('c).as("sum")),
+        false,
         Expand(
           Seq(
             Seq('c, Literal.create(null, StringType), 1),

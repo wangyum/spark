@@ -47,7 +47,7 @@ class ReplaceOperatorSuite extends PlanTest {
     val optimized = Optimize.execute(query.analyze)
 
     val correctAnswer =
-      Aggregate(table1.output, table1.output,
+      Aggregate(table1.output, table1.output, false,
         Join(table1, table2, LeftSemi, Option('a <=> 'c && 'b <=> 'd), JoinHint.NONE)).analyze
 
     comparePlans(optimized, correctAnswer)
@@ -65,7 +65,7 @@ class ReplaceOperatorSuite extends PlanTest {
     val optimized = Optimize.execute(query.analyze)
 
     val correctAnswer =
-      Aggregate(table1.output, table1.output,
+      Aggregate(table1.output, table1.output, false,
         Filter(Not(Coalesce(Seq(attributeA >= 2 && attributeB < 1, Literal.FalseLiteral))),
           Filter(attributeB === 2, Filter(attributeA === 1, table1)))).analyze
 
@@ -83,7 +83,7 @@ class ReplaceOperatorSuite extends PlanTest {
     val optimized = Optimize.execute(query.analyze)
 
     val correctAnswer =
-      Aggregate(table1.output, table1.output,
+      Aggregate(table1.output, table1.output, false,
         Filter(Not(Coalesce(Seq(attributeA >= 2 && attributeB < 1, Literal.FalseLiteral))),
           table1)).analyze
 
@@ -103,7 +103,7 @@ class ReplaceOperatorSuite extends PlanTest {
     val optimized = Optimize.execute(query.analyze)
 
     val correctAnswer =
-      Aggregate(table1.output, table1.output,
+      Aggregate(table1.output, table1.output, false,
         Filter(Not(Coalesce(Seq(attributeA >= 2 && attributeB < 1, Literal.FalseLiteral))),
           Project(Seq(attributeA, attributeB), table1))).analyze
 
@@ -123,8 +123,8 @@ class ReplaceOperatorSuite extends PlanTest {
     val optimized = Optimize.execute(query.analyze)
 
     val correctAnswer =
-      Aggregate(table1.output, table1.output,
-          Filter(Not(Coalesce(Seq(attributeA >= 2 && attributeB < 1, Literal.FalseLiteral))),
+      Aggregate(table1.output, table1.output, false,
+        Filter(Not(Coalesce(Seq(attributeA >= 2 && attributeB < 1, Literal.FalseLiteral))),
             Filter(attributeB === 2, Filter(attributeA === 1, table1)))).analyze
 
     comparePlans(optimized, correctAnswer)
@@ -143,7 +143,7 @@ class ReplaceOperatorSuite extends PlanTest {
     val optimized = Optimize.execute(query.analyze)
 
     val correctAnswer =
-      Aggregate(table1.output, table1.output,
+      Aggregate(table1.output, table1.output, false,
         Filter(Not(Coalesce(Seq(attributeA === 1 && attributeB === 2, Literal.FalseLiteral))),
           Project(Seq(attributeA, attributeB),
             Filter(attributeB < 1, Filter(attributeA >= 2, table1))))).analyze
@@ -159,7 +159,7 @@ class ReplaceOperatorSuite extends PlanTest {
     val optimized = Optimize.execute(query.analyze)
 
     val correctAnswer =
-      Aggregate(table1.output, table1.output,
+      Aggregate(table1.output, table1.output, false,
         Join(table1, table2, LeftAnti, Option('a <=> 'c && 'b <=> 'd), JoinHint.NONE)).analyze
 
     comparePlans(optimized, correctAnswer)
@@ -174,7 +174,7 @@ class ReplaceOperatorSuite extends PlanTest {
     val optimized = Optimize.execute(query.analyze)
 
     val correctAnswer =
-      Aggregate(left.output, right.output,
+      Aggregate(left.output, right.output, false,
         Join(left, right, LeftAnti, Option($"left.a" <=> $"right.a"), JoinHint.NONE)).analyze
 
     comparePlans(optimized, correctAnswer)
@@ -186,7 +186,7 @@ class ReplaceOperatorSuite extends PlanTest {
     val query = Distinct(input)
     val optimized = Optimize.execute(query.analyze)
 
-    val correctAnswer = Aggregate(input.output, input.output, input)
+    val correctAnswer = Aggregate(input.output, input.output, false, input)
 
     comparePlans(optimized, correctAnswer)
   }
@@ -205,6 +205,7 @@ class ReplaceOperatorSuite extends PlanTest {
           attrA,
           Alias(new First(attrB).toAggregateExpression(), attrB.name)(attrB.exprId)
         ),
+        false,
         input)
 
     comparePlans(optimized, correctAnswer)
@@ -214,7 +215,7 @@ class ReplaceOperatorSuite extends PlanTest {
     val input = LocalRelation()
     val query = Deduplicate(Seq.empty, input) // dropDuplicates()
     val optimized = Optimize.execute(query.analyze)
-    val correctAnswer = Aggregate(Seq(Literal(1)), input.output, input)
+    val correctAnswer = Aggregate(Seq(Literal(1)), input.output, false, input)
     comparePlans(optimized, correctAnswer)
   }
 
@@ -232,7 +233,7 @@ class ReplaceOperatorSuite extends PlanTest {
     val otherPlan = basePlan.where('a.in(1, 2) || 'b.in())
     val except = Except(basePlan, otherPlan, false)
     val result = OptimizeIn(Optimize.execute(except.analyze))
-    val correctAnswer = Aggregate(basePlan.output, basePlan.output,
+    val correctAnswer = Aggregate(basePlan.output, basePlan.output, false,
       Filter(!Coalesce(Seq(
         'a.in(1, 2) || If('b.isNotNull, Literal.FalseLiteral, Literal(null, BooleanType)),
         Literal.FalseLiteral)),
@@ -247,7 +248,7 @@ class ReplaceOperatorSuite extends PlanTest {
     val result = Optimize.execute(except.analyze)
     val condition = basePlan.output.zip(otherPlan.output).map { case (a1, a2) =>
       a1 <=> a2 }.reduce( _ && _)
-    val correctAnswer = Aggregate(basePlan.output, otherPlan.output,
+    val correctAnswer = Aggregate(basePlan.output, otherPlan.output, false,
       Join(basePlan, otherPlan, LeftAnti, Option(condition), JoinHint.NONE)).analyze
     comparePlans(result, correctAnswer)
   }
