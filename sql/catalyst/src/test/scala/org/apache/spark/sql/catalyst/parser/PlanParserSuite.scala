@@ -395,7 +395,7 @@ class PlanParserSuite extends AnalysisTest {
     // Grouping Sets
     assertEqual(s"$sql grouping sets((a, b), (a), ())",
       Aggregate(Seq(GroupingSets(Seq(Seq('a, 'b), Seq('a), Seq()), Seq('a, 'b))),
-        Seq('a, 'b, 'sum.function('c).as("c")), false,  table("d")))
+        Seq('a, 'b, 'sum.function('c).as("c")), false, table("d")))
 
     assertEqual(s"$sqlWithoutGroupBy group by grouping sets((a, b), (a), ())",
       Aggregate(Seq(GroupingSets(Seq(Seq('a, 'b), Seq('a), Seq()))),
