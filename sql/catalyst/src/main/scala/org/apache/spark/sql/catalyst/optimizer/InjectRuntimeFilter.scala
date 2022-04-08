@@ -137,14 +137,6 @@ object InjectRuntimeFilter extends Rule[LogicalPlan] with PredicateHelper with J
       !canBroadcastBySize(left, conf) && !canBroadcastBySize(right, conf)
   }
 
-  private def probablyHasShuffle(plan: LogicalPlan): Boolean = {
-    plan.collectFirst {
-      case j@Join(left, right, _, _, hint)
-        if isProbablyShuffleJoin(left, right, hint) => j
-      case a: Aggregate => a
-    }.nonEmpty
-  }
-
   // Make sure injected filters could push through Shuffle, see PushPredicateThroughNonJoin
   private def probablyPushThroughShuffle(exp: Expression, plan: LogicalPlan): Boolean = {
     plan match {
