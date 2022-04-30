@@ -30,12 +30,12 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,ca_st
                     Exchange [ctr_customer_sk] #3
                       WholeStageCodegen (10)
                         Filter [ctr_total_return]
-                          HashAggregate [cr_returning_customer_sk,ca_state,sum] [sum(UnscaledValue(cr_return_amt_inc_tax)),ctr_customer_sk,ctr_state,ctr_total_return,sum]
+                          HashAggregate [cr_returning_customer_sk,ca_state,sum,isEmpty] [sum(CheckOverflow((pushed_sum(cr_return_amt_inc_tax) * cast(cntL as decimal(17,2))), DecimalType(17,2))),ctr_customer_sk,ctr_state,ctr_total_return,sum,isEmpty]
                             InputAdapter
                               Exchange [cr_returning_customer_sk,ca_state] #4
                                 WholeStageCodegen (9)
-                                  HashAggregate [cr_returning_customer_sk,ca_state,cr_return_amt_inc_tax] [sum,sum]
-                                    Project [cr_returning_customer_sk,cr_return_amt_inc_tax,ca_state]
+                                  HashAggregate [cr_returning_customer_sk,ca_state,pushed_sum(cr_return_amt_inc_tax),cnt] [sum,isEmpty,sum,isEmpty]
+                                    Project [pushed_sum(cr_return_amt_inc_tax),cr_returning_customer_sk,cnt,ca_state]
                                       SortMergeJoin [cr_returning_addr_sk,ca_address_sk]
                                         InputAdapter
                                           WholeStageCodegen (6)
@@ -43,32 +43,34 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,ca_st
                                               InputAdapter
                                                 Exchange [cr_returning_addr_sk] #5
                                                   WholeStageCodegen (5)
-                                                    Project [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]
-                                                      BroadcastHashJoin [cr_returned_date_sk,d_date_sk]
-                                                        Filter [cr_returning_addr_sk,cr_returning_customer_sk]
-                                                          ColumnarToRow
-                                                            InputAdapter
-                                                              Scan parquet default.catalog_returns [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk]
-                                                                SubqueryBroadcast [d_date_sk] #1
-                                                                  BroadcastExchange #6
-                                                                    WholeStageCodegen (1)
-                                                                      Project [d_date_sk]
-                                                                        Filter [d_year,d_date_sk]
-                                                                          ColumnarToRow
-                                                                            InputAdapter
-                                                                              Scan parquet default.date_dim [d_date_sk,d_year]
-                                                        InputAdapter
-                                                          ReusedExchange [d_date_sk] #6
+                                                    HashAggregate [cr_returning_addr_sk,cr_returning_customer_sk,cr_return_amt_inc_tax] [sum(UnscaledValue(cr_return_amt_inc_tax)),pushed_sum(cr_return_amt_inc_tax),sum]
+                                                      Project [cr_returning_customer_sk,cr_return_amt_inc_tax,cr_returning_addr_sk]
+                                                        BroadcastHashJoin [cr_returned_date_sk,d_date_sk]
+                                                          Filter [cr_returning_addr_sk,cr_returning_customer_sk]
+                                                            ColumnarToRow
+                                                              InputAdapter
+                                                                Scan parquet default.catalog_returns [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk]
+                                                                  SubqueryBroadcast [d_date_sk] #1
+                                                                    BroadcastExchange #6
+                                                                      WholeStageCodegen (1)
+                                                                        Project [d_date_sk]
+                                                                          Filter [d_year,d_date_sk]
+                                                                            ColumnarToRow
+                                                                              InputAdapter
+                                                                                Scan parquet default.date_dim [d_date_sk,d_year]
+                                                          InputAdapter
+                                                            ReusedExchange [d_date_sk] #6
                                         InputAdapter
                                           WholeStageCodegen (8)
                                             Sort [ca_address_sk]
                                               InputAdapter
                                                 Exchange [ca_address_sk] #7
                                                   WholeStageCodegen (7)
-                                                    Filter [ca_address_sk,ca_state]
-                                                      ColumnarToRow
-                                                        InputAdapter
-                                                          Scan parquet default.customer_address [ca_address_sk,ca_state]
+                                                    HashAggregate [ca_address_sk,ca_state] [count(1),cnt,count]
+                                                      Filter [ca_address_sk,ca_state]
+                                                        ColumnarToRow
+                                                          InputAdapter
+                                                            Scan parquet default.customer_address [ca_address_sk,ca_state]
         InputAdapter
           BroadcastExchange #8
             WholeStageCodegen (19)
@@ -78,12 +80,12 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,ca_st
                     Exchange [ctr_state] #9
                       WholeStageCodegen (18)
                         HashAggregate [ctr_state,ctr_total_return] [sum,count,sum,count]
-                          HashAggregate [cr_returning_customer_sk,ca_state,sum] [sum(UnscaledValue(cr_return_amt_inc_tax)),ctr_state,ctr_total_return,sum]
+                          HashAggregate [cr_returning_customer_sk,ca_state,sum,isEmpty] [sum(CheckOverflow((pushed_sum(cr_return_amt_inc_tax) * cast(cntL as decimal(17,2))), DecimalType(17,2))),ctr_state,ctr_total_return,sum,isEmpty]
                             InputAdapter
                               Exchange [cr_returning_customer_sk,ca_state] #10
                                 WholeStageCodegen (17)
-                                  HashAggregate [cr_returning_customer_sk,ca_state,cr_return_amt_inc_tax] [sum,sum]
-                                    Project [cr_returning_customer_sk,cr_return_amt_inc_tax,ca_state]
+                                  HashAggregate [cr_returning_customer_sk,ca_state,pushed_sum(cr_return_amt_inc_tax),cnt] [sum,isEmpty,sum,isEmpty]
+                                    Project [pushed_sum(cr_return_amt_inc_tax),cr_returning_customer_sk,cnt,ca_state]
                                       SortMergeJoin [cr_returning_addr_sk,ca_address_sk]
                                         InputAdapter
                                           WholeStageCodegen (14)
@@ -91,17 +93,18 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,ca_st
                                               InputAdapter
                                                 Exchange [cr_returning_addr_sk] #11
                                                   WholeStageCodegen (13)
-                                                    Project [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]
-                                                      BroadcastHashJoin [cr_returned_date_sk,d_date_sk]
-                                                        Filter [cr_returning_addr_sk]
-                                                          ColumnarToRow
-                                                            InputAdapter
-                                                              Scan parquet default.catalog_returns [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk]
-                                                                ReusedSubquery [d_date_sk] #1
-                                                        InputAdapter
-                                                          ReusedExchange [d_date_sk] #6
+                                                    HashAggregate [cr_returning_addr_sk,cr_returning_customer_sk,cr_return_amt_inc_tax] [sum(UnscaledValue(cr_return_amt_inc_tax)),pushed_sum(cr_return_amt_inc_tax),sum]
+                                                      Project [cr_returning_customer_sk,cr_return_amt_inc_tax,cr_returning_addr_sk]
+                                                        BroadcastHashJoin [cr_returned_date_sk,d_date_sk]
+                                                          Filter [cr_returning_addr_sk]
+                                                            ColumnarToRow
+                                                              InputAdapter
+                                                                Scan parquet default.catalog_returns [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,cr_returned_date_sk]
+                                                                  ReusedSubquery [d_date_sk] #1
+                                                          InputAdapter
+                                                            ReusedExchange [d_date_sk] #6
                                         InputAdapter
                                           WholeStageCodegen (16)
                                             Sort [ca_address_sk]
                                               InputAdapter
-                                                ReusedExchange [ca_address_sk,ca_state] #7
+                                                ReusedExchange [cnt,ca_address_sk,ca_state] #7
