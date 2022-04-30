@@ -41,11 +41,11 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                 InputAdapter
                                                   Exchange [customer_sk] #4
                                                     WholeStageCodegen (7)
-                                                      Project [customer_sk]
-                                                        BroadcastHashJoin [item_sk,i_item_sk]
-                                                          Project [customer_sk,item_sk]
-                                                            BroadcastHashJoin [sold_date_sk,d_date_sk]
-                                                              HashAggregate [sold_date_sk,customer_sk,item_sk]
+                                                      HashAggregate [customer_sk]
+                                                        Project [customer_sk]
+                                                          BroadcastHashJoin [item_sk,i_item_sk]
+                                                            Project [customer_sk,item_sk]
+                                                              BroadcastHashJoin [sold_date_sk,d_date_sk]
                                                                 InputAdapter
                                                                   Union
                                                                     WholeStageCodegen (3)
@@ -57,12 +57,11 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                                                 SubqueryBroadcast [d_date_sk] #1
                                                                                   BroadcastExchange #5
                                                                                     WholeStageCodegen (1)
-                                                                                      HashAggregate [d_date_sk]
-                                                                                        Project [d_date_sk]
-                                                                                          Filter [d_moy,d_year,d_date_sk]
-                                                                                            ColumnarToRow
-                                                                                              InputAdapter
-                                                                                                Scan parquet default.date_dim [d_date_sk,d_year,d_moy]
+                                                                                      Project [d_date_sk]
+                                                                                        Filter [d_moy,d_year,d_date_sk]
+                                                                                          ColumnarToRow
+                                                                                            InputAdapter
+                                                                                              Scan parquet default.date_dim [d_date_sk,d_year,d_moy]
                                                                     WholeStageCodegen (4)
                                                                       Project [ws_sold_date_sk,ws_bill_customer_sk,ws_item_sk]
                                                                         Filter [ws_item_sk,ws_bill_customer_sk]
@@ -70,12 +69,11 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                                                                             InputAdapter
                                                                               Scan parquet default.web_sales [ws_item_sk,ws_bill_customer_sk,ws_sold_date_sk]
                                                                                 ReusedSubquery [d_date_sk] #1
-                                                              InputAdapter
-                                                                ReusedExchange [d_date_sk] #5
-                                                          InputAdapter
-                                                            BroadcastExchange #6
-                                                              WholeStageCodegen (6)
-                                                                HashAggregate [i_item_sk]
+                                                                InputAdapter
+                                                                  ReusedExchange [d_date_sk] #5
+                                                            InputAdapter
+                                                              BroadcastExchange #6
+                                                                WholeStageCodegen (6)
                                                                   Project [i_item_sk]
                                                                     Filter [i_category,i_class,i_item_sk]
                                                                       ColumnarToRow
