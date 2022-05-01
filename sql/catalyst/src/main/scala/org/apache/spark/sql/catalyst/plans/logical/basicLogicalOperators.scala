@@ -1138,7 +1138,7 @@ abstract class AggregateBase(
     }.forall(a => a.foldable || groupingExpressions.exists(g => a.semanticEquals(g)))
   }
 
-  private[sql] lazy val collectAggregateExprs: Seq[AggregateExpression] = {
+  private[sql] lazy val ggregateExprs: Seq[AggregateExpression] = {
     // Collect all aggregate expressions.
     aggregateExpressions.flatMap { _.collect {
       case ae: AggregateExpression => ae
