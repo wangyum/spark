@@ -7,12 +7,12 @@ WholeStageCodegen (14)
             Exchange #10
               WholeStageCodegen (19)
                 HashAggregate [netpaid] [sum,count,sum,count]
-                  HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,sum,isEmpty] [sum(CheckOverflow((pushed_sum(ss_net_paid) * cast(cntL as decimal(17,2))), DecimalType(17,2))),netpaid,sum,isEmpty]
+                  HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,sum] [sum((pushed_sum(UnscaledValue(ss_net_paid))L * cntL)),netpaid,sum]
                     InputAdapter
                       Exchange [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size] #11
                         WholeStageCodegen (18)
-                          HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,pushed_sum(ss_net_paid),cnt] [sum,isEmpty,sum,isEmpty]
-                            Project [pushed_sum(ss_net_paid),c_last_name,c_first_name,s_store_name,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,cnt,ca_state]
+                          HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,pushed_sum(UnscaledValue(ss_net_paid)),cnt] [sum,sum]
+                            Project [c_first_name,c_last_name,i_color,i_current_price,i_manager_id,i_size,i_units,pushed_sum(UnscaledValue(ss_net_paid)),s_state,s_store_name,ca_state,cnt]
                               SortMergeJoin [c_birth_country,s_zip,upper(ca_country),ca_zip]
                                 InputAdapter
                                   WholeStageCodegen (15)
@@ -20,7 +20,7 @@ WholeStageCodegen (14)
                                       InputAdapter
                                         Exchange [c_birth_country,s_zip] #12
                                           WholeStageCodegen (14)
-                                            HashAggregate [c_birth_country,s_zip,c_last_name,c_first_name,s_store_name,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,ss_net_paid] [sum(UnscaledValue(ss_net_paid)),pushed_sum(ss_net_paid),sum]
+                                            HashAggregate [c_birth_country,s_zip,c_last_name,c_first_name,s_store_name,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,ss_net_paid] [sum(UnscaledValue(ss_net_paid)),pushed_sum(UnscaledValue(ss_net_paid)),sum]
                                               Project [ss_net_paid,s_store_name,s_state,i_current_price,i_size,i_color,i_units,i_manager_id,c_first_name,c_last_name,c_birth_country,s_zip]
                                                 SortMergeJoin [ss_ticket_number,ss_item_sk,sr_ticket_number,sr_item_sk]
                                                   InputAdapter

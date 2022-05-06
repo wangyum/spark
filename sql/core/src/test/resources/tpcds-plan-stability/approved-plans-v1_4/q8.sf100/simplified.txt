@@ -65,7 +65,7 @@ TakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
                                                           Exchange [ca_zip] #8
                                                             WholeStageCodegen (9)
                                                               HashAggregate [ca_zip,cnt,cnt] [sum,sum]
-                                                                Project [cnt,ca_zip,cnt]
+                                                                Project [ca_zip,cnt,cnt]
                                                                   SortMergeJoin [ca_address_sk,c_current_addr_sk]
                                                                     InputAdapter
                                                                       WholeStageCodegen (6)

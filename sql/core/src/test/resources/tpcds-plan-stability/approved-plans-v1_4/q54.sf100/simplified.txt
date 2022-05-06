@@ -5,9 +5,9 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
         Exchange [segment] #1
           WholeStageCodegen (15)
             HashAggregate [segment] [count,count]
-              HashAggregate [c_customer_sk,sum,isEmpty] [sum(CheckOverflow((pushed_sum(ss_ext_sales_price) * cast(cntL as decimal(17,2))), DecimalType(17,2))),segment,sum,isEmpty]
-                HashAggregate [c_customer_sk,pushed_sum(ss_ext_sales_price),cnt] [sum,isEmpty,sum,isEmpty]
-                  Project [cnt,c_customer_sk,pushed_sum(ss_ext_sales_price)]
+              HashAggregate [c_customer_sk,sum] [sum((pushed_sum(UnscaledValue(ss_ext_sales_price))L * cntL)),segment,sum]
+                HashAggregate [c_customer_sk,pushed_sum(UnscaledValue(ss_ext_sales_price)),cnt] [sum,sum]
+                  Project [c_customer_sk,cnt,pushed_sum(UnscaledValue(ss_ext_sales_price))]
                     SortMergeJoin [c_customer_sk,ss_customer_sk]
                       InputAdapter
                         WholeStageCodegen (11)
@@ -96,7 +96,7 @@ TakeOrderedAndProject [segment,num_customers,segment_base]
                             InputAdapter
                               Exchange [ss_customer_sk] #8
                                 WholeStageCodegen (13)
-                                  HashAggregate [ss_customer_sk,ss_ext_sales_price] [sum(UnscaledValue(ss_ext_sales_price)),pushed_sum(ss_ext_sales_price),sum]
+                                  HashAggregate [ss_customer_sk,ss_ext_sales_price] [sum(UnscaledValue(ss_ext_sales_price)),pushed_sum(UnscaledValue(ss_ext_sales_price)),sum]
                                     Project [ss_ext_sales_price,ss_customer_sk]
                                       BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
                                         Filter [ss_customer_sk]

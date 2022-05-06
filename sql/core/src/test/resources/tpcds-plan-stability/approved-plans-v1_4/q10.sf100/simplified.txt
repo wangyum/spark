@@ -5,7 +5,7 @@ TakeOrderedAndProject [cd_gender,cd_marital_status,cd_education_status,cd_purcha
         Exchange [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating,cd_dep_count,cd_dep_employed_count,cd_dep_college_count] #1
           WholeStageCodegen (19)
             HashAggregate [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating,cd_dep_count,cd_dep_employed_count,cd_dep_college_count,cnt,cnt] [sum,sum]
-              Project [cnt,cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating,cd_dep_count,cd_dep_employed_count,cd_dep_college_count,cnt]
+              Project [cnt,cd_credit_rating,cd_dep_college_count,cd_dep_count,cd_dep_employed_count,cd_education_status,cd_gender,cd_marital_status,cd_purchase_estimate,cnt]
                 SortMergeJoin [c_current_cdemo_sk,cd_demo_sk]
                   InputAdapter
                     WholeStageCodegen (16)

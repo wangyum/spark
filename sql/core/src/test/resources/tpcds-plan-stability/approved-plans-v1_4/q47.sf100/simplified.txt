@@ -25,12 +25,12 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                                                 InputAdapter
                                                   Exchange [i_category,i_brand,s_store_name,s_company_name] #2
                                                     WholeStageCodegen (8)
-                                                      HashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum,isEmpty] [sum(CheckOverflow((pushed_sum(ss_sales_price) * cast(cntL as decimal(17,2))), DecimalType(17,2))),sum_sales,_w0,sum,isEmpty]
+                                                      HashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum] [sum((pushed_sum(UnscaledValue(ss_sales_price))L * cntL)),sum_sales,_w0,sum]
                                                         InputAdapter
                                                           Exchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy] #3
                                                             WholeStageCodegen (7)
-                                                              HashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,pushed_sum(ss_sales_price),cnt] [sum,isEmpty,sum,isEmpty]
-                                                                Project [s_store_name,s_company_name,d_year,d_moy,pushed_sum(ss_sales_price),i_category,i_brand,cnt]
+                                                              HashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,pushed_sum(UnscaledValue(ss_sales_price)),cnt] [sum,sum]
+                                                                Project [d_moy,d_year,pushed_sum(UnscaledValue(ss_sales_price)),s_company_name,s_store_name,cnt,i_brand,i_category]
                                                                   SortMergeJoin [ss_item_sk,i_item_sk]
                                                                     InputAdapter
                                                                       WholeStageCodegen (4)
@@ -38,7 +38,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                                                                           InputAdapter
                                                                             Exchange [ss_item_sk] #4
                                                                               WholeStageCodegen (3)
-                                                                                HashAggregate [ss_item_sk,s_store_name,s_company_name,d_year,d_moy,ss_sales_price] [sum(UnscaledValue(ss_sales_price)),pushed_sum(ss_sales_price),sum]
+                                                                                HashAggregate [ss_item_sk,s_store_name,s_company_name,d_year,d_moy,ss_sales_price] [sum(UnscaledValue(ss_sales_price)),pushed_sum(UnscaledValue(ss_sales_price)),sum]
                                                                                   Project [ss_sales_price,d_year,d_moy,s_store_name,s_company_name,ss_item_sk]
                                                                                     BroadcastHashJoin [ss_store_sk,s_store_sk]
                                                                                       Project [ss_item_sk,ss_store_sk,ss_sales_price,d_year,d_moy]
@@ -88,9 +88,9 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_bra
                                       InputAdapter
                                         Exchange [i_category,i_brand,s_store_name,s_company_name] #9
                                           WholeStageCodegen (20)
-                                            HashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum,isEmpty] [sum(CheckOverflow((pushed_sum(ss_sales_price) * cast(cntL as decimal(17,2))), DecimalType(17,2))),sum_sales,sum,isEmpty]
+                                            HashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum] [sum((pushed_sum(UnscaledValue(ss_sales_price))L * cntL)),sum_sales,sum]
                                               InputAdapter
-                                                ReusedExchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum,isEmpty] #3
+                                                ReusedExchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum] #3
         InputAdapter
           WholeStageCodegen (35)
             Sort [i_category,i_brand,s_store_name,s_company_name,rn]

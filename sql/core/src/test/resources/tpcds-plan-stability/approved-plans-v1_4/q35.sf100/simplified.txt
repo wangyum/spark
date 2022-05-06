@@ -5,7 +5,7 @@ TakeOrderedAndProject [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_
         Exchange [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count] #1
           WholeStageCodegen (22)
             HashAggregate [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count,cnt,cnt,pushed_min(cd_dep_count),pushed_max(cd_dep_count),pushed_sum(cd_dep_count),pushed_min(cd_dep_employed_count),pushed_max(cd_dep_employed_count),pushed_sum(cd_dep_employed_count),pushed_min(cd_dep_college_count),pushed_max(cd_dep_college_count),pushed_sum(cd_dep_college_count)] [sum,min,max,sum,min,max,sum,min,max,sum,sum,min,max,sum,min,max,sum,min,max,sum]
-              Project [ca_state,cnt,cd_gender,cd_marital_status,cd_dep_employed_count,cd_dep_college_count,cd_dep_count,pushed_sum(cd_dep_employed_count),pushed_min(cd_dep_employed_count),pushed_sum(cd_dep_count),pushed_max(cd_dep_college_count),pushed_min(cd_dep_count),pushed_max(cd_dep_count),pushed_sum(cd_dep_college_count),pushed_max(cd_dep_employed_count),pushed_min(cd_dep_college_count),cnt]
+              Project [ca_state,cnt,cd_dep_college_count,cd_dep_count,cd_dep_employed_count,cd_gender,cd_marital_status,cnt,pushed_max(cd_dep_college_count),pushed_max(cd_dep_count),pushed_max(cd_dep_employed_count),pushed_min(cd_dep_college_count),pushed_min(cd_dep_count),pushed_min(cd_dep_employed_count),pushed_sum(cd_dep_college_count),pushed_sum(cd_dep_count),pushed_sum(cd_dep_employed_count)]
                 SortMergeJoin [c_current_cdemo_sk,cd_demo_sk]
                   InputAdapter
                     WholeStageCodegen (19)
@@ -107,7 +107,7 @@ TakeOrderedAndProject [ca_state,cd_gender,cd_marital_status,cd_dep_count,cd_dep_
                         InputAdapter
                           Exchange [cd_demo_sk] #10
                             WholeStageCodegen (20)
-                              HashAggregate [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count] [sum(cd_dep_employed_count),min(cd_dep_employed_count),sum(cd_dep_count),max(cd_dep_college_count),min(cd_dep_count),max(cd_dep_count),sum(cd_dep_college_count),max(cd_dep_employed_count),min(cd_dep_college_count),count(1),pushed_sum(cd_dep_employed_count),pushed_min(cd_dep_employed_count),pushed_sum(cd_dep_count),pushed_max(cd_dep_college_count),pushed_min(cd_dep_count),pushed_max(cd_dep_count),pushed_sum(cd_dep_college_count),pushed_max(cd_dep_employed_count),pushed_min(cd_dep_college_count),cnt,sum,min,sum,max,min,max,sum,max,min,count]
+                              HashAggregate [cd_demo_sk,cd_gender,cd_marital_status,cd_dep_count,cd_dep_employed_count,cd_dep_college_count] [count(1),max(cd_dep_college_count),max(cd_dep_count),max(cd_dep_employed_count),min(cd_dep_college_count),min(cd_dep_count),min(cd_dep_employed_count),sum(cd_dep_college_count),sum(cd_dep_count),sum(cd_dep_employed_count),cnt,pushed_max(cd_dep_college_count),pushed_max(cd_dep_count),pushed_max(cd_dep_employed_count),pushed_min(cd_dep_college_count),pushed_min(cd_dep_count),pushed_min(cd_dep_employed_count),pushed_sum(cd_dep_college_count),pushed_sum(cd_dep_count),pushed_sum(cd_dep_employed_count),count,max,max,max,min,min,min,sum,sum,sum]
                                 Filter [cd_demo_sk]
                                   ColumnarToRow
                                     InputAdapter

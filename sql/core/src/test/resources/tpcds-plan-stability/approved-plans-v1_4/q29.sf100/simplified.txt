@@ -1,11 +1,11 @@
 TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales_quantity,store_returns_quantity,catalog_sales_quantity]
   WholeStageCodegen (18)
-    HashAggregate [i_item_id,i_item_desc,s_store_id,s_store_name,sum,sum,sum] [sum((pushed_sum(ss_quantity)L * cast(cntL as bigint))),sum((pushed_sum(sr_return_quantity)L * cast(cntL as bigint))),sum((pushed_sum(cs_quantity)L * cast(cntL as bigint))),store_sales_quantity,store_returns_quantity,catalog_sales_quantity,sum,sum,sum]
+    HashAggregate [i_item_id,i_item_desc,s_store_id,s_store_name,sum,sum,sum] [sum((pushed_sum(ss_quantity)L * cntL)),sum((pushed_sum(sr_return_quantity)L * cntL)),sum((pushed_sum(cs_quantity)L * cntL)),store_sales_quantity,store_returns_quantity,catalog_sales_quantity,sum,sum,sum]
       InputAdapter
         Exchange [i_item_id,i_item_desc,s_store_id,s_store_name] #1
           WholeStageCodegen (17)
             HashAggregate [i_item_id,i_item_desc,s_store_id,s_store_name,pushed_sum(ss_quantity),cnt,pushed_sum(sr_return_quantity),pushed_sum(cs_quantity),cnt] [sum,sum,sum,sum,sum,sum]
-              Project [i_item_id,i_item_desc,s_store_id,s_store_name,pushed_sum(ss_quantity),pushed_sum(sr_return_quantity),cnt,pushed_sum(cs_quantity),cnt]
+              Project [cnt,i_item_desc,i_item_id,pushed_sum(sr_return_quantity),pushed_sum(ss_quantity),s_store_id,s_store_name,cnt,pushed_sum(cs_quantity)]
                 SortMergeJoin [sr_customer_sk,sr_item_sk,cs_bill_customer_sk,cs_item_sk]
                   InputAdapter
                     WholeStageCodegen (13)
@@ -13,7 +13,7 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales
                         InputAdapter
                           Exchange [sr_customer_sk,sr_item_sk] #2
                             WholeStageCodegen (12)
-                              HashAggregate [sr_customer_sk,sr_item_sk,i_item_id,i_item_desc,s_store_id,s_store_name,ss_quantity,sr_return_quantity] [sum(ss_quantity),sum(sr_return_quantity),count(1),pushed_sum(ss_quantity),pushed_sum(sr_return_quantity),cnt,sum,sum,count]
+                              HashAggregate [sr_customer_sk,sr_item_sk,i_item_id,i_item_desc,s_store_id,s_store_name,sr_return_quantity,ss_quantity] [count(1),sum(sr_return_quantity),sum(ss_quantity),cnt,pushed_sum(sr_return_quantity),pushed_sum(ss_quantity),count,sum,sum]
                                 Project [ss_quantity,sr_return_quantity,s_store_id,s_store_name,i_item_id,i_item_desc,sr_customer_sk,sr_item_sk]
                                   SortMergeJoin [ss_customer_sk,ss_item_sk,ss_ticket_number,sr_customer_sk,sr_item_sk,sr_ticket_number]
                                     InputAdapter
@@ -93,7 +93,7 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales
                         InputAdapter
                           Exchange [cs_bill_customer_sk,cs_item_sk] #10
                             WholeStageCodegen (15)
-                              HashAggregate [cs_bill_customer_sk,cs_item_sk,cs_quantity] [sum(cs_quantity),count(1),pushed_sum(cs_quantity),cnt,sum,count]
+                              HashAggregate [cs_bill_customer_sk,cs_item_sk,cs_quantity] [count(1),sum(cs_quantity),cnt,pushed_sum(cs_quantity),count,sum]
                                 Project [cs_quantity,cs_bill_customer_sk,cs_item_sk]
                                   BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
                                     Filter [cs_bill_customer_sk,cs_item_sk]
