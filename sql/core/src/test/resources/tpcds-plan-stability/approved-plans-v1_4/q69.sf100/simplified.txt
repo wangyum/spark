@@ -46,52 +46,53 @@ TakeOrderedAndProject [cd_gender,cd_marital_status,cd_education_status,cd_purcha
                                                   InputAdapter
                                                     Exchange [ss_customer_sk] #5
                                                       WholeStageCodegen (4)
-                                                        HashAggregate [ss_customer_sk]
-                                                          Project [ss_customer_sk]
-                                                            BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                        Project [ss_customer_sk]
+                                                          BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                            HashAggregate [ss_customer_sk,ss_sold_date_sk]
                                                               ColumnarToRow
                                                                 InputAdapter
                                                                   Scan parquet default.store_sales [ss_customer_sk,ss_sold_date_sk]
                                                                     SubqueryBroadcast [d_date_sk] #2
                                                                       BroadcastExchange #6
                                                                         WholeStageCodegen (1)
-                                                                          Project [d_date_sk]
-                                                                            Filter [d_year,d_moy,d_date_sk]
-                                                                              ColumnarToRow
-                                                                                InputAdapter
-                                                                                  Scan parquet default.date_dim [d_date_sk,d_year,d_moy]
-                                                              InputAdapter
-                                                                ReusedExchange [d_date_sk] #6
+                                                                          HashAggregate [d_date_sk]
+                                                                            Project [d_date_sk]
+                                                                              Filter [d_year,d_moy,d_date_sk]
+                                                                                ColumnarToRow
+                                                                                  InputAdapter
+                                                                                    Scan parquet default.date_dim [d_date_sk,d_year,d_moy]
+                                                            InputAdapter
+                                                              ReusedExchange [d_date_sk] #6
                                       InputAdapter
                                         WholeStageCodegen (9)
                                           Sort [ws_bill_customer_sk]
                                             InputAdapter
                                               Exchange [ws_bill_customer_sk] #7
                                                 WholeStageCodegen (8)
-                                                  HashAggregate [ws_bill_customer_sk]
-                                                    Project [ws_bill_customer_sk]
-                                                      BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
+                                                  Project [ws_bill_customer_sk]
+                                                    BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
+                                                      HashAggregate [ws_bill_customer_sk,ws_sold_date_sk]
                                                         ColumnarToRow
                                                           InputAdapter
                                                             Scan parquet default.web_sales [ws_bill_customer_sk,ws_sold_date_sk]
                                                               ReusedSubquery [d_date_sk] #2
-                                                        InputAdapter
-                                                          ReusedExchange [d_date_sk] #6
+                                                      InputAdapter
+                                                        ReusedExchange [d_date_sk] #6
                                 InputAdapter
                                   WholeStageCodegen (13)
                                     Sort [cs_ship_customer_sk]
                                       InputAdapter
                                         Exchange [cs_ship_customer_sk] #8
                                           WholeStageCodegen (12)
-                                            HashAggregate [cs_ship_customer_sk]
-                                              Project [cs_ship_customer_sk]
-                                                BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
+                                            Project [cs_ship_customer_sk]
+                                              BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
+                                                HashAggregate [cs_ship_customer_sk,cs_sold_date_sk]
                                                   ColumnarToRow
                                                     InputAdapter
                                                       Scan parquet default.catalog_sales [cs_ship_customer_sk,cs_sold_date_sk]
                                                         ReusedSubquery [d_date_sk] #2
-                                                  InputAdapter
-                                                    ReusedExchange [d_date_sk] #6
+                                                InputAdapter
+                                                  ReusedExchange [d_date_sk] #6
                             InputAdapter
                               BroadcastExchange #9
                                 WholeStageCodegen (14)
