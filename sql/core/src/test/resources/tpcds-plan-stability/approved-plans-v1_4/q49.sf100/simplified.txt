@@ -21,7 +21,7 @@ TakeOrderedAndProject [channel,return_rank,currency_rank,item,return_ratio]
                                         InputAdapter
                                           Exchange #2
                                             WholeStageCodegen (7)
-                                              HashAggregate [ws_item_sk,sum,sum,sum,isEmpty,sum,isEmpty] [sum((_pushed_sum_wr_return_quantityL * cntL)),sum((_pushed_sum_ws_quantityL * cntL)),sum(CheckOverflow((promote_precision(cast(_pushed_sum_wr_return_amt as decimal(22,2))) * promote_precision(cast(cast(cntL as decimal(22,2)) as decimal(22,2)))), DecimalType(38,4))),sum(CheckOverflow((promote_precision(cast(_pushed_sum_ws_net_paid as decimal(22,2))) * promote_precision(cast(cast(cntL as decimal(22,2)) as decimal(22,2)))), DecimalType(38,4))),item,return_ratio,currency_ratio,sum,sum,sum,isEmpty,sum,isEmpty]
+                                              HashAggregate [ws_item_sk,sum,sum,sum,isEmpty,sum,isEmpty] [sum((_pushed_sum_wr_return_quantityL * cntL)),sum((_pushed_sum_ws_quantityL * cntL)),sum(CheckOverflow((_pushed_sum_wr_return_amt * cast(cntL as decimal(22,2))), DecimalType(22,2))),sum(CheckOverflow((_pushed_sum_ws_net_paid * cast(cntL as decimal(22,2))), DecimalType(22,2))),item,return_ratio,currency_ratio,sum,sum,sum,isEmpty,sum,isEmpty]
                                                 InputAdapter
                                                   Exchange [ws_item_sk] #3
                                                     WholeStageCodegen (6)
@@ -78,7 +78,7 @@ TakeOrderedAndProject [channel,return_rank,currency_rank,item,return_ratio]
                                         InputAdapter
                                           Exchange #7
                                             WholeStageCodegen (17)
-                                              HashAggregate [cs_item_sk,sum,sum,sum,isEmpty,sum,isEmpty] [sum((_pushed_sum_cr_return_quantityL * cntL)),sum((_pushed_sum_cs_quantityL * cntL)),sum(CheckOverflow((promote_precision(cast(_pushed_sum_cr_return_amount as decimal(22,2))) * promote_precision(cast(cast(cntL as decimal(22,2)) as decimal(22,2)))), DecimalType(38,4))),sum(CheckOverflow((promote_precision(cast(_pushed_sum_cs_net_paid as decimal(22,2))) * promote_precision(cast(cast(cntL as decimal(22,2)) as decimal(22,2)))), DecimalType(38,4))),item,return_ratio,currency_ratio,sum,sum,sum,isEmpty,sum,isEmpty]
+                                              HashAggregate [cs_item_sk,sum,sum,sum,isEmpty,sum,isEmpty] [sum((_pushed_sum_cr_return_quantityL * cntL)),sum((_pushed_sum_cs_quantityL * cntL)),sum(CheckOverflow((_pushed_sum_cr_return_amount * cast(cntL as decimal(22,2))), DecimalType(22,2))),sum(CheckOverflow((_pushed_sum_cs_net_paid * cast(cntL as decimal(22,2))), DecimalType(22,2))),item,return_ratio,currency_ratio,sum,sum,sum,isEmpty,sum,isEmpty]
                                                 InputAdapter
                                                   Exchange [cs_item_sk] #8
                                                     WholeStageCodegen (16)
@@ -128,7 +128,7 @@ TakeOrderedAndProject [channel,return_rank,currency_rank,item,return_ratio]
                                         InputAdapter
                                           Exchange #11
                                             WholeStageCodegen (27)
-                                              HashAggregate [ss_item_sk,sum,sum,sum,isEmpty,sum,isEmpty] [sum((_pushed_sum_sr_return_quantityL * cntL)),sum((_pushed_sum_ss_quantityL * cntL)),sum(CheckOverflow((promote_precision(cast(_pushed_sum_sr_return_amt as decimal(22,2))) * promote_precision(cast(cast(cntL as decimal(22,2)) as decimal(22,2)))), DecimalType(38,4))),sum(CheckOverflow((promote_precision(cast(_pushed_sum_ss_net_paid as decimal(22,2))) * promote_precision(cast(cast(cntL as decimal(22,2)) as decimal(22,2)))), DecimalType(38,4))),item,return_ratio,currency_ratio,sum,sum,sum,isEmpty,sum,isEmpty]
+                                              HashAggregate [ss_item_sk,sum,sum,sum,isEmpty,sum,isEmpty] [sum((_pushed_sum_sr_return_quantityL * cntL)),sum((_pushed_sum_ss_quantityL * cntL)),sum(CheckOverflow((_pushed_sum_sr_return_amt * cast(cntL as decimal(22,2))), DecimalType(22,2))),sum(CheckOverflow((_pushed_sum_ss_net_paid * cast(cntL as decimal(22,2))), DecimalType(22,2))),item,return_ratio,currency_ratio,sum,sum,sum,isEmpty,sum,isEmpty]
                                                 InputAdapter
                                                   Exchange [ss_item_sk] #12
                                                     WholeStageCodegen (26)
