@@ -1,13 +1,13 @@
 TakeOrderedAndProject [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refunded_cash),avg(wr_fee)]
   WholeStageCodegen (15)
-    HashAggregate [r_reason_desc,sum,sum,sum,sum] [sum((pushed_sum_ws_quantity * cast(cntL as double))),sum((cntL * cntL)),sum((pushed_sum_wr_refunded_cash * cast(cntL as double))),sum((pushed_sum_wr_fee * cast(cntL as double))),substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refunded_cash),avg(wr_fee),sum,sum,sum,sum]
+    HashAggregate [r_reason_desc,sum,sum,sum,sum] [sum((_pushed_sum_ws_quantity * cast(cntL as double))),sum((cntL * cntL)),sum((_pushed_sum_wr_refunded_cash * cast(cntL as double))),sum((_pushed_sum_wr_fee * cast(cntL as double))),substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refunded_cash),avg(wr_fee),sum,sum,sum,sum]
       InputAdapter
         Exchange [r_reason_desc] #1
           WholeStageCodegen (14)
-            HashAggregate [r_reason_desc,pushed_sum_ws_quantity,cnt,cnt,pushed_sum_wr_refunded_cash,pushed_sum_wr_fee] [sum,sum,sum,sum,sum,sum,sum,sum]
-              Project [cnt,pushed_sum_wr_fee,pushed_sum_wr_refunded_cash,pushed_sum_ws_quantity,cnt,r_reason_desc]
+            HashAggregate [r_reason_desc,_pushed_sum_ws_quantity,cnt,cnt,_pushed_sum_wr_refunded_cash,_pushed_sum_wr_fee] [sum,sum,sum,sum,sum,sum,sum,sum]
+              Project [_pushed_sum_wr_fee,_pushed_sum_wr_refunded_cash,_pushed_sum_ws_quantity,cnt,cnt,r_reason_desc]
                 BroadcastHashJoin [wr_reason_sk,r_reason_sk]
-                  HashAggregate [wr_reason_sk,wr_fee,wr_refunded_cash,ws_quantity] [count(1),sum(UnscaledValue(wr_fee)),sum(UnscaledValue(wr_refunded_cash)),sum(ws_quantity),cnt,pushed_sum_wr_fee,pushed_sum_wr_refunded_cash,pushed_sum_ws_quantity,count,sum,sum,sum]
+                  HashAggregate [wr_reason_sk,wr_fee,wr_refunded_cash,ws_quantity] [sum(UnscaledValue(wr_fee)),sum(UnscaledValue(wr_refunded_cash)),sum(ws_quantity),count(1),_pushed_sum_wr_fee,_pushed_sum_wr_refunded_cash,_pushed_sum_ws_quantity,cnt,sum,sum,sum,count]
                     Project [ws_quantity,wr_fee,wr_refunded_cash,wr_reason_sk]
                       BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
                         Project [ws_quantity,ws_sold_date_sk,wr_reason_sk,wr_fee,wr_refunded_cash]

@@ -9,14 +9,14 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                 InputAdapter
                   Union
                     WholeStageCodegen (6)
-                      HashAggregate [s_store_id,sum,sum,sum,sum] [sum((pushed_sum_sales_priceL * cntL)),sum((pushed_sum_return_amtL * cntL)),sum((pushed_sum_profitL * cntL)),sum((pushed_sum_net_lossL * cntL)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                      HashAggregate [s_store_id,sum,sum,sum,sum] [sum((_pushed_sum_sales_priceL * cntL)),sum((_pushed_sum_return_amtL * cntL)),sum((_pushed_sum_profitL * cntL)),sum((_pushed_sum_net_lossL * cntL)),sales,returns,profit,channel,id,sum,sum,sum,sum]
                         InputAdapter
                           Exchange [s_store_id] #2
                             WholeStageCodegen (5)
-                              HashAggregate [s_store_id,pushed_sum_sales_price,cnt,pushed_sum_return_amt,pushed_sum_profit,pushed_sum_net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                Project [pushed_sum_net_loss,pushed_sum_profit,pushed_sum_return_amt,pushed_sum_sales_price,s_store_id,cnt]
+                              HashAggregate [s_store_id,_pushed_sum_sales_price,cnt,_pushed_sum_return_amt,_pushed_sum_profit,_pushed_sum_net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
+                                Project [_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,s_store_id,cnt]
                                   BroadcastHashJoin [date_sk,d_date_sk]
-                                    HashAggregate [date_sk,s_store_id,net_loss,profit,return_amt,sales_price] [sum(UnscaledValue(net_loss)),sum(UnscaledValue(profit)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(sales_price)),pushed_sum_net_loss,pushed_sum_profit,pushed_sum_return_amt,pushed_sum_sales_price,sum,sum,sum,sum]
+                                    HashAggregate [date_sk,s_store_id,net_loss,profit,return_amt,sales_price] [sum(UnscaledValue(net_loss)),sum(UnscaledValue(profit)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(sales_price)),_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,sum,sum,sum,sum]
                                       Project [sales_price,profit,return_amt,net_loss,s_store_id,date_sk]
                                         BroadcastHashJoin [store_sk,s_store_sk]
                                           InputAdapter
@@ -53,14 +53,14 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                     InputAdapter
                                       ReusedExchange [cnt,d_date_sk] #3
                     WholeStageCodegen (12)
-                      HashAggregate [cp_catalog_page_id,sum,sum,sum,sum] [sum((pushed_sum_sales_priceL * cntL)),sum((pushed_sum_return_amtL * cntL)),sum((pushed_sum_profitL * cntL)),sum((pushed_sum_net_lossL * cntL)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                      HashAggregate [cp_catalog_page_id,sum,sum,sum,sum] [sum((_pushed_sum_sales_priceL * cntL)),sum((_pushed_sum_return_amtL * cntL)),sum((_pushed_sum_profitL * cntL)),sum((_pushed_sum_net_lossL * cntL)),sales,returns,profit,channel,id,sum,sum,sum,sum]
                         InputAdapter
                           Exchange [cp_catalog_page_id] #5
                             WholeStageCodegen (11)
-                              HashAggregate [cp_catalog_page_id,pushed_sum_sales_price,cnt,pushed_sum_return_amt,pushed_sum_profit,pushed_sum_net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                Project [cp_catalog_page_id,pushed_sum_net_loss,pushed_sum_profit,pushed_sum_return_amt,pushed_sum_sales_price,cnt]
+                              HashAggregate [cp_catalog_page_id,_pushed_sum_sales_price,cnt,_pushed_sum_return_amt,_pushed_sum_profit,_pushed_sum_net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
+                                Project [_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,cp_catalog_page_id,cnt]
                                   BroadcastHashJoin [date_sk,d_date_sk]
-                                    HashAggregate [date_sk,cp_catalog_page_id,net_loss,profit,return_amt,sales_price] [sum(UnscaledValue(net_loss)),sum(UnscaledValue(profit)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(sales_price)),pushed_sum_net_loss,pushed_sum_profit,pushed_sum_return_amt,pushed_sum_sales_price,sum,sum,sum,sum]
+                                    HashAggregate [date_sk,cp_catalog_page_id,net_loss,profit,return_amt,sales_price] [sum(UnscaledValue(net_loss)),sum(UnscaledValue(profit)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(sales_price)),_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,sum,sum,sum,sum]
                                       Project [sales_price,profit,return_amt,net_loss,cp_catalog_page_id,date_sk]
                                         BroadcastHashJoin [page_sk,cp_catalog_page_sk]
                                           InputAdapter
@@ -89,14 +89,14 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                     InputAdapter
                                       ReusedExchange [cnt,d_date_sk] #3
                     WholeStageCodegen (22)
-                      HashAggregate [web_site_id,sum,sum,sum,sum] [sum((pushed_sum_sales_priceL * cntL)),sum((pushed_sum_return_amtL * cntL)),sum((pushed_sum_profitL * cntL)),sum((pushed_sum_net_lossL * cntL)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                      HashAggregate [web_site_id,sum,sum,sum,sum] [sum((_pushed_sum_sales_priceL * cntL)),sum((_pushed_sum_return_amtL * cntL)),sum((_pushed_sum_profitL * cntL)),sum((_pushed_sum_net_lossL * cntL)),sales,returns,profit,channel,id,sum,sum,sum,sum]
                         InputAdapter
                           Exchange [web_site_id] #7
                             WholeStageCodegen (21)
-                              HashAggregate [web_site_id,pushed_sum_sales_price,cnt,pushed_sum_return_amt,pushed_sum_profit,pushed_sum_net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                Project [pushed_sum_net_loss,pushed_sum_profit,pushed_sum_return_amt,pushed_sum_sales_price,web_site_id,cnt]
+                              HashAggregate [web_site_id,_pushed_sum_sales_price,cnt,_pushed_sum_return_amt,_pushed_sum_profit,_pushed_sum_net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
+                                Project [_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,web_site_id,cnt]
                                   BroadcastHashJoin [date_sk,d_date_sk]
-                                    HashAggregate [date_sk,web_site_id,net_loss,profit,return_amt,sales_price] [sum(UnscaledValue(net_loss)),sum(UnscaledValue(profit)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(sales_price)),pushed_sum_net_loss,pushed_sum_profit,pushed_sum_return_amt,pushed_sum_sales_price,sum,sum,sum,sum]
+                                    HashAggregate [date_sk,web_site_id,net_loss,profit,return_amt,sales_price] [sum(UnscaledValue(net_loss)),sum(UnscaledValue(profit)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(sales_price)),_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,sum,sum,sum,sum]
                                       Project [sales_price,profit,return_amt,net_loss,web_site_id,date_sk]
                                         BroadcastHashJoin [wsr_web_site_sk,web_site_sk]
                                           InputAdapter

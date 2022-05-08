@@ -24,14 +24,14 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                               InputAdapter
                                                 Exchange [ws_item_sk] #3
                                                   WholeStageCodegen (3)
-                                                    HashAggregate [ws_item_sk,d_date,sum] [sum((pushed_sum_ws_sales_priceL * cntL)),item_sk,_w0,sum]
+                                                    HashAggregate [ws_item_sk,d_date,sum] [sum((_pushed_sum_ws_sales_priceL * cntL)),item_sk,_w0,sum]
                                                       InputAdapter
                                                         Exchange [ws_item_sk,d_date] #4
                                                           WholeStageCodegen (2)
-                                                            HashAggregate [ws_item_sk,d_date,pushed_sum_ws_sales_price,cnt] [sum,sum]
-                                                              Project [pushed_sum_ws_sales_price,ws_item_sk,cnt,d_date]
+                                                            HashAggregate [ws_item_sk,d_date,_pushed_sum_ws_sales_price,cnt] [sum,sum]
+                                                              Project [_pushed_sum_ws_sales_price,ws_item_sk,cnt,d_date]
                                                                 BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
-                                                                  HashAggregate [ws_sold_date_sk,ws_item_sk,ws_sales_price] [sum(UnscaledValue(ws_sales_price)),pushed_sum_ws_sales_price,sum]
+                                                                  HashAggregate [ws_sold_date_sk,ws_item_sk,ws_sales_price] [sum(UnscaledValue(ws_sales_price)),_pushed_sum_ws_sales_price,sum]
                                                                     Filter [ws_item_sk]
                                                                       ColumnarToRow
                                                                         InputAdapter
@@ -61,14 +61,14 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                               InputAdapter
                                                 Exchange [ss_item_sk] #7
                                                   WholeStageCodegen (9)
-                                                    HashAggregate [ss_item_sk,d_date,sum] [sum((pushed_sum_ss_sales_priceL * cntL)),item_sk,_w0,sum]
+                                                    HashAggregate [ss_item_sk,d_date,sum] [sum((_pushed_sum_ss_sales_priceL * cntL)),item_sk,_w0,sum]
                                                       InputAdapter
                                                         Exchange [ss_item_sk,d_date] #8
                                                           WholeStageCodegen (8)
-                                                            HashAggregate [ss_item_sk,d_date,pushed_sum_ss_sales_price,cnt] [sum,sum]
-                                                              Project [pushed_sum_ss_sales_price,ss_item_sk,cnt,d_date]
+                                                            HashAggregate [ss_item_sk,d_date,_pushed_sum_ss_sales_price,cnt] [sum,sum]
+                                                              Project [_pushed_sum_ss_sales_price,ss_item_sk,cnt,d_date]
                                                                 BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
-                                                                  HashAggregate [ss_sold_date_sk,ss_item_sk,ss_sales_price] [sum(UnscaledValue(ss_sales_price)),pushed_sum_ss_sales_price,sum]
+                                                                  HashAggregate [ss_sold_date_sk,ss_item_sk,ss_sales_price] [sum(UnscaledValue(ss_sales_price)),_pushed_sum_ss_sales_price,sum]
                                                                     Filter [ss_item_sk]
                                                                       ColumnarToRow
                                                                         InputAdapter

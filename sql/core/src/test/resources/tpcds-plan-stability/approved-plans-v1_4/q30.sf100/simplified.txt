@@ -22,12 +22,12 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,c_pre
                                   InputAdapter
                                     Scan parquet default.customer_address [ca_address_sk,ca_state]
             Filter [ctr_total_return]
-              HashAggregate [wr_returning_customer_sk,ca_state,sum] [sum((pushed_sum_wr_return_amtL * cntL)),ctr_customer_sk,ctr_state,ctr_total_return,sum]
+              HashAggregate [wr_returning_customer_sk,ca_state,sum] [sum((_pushed_sum_wr_return_amtL * cntL)),ctr_customer_sk,ctr_state,ctr_total_return,sum]
                 InputAdapter
                   Exchange [wr_returning_customer_sk,ca_state] #3
                     WholeStageCodegen (8)
-                      HashAggregate [wr_returning_customer_sk,ca_state,pushed_sum_wr_return_amt,cnt] [sum,sum]
-                        Project [pushed_sum_wr_return_amt,wr_returning_customer_sk,ca_state,cnt]
+                      HashAggregate [wr_returning_customer_sk,ca_state,_pushed_sum_wr_return_amt,cnt] [sum,sum]
+                        Project [_pushed_sum_wr_return_amt,wr_returning_customer_sk,ca_state,cnt]
                           SortMergeJoin [wr_returning_addr_sk,ca_address_sk]
                             InputAdapter
                               WholeStageCodegen (5)
@@ -35,7 +35,7 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,c_pre
                                   InputAdapter
                                     Exchange [wr_returning_addr_sk] #4
                                       WholeStageCodegen (4)
-                                        HashAggregate [wr_returning_addr_sk,wr_returning_customer_sk,wr_return_amt] [sum(UnscaledValue(wr_return_amt)),pushed_sum_wr_return_amt,sum]
+                                        HashAggregate [wr_returning_addr_sk,wr_returning_customer_sk,wr_return_amt] [sum(UnscaledValue(wr_return_amt)),_pushed_sum_wr_return_amt,sum]
                                           Project [wr_returning_customer_sk,wr_return_amt,wr_returning_addr_sk]
                                             BroadcastHashJoin [wr_returned_date_sk,d_date_sk]
                                               Filter [wr_returning_addr_sk,wr_returning_customer_sk]
@@ -72,12 +72,12 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,c_pre
                     Exchange [ctr_state] #8
                       WholeStageCodegen (15)
                         HashAggregate [ctr_state,ctr_total_return] [sum,count,sum,count]
-                          HashAggregate [wr_returning_customer_sk,ca_state,sum] [sum((pushed_sum_wr_return_amtL * cntL)),ctr_state,ctr_total_return,sum]
+                          HashAggregate [wr_returning_customer_sk,ca_state,sum] [sum((_pushed_sum_wr_return_amtL * cntL)),ctr_state,ctr_total_return,sum]
                             InputAdapter
                               Exchange [wr_returning_customer_sk,ca_state] #9
                                 WholeStageCodegen (14)
-                                  HashAggregate [wr_returning_customer_sk,ca_state,pushed_sum_wr_return_amt,cnt] [sum,sum]
-                                    Project [pushed_sum_wr_return_amt,wr_returning_customer_sk,ca_state,cnt]
+                                  HashAggregate [wr_returning_customer_sk,ca_state,_pushed_sum_wr_return_amt,cnt] [sum,sum]
+                                    Project [_pushed_sum_wr_return_amt,wr_returning_customer_sk,ca_state,cnt]
                                       SortMergeJoin [wr_returning_addr_sk,ca_address_sk]
                                         InputAdapter
                                           WholeStageCodegen (11)
@@ -85,7 +85,7 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,c_pre
                                               InputAdapter
                                                 Exchange [wr_returning_addr_sk] #10
                                                   WholeStageCodegen (10)
-                                                    HashAggregate [wr_returning_addr_sk,wr_returning_customer_sk,wr_return_amt] [sum(UnscaledValue(wr_return_amt)),pushed_sum_wr_return_amt,sum]
+                                                    HashAggregate [wr_returning_addr_sk,wr_returning_customer_sk,wr_return_amt] [sum(UnscaledValue(wr_return_amt)),_pushed_sum_wr_return_amt,sum]
                                                       Project [wr_returning_customer_sk,wr_return_amt,wr_returning_addr_sk]
                                                         BroadcastHashJoin [wr_returned_date_sk,d_date_sk]
                                                           Filter [wr_returning_addr_sk]

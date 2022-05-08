@@ -18,14 +18,14 @@ CollectLimit
                                   InputAdapter
                                     Scan parquet default.item [i_item_sk,i_manufact_id]
                       Filter [(1.3 * avg(cs_ext_discount_amt))]
-                        HashAggregate [cs_item_sk,sum,sum] [sum((pushed_sum_cs_ext_discount_amt * cast(cntL as double))),sum((cntL * cntL)),(1.3 * avg(cs_ext_discount_amt)),sum,sum]
+                        HashAggregate [cs_item_sk,sum,sum] [sum((_pushed_sum_cs_ext_discount_amt * cast(cntL as double))),sum((cntL * cntL)),(1.3 * avg(cs_ext_discount_amt)),sum,sum]
                           InputAdapter
                             Exchange [cs_item_sk] #3
                               WholeStageCodegen (3)
-                                HashAggregate [cs_item_sk,pushed_sum_cs_ext_discount_amt,cnt,cnt] [sum,sum,sum,sum]
-                                  Project [cnt,cs_item_sk,pushed_sum_cs_ext_discount_amt,cnt]
+                                HashAggregate [cs_item_sk,_pushed_sum_cs_ext_discount_amt,cnt,cnt] [sum,sum,sum,sum]
+                                  Project [_pushed_sum_cs_ext_discount_amt,cnt,cs_item_sk,cnt]
                                     BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
-                                      HashAggregate [cs_sold_date_sk,cs_item_sk,cs_ext_discount_amt] [count(1),sum(UnscaledValue(cs_ext_discount_amt)),cnt,pushed_sum_cs_ext_discount_amt,count,sum]
+                                      HashAggregate [cs_sold_date_sk,cs_item_sk,cs_ext_discount_amt] [sum(UnscaledValue(cs_ext_discount_amt)),count(1),_pushed_sum_cs_ext_discount_amt,cnt,sum,count]
                                         Filter [cs_item_sk]
                                           Subquery #2
                                             ObjectHashAggregate [buf] [bloom_filter_agg(xxhash64(i_item_sk, 42), 199, 1592, 0, 0),bloomFilter,buf]

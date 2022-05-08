@@ -7,20 +7,20 @@ WholeStageCodegen (14)
             Exchange #10
               WholeStageCodegen (19)
                 HashAggregate [netpaid] [sum,count,sum,count]
-                  HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,sum] [sum((pushed_sum_ss_net_paidL * cntL)),netpaid,sum]
+                  HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,sum] [sum((_pushed_sum_ss_net_paidL * cntL)),netpaid,sum]
                     InputAdapter
                       Exchange [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size] #11
                         WholeStageCodegen (18)
-                          HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,pushed_sum_ss_net_paid,cnt] [sum,sum]
-                            Project [c_first_name,c_last_name,i_color,i_current_price,i_manager_id,i_size,i_units,pushed_sum_ss_net_paid,s_state,s_store_name,ca_state,cnt]
-                              SortMergeJoin [c_birth_country,s_zip,upper(ca_country),ca_zip]
+                          HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,_pushed_sum_ss_net_paid,cnt] [sum,sum]
+                            Project [_pushed_sum_ss_net_paid,c_first_name,c_last_name,i_color,i_current_price,i_manager_id,i_size,i_units,s_state,s_store_name,ca_state,cnt]
+                              SortMergeJoin [c_birth_country,s_zip,_pullout_upper_ca_country,ca_zip]
                                 InputAdapter
                                   WholeStageCodegen (15)
                                     Sort [c_birth_country,s_zip]
                                       InputAdapter
                                         Exchange [c_birth_country,s_zip] #12
                                           WholeStageCodegen (14)
-                                            HashAggregate [c_birth_country,s_zip,c_last_name,c_first_name,s_store_name,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,ss_net_paid] [sum(UnscaledValue(ss_net_paid)),pushed_sum_ss_net_paid,sum]
+                                            HashAggregate [c_birth_country,s_zip,c_last_name,c_first_name,s_store_name,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,ss_net_paid] [sum(UnscaledValue(ss_net_paid)),_pushed_sum_ss_net_paid,sum]
                                               Project [ss_net_paid,s_store_name,s_state,i_current_price,i_size,i_color,i_units,i_manager_id,c_first_name,c_last_name,c_birth_country,s_zip]
                                                 SortMergeJoin [ss_ticket_number,ss_item_sk,sr_ticket_number,sr_item_sk]
                                                   InputAdapter
@@ -82,11 +82,11 @@ WholeStageCodegen (14)
                                                           ReusedExchange [sr_item_sk,sr_ticket_number] #7
                                 InputAdapter
                                   WholeStageCodegen (17)
-                                    Sort [upper(ca_country),ca_zip]
+                                    Sort [_pullout_upper_ca_country,ca_zip]
                                       InputAdapter
-                                        Exchange [upper(ca_country),ca_zip] #18
+                                        Exchange [_pullout_upper_ca_country,ca_zip] #18
                                           WholeStageCodegen (16)
-                                            HashAggregate [upper(ca_country),ca_zip,ca_state] [count(1),cnt,count]
+                                            HashAggregate [_pullout_upper_ca_country,ca_zip,ca_state] [count(1),cnt,count]
                                               Project [ca_state,ca_zip,ca_country]
                                                 Filter [ca_country,ca_zip]
                                                   ColumnarToRow
@@ -97,14 +97,14 @@ WholeStageCodegen (14)
         Exchange [c_last_name,c_first_name,s_store_name] #1
           WholeStageCodegen (13)
             HashAggregate [c_last_name,c_first_name,s_store_name,netpaid] [sum,isEmpty,sum,isEmpty]
-              HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,sum] [sum((pushed_sum_ss_net_paidL * cntL)),netpaid,sum]
+              HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,sum] [sum((_pushed_sum_ss_net_paidL * cntL)),netpaid,sum]
                 InputAdapter
                   Exchange [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size] #2
                     WholeStageCodegen (12)
-                      HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,pushed_sum_ss_net_paid,cnt] [sum,sum]
-                        Project [c_first_name,c_last_name,i_color,i_current_price,i_manager_id,i_size,i_units,pushed_sum_ss_net_paid,ca_state,cnt,s_state,s_store_name]
-                          BroadcastHashJoin [ss_store_sk,c_birth_country,s_store_sk,upper(ca_country)]
-                            HashAggregate [ss_store_sk,c_birth_country,c_last_name,c_first_name,i_color,i_current_price,i_manager_id,i_units,i_size,ss_net_paid] [sum(UnscaledValue(ss_net_paid)),pushed_sum_ss_net_paid,sum]
+                      HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,_pushed_sum_ss_net_paid,cnt] [sum,sum]
+                        Project [_pushed_sum_ss_net_paid,c_first_name,c_last_name,i_color,i_current_price,i_manager_id,i_size,i_units,ca_state,cnt,s_state,s_store_name]
+                          BroadcastHashJoin [ss_store_sk,c_birth_country,s_store_sk,_pullout_upper_ca_country]
+                            HashAggregate [ss_store_sk,c_birth_country,c_last_name,c_first_name,i_color,i_current_price,i_manager_id,i_units,i_size,ss_net_paid] [sum(UnscaledValue(ss_net_paid)),_pushed_sum_ss_net_paid,sum]
                               Project [ss_net_paid,i_current_price,i_size,i_color,i_units,i_manager_id,c_first_name,c_last_name,c_birth_country,ss_store_sk]
                                 SortMergeJoin [ss_ticket_number,ss_item_sk,sr_ticket_number,sr_item_sk]
                                   InputAdapter
@@ -159,7 +159,7 @@ WholeStageCodegen (14)
                             InputAdapter
                               BroadcastExchange #8
                                 WholeStageCodegen (11)
-                                  HashAggregate [s_store_sk,upper(ca_country),s_store_name,ca_state,s_state] [count(1),cnt,count]
+                                  HashAggregate [s_store_sk,_pullout_upper_ca_country,s_store_name,ca_state,s_state] [count(1),cnt,count]
                                     Project [s_store_name,s_state,ca_state,s_store_sk,ca_country]
                                       BroadcastHashJoin [s_zip,ca_zip]
                                         InputAdapter

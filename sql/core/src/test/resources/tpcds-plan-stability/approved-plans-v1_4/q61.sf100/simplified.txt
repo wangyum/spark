@@ -1,14 +1,14 @@
 WholeStageCodegen (15)
   Project [promotions,total]
     BroadcastNestedLoopJoin
-      HashAggregate [sum] [sum((pushed_sum_ss_ext_sales_priceL * cntL)),promotions,sum]
+      HashAggregate [sum] [sum((_pushed_sum_ss_ext_sales_priceL * cntL)),promotions,sum]
         InputAdapter
           Exchange #1
             WholeStageCodegen (7)
-              HashAggregate [pushed_sum_ss_ext_sales_price,cnt] [sum,sum]
-                Project [pushed_sum_ss_ext_sales_price,cnt]
+              HashAggregate [_pushed_sum_ss_ext_sales_price,cnt] [sum,sum]
+                Project [_pushed_sum_ss_ext_sales_price,cnt]
                   BroadcastHashJoin [ss_customer_sk,c_customer_sk]
-                    HashAggregate [ss_customer_sk,ss_ext_sales_price] [sum(UnscaledValue(ss_ext_sales_price)),pushed_sum_ss_ext_sales_price,sum]
+                    HashAggregate [ss_customer_sk,ss_ext_sales_price] [sum(UnscaledValue(ss_ext_sales_price)),_pushed_sum_ss_ext_sales_price,sum]
                       Project [ss_ext_sales_price,ss_customer_sk]
                         BroadcastHashJoin [ss_store_sk,s_store_sk]
                           Project [ss_customer_sk,ss_store_sk,ss_ext_sales_price]
@@ -76,14 +76,14 @@ WholeStageCodegen (15)
       InputAdapter
         BroadcastExchange #8
           WholeStageCodegen (14)
-            HashAggregate [sum] [sum((pushed_sum_ss_ext_sales_priceL * cntL)),total,sum]
+            HashAggregate [sum] [sum((_pushed_sum_ss_ext_sales_priceL * cntL)),total,sum]
               InputAdapter
                 Exchange #9
                   WholeStageCodegen (13)
-                    HashAggregate [pushed_sum_ss_ext_sales_price,cnt] [sum,sum]
-                      Project [pushed_sum_ss_ext_sales_price,cnt]
+                    HashAggregate [_pushed_sum_ss_ext_sales_price,cnt] [sum,sum]
+                      Project [_pushed_sum_ss_ext_sales_price,cnt]
                         BroadcastHashJoin [ss_customer_sk,c_customer_sk]
-                          HashAggregate [ss_customer_sk,ss_ext_sales_price] [sum(UnscaledValue(ss_ext_sales_price)),pushed_sum_ss_ext_sales_price,sum]
+                          HashAggregate [ss_customer_sk,ss_ext_sales_price] [sum(UnscaledValue(ss_ext_sales_price)),_pushed_sum_ss_ext_sales_price,sum]
                             Project [ss_ext_sales_price,ss_customer_sk]
                               BroadcastHashJoin [ss_store_sk,s_store_sk]
                                 Project [ss_customer_sk,ss_store_sk,ss_ext_sales_price]

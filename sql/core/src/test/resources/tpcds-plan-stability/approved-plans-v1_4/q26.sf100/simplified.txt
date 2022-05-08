@@ -1,13 +1,13 @@
 TakeOrderedAndProject [i_item_id,agg1,agg2,agg3,agg4]
   WholeStageCodegen (6)
-    HashAggregate [i_item_id,sum,sum,sum,sum,sum] [sum((pushed_sum_cs_quantity * cast(cntL as double))),sum((cntL * cntL)),sum((pushed_sum_cs_list_price * cast(cntL as double))),sum((pushed_sum_cs_coupon_amt * cast(cntL as double))),sum((pushed_sum_cs_sales_price * cast(cntL as double))),agg1,agg2,agg3,agg4,sum,sum,sum,sum,sum]
+    HashAggregate [i_item_id,sum,sum,sum,sum,sum] [sum((_pushed_sum_cs_quantity * cast(cntL as double))),sum((cntL * cntL)),sum((_pushed_sum_cs_list_price * cast(cntL as double))),sum((_pushed_sum_cs_coupon_amt * cast(cntL as double))),sum((_pushed_sum_cs_sales_price * cast(cntL as double))),agg1,agg2,agg3,agg4,sum,sum,sum,sum,sum]
       InputAdapter
         Exchange [i_item_id] #1
           WholeStageCodegen (5)
-            HashAggregate [i_item_id,pushed_sum_cs_quantity,cnt,cnt,pushed_sum_cs_list_price,pushed_sum_cs_coupon_amt,pushed_sum_cs_sales_price] [sum,sum,sum,sum,sum,sum,sum,sum,sum,sum]
-              Project [cnt,pushed_sum_cs_coupon_amt,pushed_sum_cs_list_price,pushed_sum_cs_quantity,pushed_sum_cs_sales_price,cnt,i_item_id]
+            HashAggregate [i_item_id,_pushed_sum_cs_quantity,cnt,cnt,_pushed_sum_cs_list_price,_pushed_sum_cs_coupon_amt,_pushed_sum_cs_sales_price] [sum,sum,sum,sum,sum,sum,sum,sum,sum,sum]
+              Project [_pushed_sum_cs_coupon_amt,_pushed_sum_cs_list_price,_pushed_sum_cs_quantity,_pushed_sum_cs_sales_price,cnt,cnt,i_item_id]
                 BroadcastHashJoin [cs_item_sk,i_item_sk]
-                  HashAggregate [cs_item_sk,cs_coupon_amt,cs_list_price,cs_quantity,cs_sales_price] [count(1),sum(UnscaledValue(cs_coupon_amt)),sum(UnscaledValue(cs_list_price)),sum(cs_quantity),sum(UnscaledValue(cs_sales_price)),cnt,pushed_sum_cs_coupon_amt,pushed_sum_cs_list_price,pushed_sum_cs_quantity,pushed_sum_cs_sales_price,count,sum,sum,sum,sum]
+                  HashAggregate [cs_item_sk,cs_coupon_amt,cs_list_price,cs_quantity,cs_sales_price] [sum(UnscaledValue(cs_coupon_amt)),sum(UnscaledValue(cs_list_price)),sum(cs_quantity),sum(UnscaledValue(cs_sales_price)),count(1),_pushed_sum_cs_coupon_amt,_pushed_sum_cs_list_price,_pushed_sum_cs_quantity,_pushed_sum_cs_sales_price,cnt,sum,sum,sum,sum,count]
                     Project [cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_item_sk]
                       BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
                         Project [cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_sold_date_sk]
