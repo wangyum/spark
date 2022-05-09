@@ -42,31 +42,34 @@ TakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
                                 HashAggregate [ca_zip]
                                   Project [ca_zip]
                                     BroadcastHashJoin [ca_zip,ca_zip]
-                                      Filter [ca_zip]
-                                        ColumnarToRow
-                                          InputAdapter
-                                            Scan parquet default.customer_address [ca_zip]
+                                      HashAggregate [ca_zip]
+                                        Filter [ca_zip]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              Scan parquet default.customer_address [ca_zip]
                                       InputAdapter
                                         BroadcastExchange #6
                                           WholeStageCodegen (5)
                                             Project [ca_zip]
                                               Filter [cnt]
-                                                HashAggregate [ca_zip,count] [count(1),ca_zip,cnt,count]
+                                                HashAggregate [ca_zip,sum] [sum((cntL * cntL)),ca_zip,cnt,sum]
                                                   InputAdapter
                                                     Exchange [ca_zip] #7
                                                       WholeStageCodegen (4)
-                                                        HashAggregate [ca_zip] [count,count]
-                                                          Project [ca_zip]
+                                                        HashAggregate [ca_zip,cnt,cnt] [sum,sum]
+                                                          Project [ca_zip,cnt,cnt]
                                                             BroadcastHashJoin [ca_address_sk,c_current_addr_sk]
-                                                              Filter [ca_address_sk]
-                                                                ColumnarToRow
-                                                                  InputAdapter
-                                                                    Scan parquet default.customer_address [ca_address_sk,ca_zip]
+                                                              HashAggregate [ca_address_sk,ca_zip] [count(1),cnt,count]
+                                                                Filter [ca_address_sk]
+                                                                  ColumnarToRow
+                                                                    InputAdapter
+                                                                      Scan parquet default.customer_address [ca_address_sk,ca_zip]
                                                               InputAdapter
                                                                 BroadcastExchange #8
                                                                   WholeStageCodegen (3)
-                                                                    Project [c_current_addr_sk]
-                                                                      Filter [c_preferred_cust_flag,c_current_addr_sk]
-                                                                        ColumnarToRow
-                                                                          InputAdapter
-                                                                            Scan parquet default.customer [c_current_addr_sk,c_preferred_cust_flag]
+                                                                    HashAggregate [c_current_addr_sk] [count(1),cnt,count]
+                                                                      Project [c_current_addr_sk]
+                                                                        Filter [c_preferred_cust_flag,c_current_addr_sk]
+                                                                          ColumnarToRow
+                                                                            InputAdapter
+                                                                              Scan parquet default.customer [c_current_addr_sk,c_preferred_cust_flag]

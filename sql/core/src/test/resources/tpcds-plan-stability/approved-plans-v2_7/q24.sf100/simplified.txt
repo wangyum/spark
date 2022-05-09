@@ -11,12 +11,12 @@ WholeStageCodegen (12)
                     Exchange #10
                       WholeStageCodegen (13)
                         HashAggregate [netpaid] [sum,count,sum,count]
-                          HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,sum] [sum((pushed_sum(UnscaledValue(ss_net_paid))L * cntL)),netpaid,sum]
+                          HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,sum] [sum((_pushed_sum_ss_net_paidL * cntL)),netpaid,sum]
                             InputAdapter
                               Exchange [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size] #11
                                 WholeStageCodegen (12)
-                                  HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,pushed_sum(UnscaledValue(ss_net_paid)),cnt] [sum,sum]
-                                    Project [c_first_name,c_last_name,ca_state,i_color,i_current_price,i_manager_id,i_size,i_units,pushed_sum(UnscaledValue(ss_net_paid)),s_state,s_store_name,cnt]
+                                  HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,_pushed_sum_ss_net_paid,cnt] [sum,sum]
+                                    Project [_pushed_sum_ss_net_paid,c_first_name,c_last_name,ca_state,i_color,i_current_price,i_manager_id,i_size,i_units,s_state,s_store_name,cnt]
                                       SortMergeJoin [ss_ticket_number,ss_item_sk,sr_ticket_number,sr_item_sk]
                                         InputAdapter
                                           WholeStageCodegen (9)
@@ -24,7 +24,7 @@ WholeStageCodegen (12)
                                               InputAdapter
                                                 Exchange [ss_ticket_number,ss_item_sk] #12
                                                   WholeStageCodegen (8)
-                                                    HashAggregate [ss_ticket_number,ss_item_sk,c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,ss_net_paid] [sum(UnscaledValue(ss_net_paid)),pushed_sum(UnscaledValue(ss_net_paid)),sum]
+                                                    HashAggregate [ss_ticket_number,ss_item_sk,c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,ss_net_paid] [sum(UnscaledValue(ss_net_paid)),_pushed_sum_ss_net_paid,sum]
                                                       Project [ss_net_paid,s_store_name,s_state,i_current_price,i_size,i_color,i_units,i_manager_id,c_first_name,c_last_name,ca_state,ss_item_sk,ss_ticket_number]
                                                         SortMergeJoin [ss_item_sk,i_item_sk]
                                                           InputAdapter
@@ -62,12 +62,12 @@ WholeStageCodegen (12)
                 Exchange [c_last_name,c_first_name,s_store_name] #2
                   WholeStageCodegen (10)
                     HashAggregate [c_last_name,c_first_name,s_store_name,netpaid] [sum,isEmpty,sum,isEmpty]
-                      HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,sum] [sum((pushed_sum(UnscaledValue(ss_net_paid))L * cntL)),netpaid,sum]
+                      HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,sum] [sum((_pushed_sum_ss_net_paidL * cntL)),netpaid,sum]
                         InputAdapter
                           Exchange [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size] #3
                             WholeStageCodegen (9)
-                              HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,pushed_sum(UnscaledValue(ss_net_paid)),cnt] [sum,sum]
-                                Project [c_first_name,c_last_name,ca_state,i_color,i_current_price,i_manager_id,i_size,i_units,pushed_sum(UnscaledValue(ss_net_paid)),s_state,s_store_name,cnt]
+                              HashAggregate [c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,_pushed_sum_ss_net_paid,cnt] [sum,sum]
+                                Project [_pushed_sum_ss_net_paid,c_first_name,c_last_name,ca_state,i_color,i_current_price,i_manager_id,i_size,i_units,s_state,s_store_name,cnt]
                                   SortMergeJoin [ss_ticket_number,ss_item_sk,sr_ticket_number,sr_item_sk]
                                     InputAdapter
                                       WholeStageCodegen (6)
@@ -75,7 +75,7 @@ WholeStageCodegen (12)
                                           InputAdapter
                                             Exchange [ss_ticket_number,ss_item_sk] #4
                                               WholeStageCodegen (5)
-                                                HashAggregate [ss_ticket_number,ss_item_sk,c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,ss_net_paid] [sum(UnscaledValue(ss_net_paid)),pushed_sum(UnscaledValue(ss_net_paid)),sum]
+                                                HashAggregate [ss_ticket_number,ss_item_sk,c_last_name,c_first_name,s_store_name,ca_state,s_state,i_color,i_current_price,i_manager_id,i_units,i_size,ss_net_paid] [sum(UnscaledValue(ss_net_paid)),_pushed_sum_ss_net_paid,sum]
                                                   Project [ss_net_paid,s_store_name,s_state,i_current_price,i_size,i_color,i_units,i_manager_id,c_first_name,c_last_name,ca_state,ss_item_sk,ss_ticket_number]
                                                     BroadcastHashJoin [ss_item_sk,i_item_sk]
                                                       Project [s_store_name,s_state,ca_state,c_first_name,c_last_name,ss_item_sk,ss_ticket_number,ss_net_paid]

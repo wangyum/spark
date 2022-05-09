@@ -16,16 +16,15 @@ TakeOrderedAndProject [i_product_name]
                   InputAdapter
                     BroadcastExchange #2
                       WholeStageCodegen (2)
-                        HashAggregate [i_manufact]
-                          Project [i_manufact]
-                            Filter [item_cnt]
-                              HashAggregate [i_manufact,count] [count(1),item_cnt,count]
-                                InputAdapter
-                                  Exchange [i_manufact] #3
-                                    WholeStageCodegen (1)
-                                      HashAggregate [i_manufact] [count,count]
-                                        Project [i_manufact]
-                                          Filter [i_category,i_color,i_units,i_size,i_manufact]
-                                            ColumnarToRow
-                                              InputAdapter
-                                                Scan parquet default.item [i_category,i_manufact,i_size,i_color,i_units]
+                        Project [i_manufact]
+                          Filter [item_cnt]
+                            HashAggregate [i_manufact,count] [count(1),item_cnt,count]
+                              InputAdapter
+                                Exchange [i_manufact] #3
+                                  WholeStageCodegen (1)
+                                    HashAggregate [i_manufact] [count,count]
+                                      Project [i_manufact]
+                                        Filter [i_category,i_color,i_units,i_size,i_manufact]
+                                          ColumnarToRow
+                                            InputAdapter
+                                              Scan parquet default.item [i_category,i_manufact,i_size,i_color,i_units]

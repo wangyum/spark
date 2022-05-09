@@ -16,10 +16,11 @@ WholeStageCodegen (6)
                               Project [ps_suppkey,p_brand,p_type,p_size]
                                 BroadcastHashJoin [ps_partkey,p_partkey]
                                   BroadcastHashJoin [ps_suppkey,s_suppkey]
-                                    Filter [ps_partkey]
-                                      ColumnarToRow
-                                        InputAdapter
-                                          Scan parquet default.partsupp [ps_partkey,ps_suppkey]
+                                    HashAggregate [ps_partkey,ps_suppkey]
+                                      Filter [ps_partkey]
+                                        ColumnarToRow
+                                          InputAdapter
+                                            Scan parquet default.partsupp [ps_partkey,ps_suppkey]
                                     InputAdapter
                                       BroadcastExchange #4
                                         WholeStageCodegen (1)

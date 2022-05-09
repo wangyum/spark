@@ -43,9 +43,9 @@ TakeOrderedAndProject [cd_gender,cd_marital_status,cd_education_status,cd_purcha
                                             InputAdapter
                                               Exchange [ss_customer_sk] #5
                                                 WholeStageCodegen (4)
-                                                  HashAggregate [ss_customer_sk]
-                                                    Project [ss_customer_sk]
-                                                      BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                  Project [ss_customer_sk]
+                                                    BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
+                                                      HashAggregate [ss_customer_sk,ss_sold_date_sk]
                                                         ColumnarToRow
                                                           InputAdapter
                                                             Scan parquet default.store_sales [ss_customer_sk,ss_sold_date_sk]
@@ -57,8 +57,8 @@ TakeOrderedAndProject [cd_gender,cd_marital_status,cd_education_status,cd_purcha
                                                                         ColumnarToRow
                                                                           InputAdapter
                                                                             Scan parquet default.date_dim [d_date_sk,d_year,d_moy]
-                                                        InputAdapter
-                                                          ReusedExchange [d_date_sk] #6
+                                                      InputAdapter
+                                                        ReusedExchange [d_date_sk] #6
                                 InputAdapter
                                   WholeStageCodegen (12)
                                     Sort [customer_sk]
