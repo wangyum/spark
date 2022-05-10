@@ -34,22 +34,20 @@ WholeStageCodegen (12)
                                             InputAdapter
                                               Exchange [ws_order_number] #3
                                                 WholeStageCodegen (3)
-                                                  HashAggregate [ws_warehouse_sk,ws_order_number]
-                                                    Project [ws_warehouse_sk,ws_order_number]
-                                                      ColumnarToRow
-                                                        InputAdapter
-                                                          Scan parquet default.web_sales [ws_warehouse_sk,ws_order_number,ws_sold_date_sk]
+                                                  Project [ws_warehouse_sk,ws_order_number]
+                                                    ColumnarToRow
+                                                      InputAdapter
+                                                        Scan parquet default.web_sales [ws_warehouse_sk,ws_order_number,ws_sold_date_sk]
                               InputAdapter
                                 WholeStageCodegen (7)
                                   Sort [wr_order_number]
                                     InputAdapter
                                       Exchange [wr_order_number] #4
                                         WholeStageCodegen (6)
-                                          HashAggregate [wr_order_number]
-                                            Project [wr_order_number]
-                                              ColumnarToRow
-                                                InputAdapter
-                                                  Scan parquet default.web_returns [wr_order_number,wr_returned_date_sk]
+                                          Project [wr_order_number]
+                                            ColumnarToRow
+                                              InputAdapter
+                                                Scan parquet default.web_returns [wr_order_number,wr_returned_date_sk]
                             InputAdapter
                               BroadcastExchange #5
                                 WholeStageCodegen (8)

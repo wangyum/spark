@@ -7,12 +7,11 @@ TakeOrderedAndProject [i_product_name]
             HashAggregate [i_product_name]
               Project [i_product_name]
                 BroadcastHashJoin [i_manufact,i_manufact]
-                  HashAggregate [i_manufact,i_product_name]
-                    Project [i_manufact,i_product_name]
-                      Filter [i_manufact_id,i_manufact]
-                        ColumnarToRow
-                          InputAdapter
-                            Scan parquet default.item [i_manufact_id,i_manufact,i_product_name]
+                  Project [i_manufact,i_product_name]
+                    Filter [i_manufact_id,i_manufact]
+                      ColumnarToRow
+                        InputAdapter
+                          Scan parquet default.item [i_manufact_id,i_manufact,i_product_name]
                   InputAdapter
                     BroadcastExchange #2
                       WholeStageCodegen (2)
