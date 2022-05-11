@@ -37,11 +37,12 @@ WholeStageCodegen (21)
                                                   InputAdapter
                                                     Exchange [ws_order_number] #3
                                                       WholeStageCodegen (3)
-                                                        Project [ws_warehouse_sk,ws_order_number]
-                                                          Filter [ws_order_number,ws_warehouse_sk]
-                                                            ColumnarToRow
-                                                              InputAdapter
-                                                                Scan parquet default.web_sales [ws_warehouse_sk,ws_order_number,ws_sold_date_sk]
+                                                        HashAggregate [ws_warehouse_sk,ws_order_number]
+                                                          Project [ws_warehouse_sk,ws_order_number]
+                                                            Filter [ws_order_number,ws_warehouse_sk]
+                                                              ColumnarToRow
+                                                                InputAdapter
+                                                                  Scan parquet default.web_sales [ws_warehouse_sk,ws_order_number,ws_sold_date_sk]
                                             InputAdapter
                                               WholeStageCodegen (6)
                                                 Sort [ws_order_number]
@@ -57,11 +58,12 @@ WholeStageCodegen (21)
                                             InputAdapter
                                               Exchange [wr_order_number] #4
                                                 WholeStageCodegen (9)
-                                                  Project [wr_order_number]
-                                                    Filter [wr_order_number]
-                                                      ColumnarToRow
-                                                        InputAdapter
-                                                          Scan parquet default.web_returns [wr_order_number,wr_returned_date_sk]
+                                                  HashAggregate [wr_order_number]
+                                                    Project [wr_order_number]
+                                                      Filter [wr_order_number]
+                                                        ColumnarToRow
+                                                          InputAdapter
+                                                            Scan parquet default.web_returns [wr_order_number,wr_returned_date_sk]
                                       InputAdapter
                                         WholeStageCodegen (15)
                                           Project [ws_order_number]

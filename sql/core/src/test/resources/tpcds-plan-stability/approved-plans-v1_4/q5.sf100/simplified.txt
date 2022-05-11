@@ -9,14 +9,14 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                 InputAdapter
                   Union
                     WholeStageCodegen (6)
-                      HashAggregate [s_store_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                      HashAggregate [s_store_id,_pushed_sum_sales_price,cnt,_pushed_sum_return_amt,_pushed_sum_profit,_pushed_sum_net_loss] [sum((_pushed_sum_sales_priceL * cntL)),sum((_pushed_sum_return_amtL * cntL)),sum((_pushed_sum_profitL * cntL)),sum((_pushed_sum_net_lossL * cntL)),sales,returns,profit,channel,id,sum,sum,sum,sum]
                         InputAdapter
                           Exchange [s_store_id] #2
                             WholeStageCodegen (5)
-                              HashAggregate [s_store_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                Project [sales_price,profit,return_amt,net_loss,s_store_id]
-                                  BroadcastHashJoin [date_sk,d_date_sk]
-                                    Project [date_sk,sales_price,profit,return_amt,net_loss,s_store_id]
+                              Project [_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,s_store_id,cnt]
+                                BroadcastHashJoin [date_sk,d_date_sk]
+                                  HashAggregate [date_sk,s_store_id,net_loss,profit,return_amt,sales_price] [sum(UnscaledValue(net_loss)),sum(UnscaledValue(profit)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(sales_price)),_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,sum,sum,sum,sum]
+                                    Project [sales_price,profit,return_amt,net_loss,s_store_id,date_sk]
                                       BroadcastHashJoin [store_sk,s_store_sk]
                                         InputAdapter
                                           Union
@@ -29,11 +29,12 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                         SubqueryBroadcast [d_date_sk] #1
                                                           BroadcastExchange #3
                                                             WholeStageCodegen (1)
-                                                              Project [d_date_sk]
-                                                                Filter [d_date,d_date_sk]
-                                                                  ColumnarToRow
-                                                                    InputAdapter
-                                                                      Scan parquet default.date_dim [d_date_sk,d_date]
+                                                              HashAggregate [d_date_sk] [count(1),cnt,count]
+                                                                Project [d_date_sk]
+                                                                  Filter [d_date,d_date_sk]
+                                                                    ColumnarToRow
+                                                                      InputAdapter
+                                                                        Scan parquet default.date_dim [d_date_sk,d_date]
                                             WholeStageCodegen (2)
                                               Project [sr_store_sk,sr_returned_date_sk,sr_return_amt,sr_net_loss]
                                                 Filter [sr_store_sk]
@@ -48,17 +49,17 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                 ColumnarToRow
                                                   InputAdapter
                                                     Scan parquet default.store [s_store_sk,s_store_id]
-                                    InputAdapter
-                                      ReusedExchange [d_date_sk] #3
+                                  InputAdapter
+                                    ReusedExchange [cnt,d_date_sk] #3
                     WholeStageCodegen (12)
-                      HashAggregate [cp_catalog_page_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                      HashAggregate [cp_catalog_page_id,_pushed_sum_sales_price,cnt,_pushed_sum_return_amt,_pushed_sum_profit,_pushed_sum_net_loss] [sum((_pushed_sum_sales_priceL * cntL)),sum((_pushed_sum_return_amtL * cntL)),sum((_pushed_sum_profitL * cntL)),sum((_pushed_sum_net_lossL * cntL)),sales,returns,profit,channel,id,sum,sum,sum,sum]
                         InputAdapter
                           Exchange [cp_catalog_page_id] #5
                             WholeStageCodegen (11)
-                              HashAggregate [cp_catalog_page_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                Project [sales_price,profit,return_amt,net_loss,cp_catalog_page_id]
-                                  BroadcastHashJoin [date_sk,d_date_sk]
-                                    Project [date_sk,sales_price,profit,return_amt,net_loss,cp_catalog_page_id]
+                              Project [_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,cp_catalog_page_id,cnt]
+                                BroadcastHashJoin [date_sk,d_date_sk]
+                                  HashAggregate [date_sk,cp_catalog_page_id,net_loss,profit,return_amt,sales_price] [sum(UnscaledValue(net_loss)),sum(UnscaledValue(profit)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(sales_price)),_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,sum,sum,sum,sum]
+                                    Project [sales_price,profit,return_amt,net_loss,cp_catalog_page_id,date_sk]
                                       BroadcastHashJoin [page_sk,cp_catalog_page_sk]
                                         InputAdapter
                                           Union
@@ -83,17 +84,17 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                 ColumnarToRow
                                                   InputAdapter
                                                     Scan parquet default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
-                                    InputAdapter
-                                      ReusedExchange [d_date_sk] #3
+                                  InputAdapter
+                                    ReusedExchange [cnt,d_date_sk] #3
                     WholeStageCodegen (22)
-                      HashAggregate [web_site_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),sales,returns,profit,channel,id,sum,sum,sum,sum]
+                      HashAggregate [web_site_id,_pushed_sum_sales_price,cnt,_pushed_sum_return_amt,_pushed_sum_profit,_pushed_sum_net_loss] [sum((_pushed_sum_sales_priceL * cntL)),sum((_pushed_sum_return_amtL * cntL)),sum((_pushed_sum_profitL * cntL)),sum((_pushed_sum_net_lossL * cntL)),sales,returns,profit,channel,id,sum,sum,sum,sum]
                         InputAdapter
                           Exchange [web_site_id] #7
                             WholeStageCodegen (21)
-                              HashAggregate [web_site_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
-                                Project [sales_price,profit,return_amt,net_loss,web_site_id]
-                                  BroadcastHashJoin [date_sk,d_date_sk]
-                                    Project [date_sk,sales_price,profit,return_amt,net_loss,web_site_id]
+                              Project [_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,web_site_id,cnt]
+                                BroadcastHashJoin [date_sk,d_date_sk]
+                                  HashAggregate [date_sk,web_site_id,net_loss,profit,return_amt,sales_price] [sum(UnscaledValue(net_loss)),sum(UnscaledValue(profit)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(sales_price)),_pushed_sum_net_loss,_pushed_sum_profit,_pushed_sum_return_amt,_pushed_sum_sales_price,sum,sum,sum,sum]
+                                    Project [sales_price,profit,return_amt,net_loss,web_site_id,date_sk]
                                       BroadcastHashJoin [wsr_web_site_sk,web_site_sk]
                                         InputAdapter
                                           Union
@@ -135,5 +136,5 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                 ColumnarToRow
                                                   InputAdapter
                                                     Scan parquet default.web_site [web_site_sk,web_site_id]
-                                    InputAdapter
-                                      ReusedExchange [d_date_sk] #3
+                                  InputAdapter
+                                    ReusedExchange [cnt,d_date_sk] #3

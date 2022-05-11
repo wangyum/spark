@@ -8,14 +8,14 @@ TakeOrderedAndProject [i_item_id,total_sales]
               InputAdapter
                 Union
                   WholeStageCodegen (6)
-                    HashAggregate [i_item_id,sum] [sum(UnscaledValue(ss_ext_sales_price)),total_sales,sum]
+                    HashAggregate [i_item_id,_pushed_sum_ss_ext_sales_price,cnt] [sum((_pushed_sum_ss_ext_sales_priceL * cntL)),total_sales,sum]
                       InputAdapter
                         Exchange [i_item_id] #2
                           WholeStageCodegen (5)
-                            HashAggregate [i_item_id,ss_ext_sales_price] [sum,sum]
-                              Project [ss_ext_sales_price,i_item_id]
-                                BroadcastHashJoin [ss_item_sk,i_item_sk]
-                                  Project [ss_item_sk,ss_ext_sales_price]
+                            Project [_pushed_sum_ss_ext_sales_price,cnt,i_item_id]
+                              BroadcastHashJoin [ss_item_sk,i_item_sk]
+                                HashAggregate [ss_item_sk,ss_ext_sales_price] [sum(UnscaledValue(ss_ext_sales_price)),_pushed_sum_ss_ext_sales_price,sum]
+                                  Project [ss_ext_sales_price,ss_item_sk]
                                     BroadcastHashJoin [ss_addr_sk,ca_address_sk]
                                       Project [ss_item_sk,ss_addr_sk,ss_ext_sales_price]
                                         BroadcastHashJoin [ss_sold_date_sk,d_date_sk]
@@ -41,31 +41,33 @@ TakeOrderedAndProject [i_item_id,total_sales]
                                                 ColumnarToRow
                                                   InputAdapter
                                                     Scan parquet default.customer_address [ca_address_sk,ca_gmt_offset]
-                                  InputAdapter
-                                    BroadcastExchange #5
-                                      WholeStageCodegen (4)
-                                        BroadcastHashJoin [i_item_id,i_item_id]
-                                          Filter [i_item_sk]
-                                            ColumnarToRow
-                                              InputAdapter
-                                                Scan parquet default.item [i_item_sk,i_item_id]
-                                          InputAdapter
-                                            BroadcastExchange #6
-                                              WholeStageCodegen (3)
-                                                Project [i_item_id]
-                                                  Filter [i_category]
-                                                    ColumnarToRow
-                                                      InputAdapter
-                                                        Scan parquet default.item [i_item_id,i_category]
+                                InputAdapter
+                                  BroadcastExchange #5
+                                    WholeStageCodegen (4)
+                                      HashAggregate [i_item_sk,i_item_id] [count(1),cnt,count]
+                                        Project [i_item_id,i_item_sk]
+                                          BroadcastHashJoin [i_item_id,i_item_id]
+                                            Filter [i_item_sk]
+                                              ColumnarToRow
+                                                InputAdapter
+                                                  Scan parquet default.item [i_item_sk,i_item_id]
+                                            InputAdapter
+                                              BroadcastExchange #6
+                                                WholeStageCodegen (3)
+                                                  Project [i_item_id]
+                                                    Filter [i_category]
+                                                      ColumnarToRow
+                                                        InputAdapter
+                                                          Scan parquet default.item [i_item_id,i_category]
                   WholeStageCodegen (12)
-                    HashAggregate [i_item_id,sum] [sum(UnscaledValue(cs_ext_sales_price)),total_sales,sum]
+                    HashAggregate [i_item_id,_pushed_sum_cs_ext_sales_price,cnt] [sum((_pushed_sum_cs_ext_sales_priceL * cntL)),total_sales,sum]
                       InputAdapter
                         Exchange [i_item_id] #7
                           WholeStageCodegen (11)
-                            HashAggregate [i_item_id,cs_ext_sales_price] [sum,sum]
-                              Project [cs_ext_sales_price,i_item_id]
-                                BroadcastHashJoin [cs_item_sk,i_item_sk]
-                                  Project [cs_item_sk,cs_ext_sales_price]
+                            Project [_pushed_sum_cs_ext_sales_price,cnt,i_item_id]
+                              BroadcastHashJoin [cs_item_sk,i_item_sk]
+                                HashAggregate [cs_item_sk,cs_ext_sales_price] [sum(UnscaledValue(cs_ext_sales_price)),_pushed_sum_cs_ext_sales_price,sum]
+                                  Project [cs_ext_sales_price,cs_item_sk]
                                     BroadcastHashJoin [cs_bill_addr_sk,ca_address_sk]
                                       Project [cs_bill_addr_sk,cs_item_sk,cs_ext_sales_price]
                                         BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
@@ -78,17 +80,17 @@ TakeOrderedAndProject [i_item_id,total_sales]
                                             ReusedExchange [d_date_sk] #3
                                       InputAdapter
                                         ReusedExchange [ca_address_sk] #4
-                                  InputAdapter
-                                    ReusedExchange [i_item_sk,i_item_id] #5
+                                InputAdapter
+                                  ReusedExchange [cnt,i_item_id,i_item_sk] #5
                   WholeStageCodegen (18)
-                    HashAggregate [i_item_id,sum] [sum(UnscaledValue(ws_ext_sales_price)),total_sales,sum]
+                    HashAggregate [i_item_id,_pushed_sum_ws_ext_sales_price,cnt] [sum((_pushed_sum_ws_ext_sales_priceL * cntL)),total_sales,sum]
                       InputAdapter
                         Exchange [i_item_id] #8
                           WholeStageCodegen (17)
-                            HashAggregate [i_item_id,ws_ext_sales_price] [sum,sum]
-                              Project [ws_ext_sales_price,i_item_id]
-                                BroadcastHashJoin [ws_item_sk,i_item_sk]
-                                  Project [ws_item_sk,ws_ext_sales_price]
+                            Project [_pushed_sum_ws_ext_sales_price,cnt,i_item_id]
+                              BroadcastHashJoin [ws_item_sk,i_item_sk]
+                                HashAggregate [ws_item_sk,ws_ext_sales_price] [sum(UnscaledValue(ws_ext_sales_price)),_pushed_sum_ws_ext_sales_price,sum]
+                                  Project [ws_ext_sales_price,ws_item_sk]
                                     BroadcastHashJoin [ws_bill_addr_sk,ca_address_sk]
                                       Project [ws_item_sk,ws_bill_addr_sk,ws_ext_sales_price]
                                         BroadcastHashJoin [ws_sold_date_sk,d_date_sk]
@@ -101,5 +103,5 @@ TakeOrderedAndProject [i_item_id,total_sales]
                                             ReusedExchange [d_date_sk] #3
                                       InputAdapter
                                         ReusedExchange [ca_address_sk] #4
-                                  InputAdapter
-                                    ReusedExchange [i_item_sk,i_item_id] #5
+                                InputAdapter
+                                  ReusedExchange [cnt,i_item_id,i_item_sk] #5

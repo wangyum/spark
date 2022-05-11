@@ -3,14 +3,14 @@ WholeStageCodegen (9)
     InputAdapter
       Exchange [Returns_Loss] #1
         WholeStageCodegen (8)
-          HashAggregate [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,sum] [sum(UnscaledValue(cr_net_loss)),Call_Center,Call_Center_Name,Manager,Returns_Loss,sum]
+          HashAggregate [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,_pushed_sum_cr_net_loss,cnt] [sum((_pushed_sum_cr_net_lossL * cntL)),Call_Center,Call_Center_Name,Manager,Returns_Loss,sum]
             InputAdapter
               Exchange [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status] #2
                 WholeStageCodegen (7)
-                  HashAggregate [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,cr_net_loss] [sum,sum]
-                    Project [cc_call_center_id,cc_name,cc_manager,cr_net_loss,cd_marital_status,cd_education_status]
-                      BroadcastHashJoin [c_current_hdemo_sk,hd_demo_sk]
-                        Project [cc_call_center_id,cc_name,cc_manager,cr_net_loss,c_current_hdemo_sk,cd_marital_status,cd_education_status]
+                  Project [_pushed_sum_cr_net_loss,cc_call_center_id,cc_manager,cc_name,cd_education_status,cd_marital_status,cnt]
+                    BroadcastHashJoin [c_current_hdemo_sk,hd_demo_sk]
+                      HashAggregate [c_current_hdemo_sk,cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,cr_net_loss] [sum(UnscaledValue(cr_net_loss)),_pushed_sum_cr_net_loss,sum]
+                        Project [cc_call_center_id,cc_name,cc_manager,cr_net_loss,cd_marital_status,cd_education_status,c_current_hdemo_sk]
                           BroadcastHashJoin [c_current_cdemo_sk,cd_demo_sk]
                             Project [cc_call_center_id,cc_name,cc_manager,cr_net_loss,c_current_cdemo_sk,c_current_hdemo_sk]
                               BroadcastHashJoin [c_current_addr_sk,ca_address_sk]
@@ -63,9 +63,10 @@ WholeStageCodegen (9)
                                     ColumnarToRow
                                       InputAdapter
                                         Scan parquet default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
-                        InputAdapter
-                          BroadcastExchange #8
-                            WholeStageCodegen (6)
+                      InputAdapter
+                        BroadcastExchange #8
+                          WholeStageCodegen (6)
+                            HashAggregate [hd_demo_sk] [count(1),cnt,count]
                               Project [hd_demo_sk]
                                 Filter [hd_buy_potential,hd_demo_sk]
                                   ColumnarToRow

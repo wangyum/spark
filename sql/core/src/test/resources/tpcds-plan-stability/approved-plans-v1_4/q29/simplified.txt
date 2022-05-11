@@ -1,13 +1,13 @@
 TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales_quantity,store_returns_quantity,catalog_sales_quantity]
   WholeStageCodegen (9)
-    HashAggregate [i_item_id,i_item_desc,s_store_id,s_store_name,sum,sum,sum] [sum(ss_quantity),sum(sr_return_quantity),sum(cs_quantity),store_sales_quantity,store_returns_quantity,catalog_sales_quantity,sum,sum,sum]
+    HashAggregate [i_item_id,i_item_desc,s_store_id,s_store_name,_pushed_sum_ss_quantity,cnt,_pushed_sum_sr_return_quantity,_pushed_sum_cs_quantity] [sum((_pushed_sum_ss_quantityL * cntL)),sum((_pushed_sum_sr_return_quantityL * cntL)),sum((_pushed_sum_cs_quantityL * cntL)),store_sales_quantity,store_returns_quantity,catalog_sales_quantity,sum,sum,sum]
       InputAdapter
         Exchange [i_item_id,i_item_desc,s_store_id,s_store_name] #1
           WholeStageCodegen (8)
-            HashAggregate [i_item_id,i_item_desc,s_store_id,s_store_name,ss_quantity,sr_return_quantity,cs_quantity] [sum,sum,sum,sum,sum,sum]
-              Project [ss_quantity,sr_return_quantity,cs_quantity,s_store_id,s_store_name,i_item_id,i_item_desc]
-                BroadcastHashJoin [ss_item_sk,i_item_sk]
-                  Project [ss_item_sk,ss_quantity,sr_return_quantity,cs_quantity,s_store_id,s_store_name]
+            Project [_pushed_sum_cs_quantity,_pushed_sum_sr_return_quantity,_pushed_sum_ss_quantity,s_store_id,s_store_name,cnt,i_item_desc,i_item_id]
+              BroadcastHashJoin [ss_item_sk,i_item_sk]
+                HashAggregate [ss_item_sk,s_store_id,s_store_name,cs_quantity,sr_return_quantity,ss_quantity] [sum(cs_quantity),sum(sr_return_quantity),sum(ss_quantity),_pushed_sum_cs_quantity,_pushed_sum_sr_return_quantity,_pushed_sum_ss_quantity,sum,sum,sum]
+                  Project [ss_quantity,sr_return_quantity,cs_quantity,s_store_id,s_store_name,ss_item_sk]
                     BroadcastHashJoin [ss_store_sk,s_store_sk]
                       Project [ss_item_sk,ss_store_sk,ss_quantity,sr_return_quantity,cs_quantity]
                         BroadcastHashJoin [cs_sold_date_sk,d_date_sk]
@@ -74,9 +74,10 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales
                               ColumnarToRow
                                 InputAdapter
                                   Scan parquet default.store [s_store_sk,s_store_id,s_store_name]
-                  InputAdapter
-                    BroadcastExchange #8
-                      WholeStageCodegen (7)
+                InputAdapter
+                  BroadcastExchange #8
+                    WholeStageCodegen (7)
+                      HashAggregate [i_item_sk,i_item_id,i_item_desc] [count(1),cnt,count]
                         Filter [i_item_sk]
                           ColumnarToRow
                             InputAdapter

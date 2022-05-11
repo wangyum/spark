@@ -1,12 +1,12 @@
 TakeOrderedAndProject [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating,cnt1,cnt2,cnt3]
   WholeStageCodegen (10)
-    HashAggregate [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating,count] [count(1),cnt1,cnt2,cnt3,count]
+    HashAggregate [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating,cnt,cnt] [sum((cntL * cntL)),cnt1,cnt2,cnt3,sum]
       InputAdapter
         Exchange [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating] #1
           WholeStageCodegen (9)
-            HashAggregate [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating] [count,count]
-              Project [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating]
-                BroadcastHashJoin [c_current_cdemo_sk,cd_demo_sk]
+            Project [cnt,cd_credit_rating,cd_education_status,cd_gender,cd_marital_status,cd_purchase_estimate,cnt]
+              BroadcastHashJoin [c_current_cdemo_sk,cd_demo_sk]
+                HashAggregate [c_current_cdemo_sk] [count(1),cnt,count]
                   Project [c_current_cdemo_sk]
                     BroadcastHashJoin [c_current_addr_sk,ca_address_sk]
                       Project [c_current_cdemo_sk,c_current_addr_sk]
@@ -65,9 +65,10 @@ TakeOrderedAndProject [cd_gender,cd_marital_status,cd_education_status,cd_purcha
                                 ColumnarToRow
                                   InputAdapter
                                     Scan parquet default.customer_address [ca_address_sk,ca_state]
-                  InputAdapter
-                    BroadcastExchange #7
-                      WholeStageCodegen (8)
+                InputAdapter
+                  BroadcastExchange #7
+                    WholeStageCodegen (8)
+                      HashAggregate [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating] [count(1),cnt,count]
                         Filter [cd_demo_sk]
                           ColumnarToRow
                             InputAdapter
