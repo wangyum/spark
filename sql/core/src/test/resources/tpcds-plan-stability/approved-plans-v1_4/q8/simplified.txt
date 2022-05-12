@@ -39,17 +39,16 @@ TakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
                           InputAdapter
                             Exchange [ca_zip] #5
                               WholeStageCodegen (6)
-                                Project [ca_zip]
-                                  BroadcastHashJoin [ca_zip,ca_zip]
-                                    HashAggregate [ca_zip]
+                                HashAggregate [ca_zip]
+                                  Project [ca_zip]
+                                    BroadcastHashJoin [ca_zip,ca_zip]
                                       Filter [ca_zip]
                                         ColumnarToRow
                                           InputAdapter
                                             Scan parquet default.customer_address [ca_zip]
-                                    InputAdapter
-                                      BroadcastExchange #6
-                                        WholeStageCodegen (5)
-                                          HashAggregate [ca_zip]
+                                      InputAdapter
+                                        BroadcastExchange #6
+                                          WholeStageCodegen (5)
                                             Project [ca_zip]
                                               Filter [cnt]
                                                 HashAggregate [ca_zip,cnt,cnt] [sum((cntL * cntL)),ca_zip,cnt,sum]

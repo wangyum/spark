@@ -38,11 +38,12 @@ WholeStageCodegen (27)
                                                                           SubqueryBroadcast [d_date_sk] #1
                                                                             BroadcastExchange #5
                                                                               WholeStageCodegen (1)
-                                                                                Project [d_date_sk,d_date]
-                                                                                  Filter [d_month_seq,d_date_sk]
-                                                                                    ColumnarToRow
-                                                                                      InputAdapter
-                                                                                        Scan parquet default.date_dim [d_date_sk,d_date,d_month_seq]
+                                                                                HashAggregate [d_date_sk,d_date]
+                                                                                  Project [d_date_sk,d_date]
+                                                                                    Filter [d_month_seq,d_date_sk]
+                                                                                      ColumnarToRow
+                                                                                        InputAdapter
+                                                                                          Scan parquet default.date_dim [d_date_sk,d_date,d_month_seq]
                                                                 InputAdapter
                                                                   ReusedExchange [d_date_sk,d_date] #5
                                                 InputAdapter
