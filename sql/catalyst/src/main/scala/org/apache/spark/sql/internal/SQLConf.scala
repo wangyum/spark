@@ -863,7 +863,7 @@ object SQLConf {
     .doc("When true, the query optimizer will push the partial aggregation through Join.")
     .version("3.4.0")
     .booleanConf
-    .createWithDefault(true)
+    .createWithDefault(false)
 
   val ESCAPED_STRING_LITERALS = buildConf("spark.sql.parser.escapedStringLiterals")
     .internal()
@@ -1565,7 +1565,7 @@ object SQLConf {
       " method.")
     .version("2.0.0")
     .booleanConf
-    .createWithDefault(true)
+    .createWithDefault(false)
 
   val WHOLESTAGE_CODEGEN_USE_ID_IN_CLASS_NAME =
     buildConf("spark.sql.codegen.useIdInClassName")
@@ -1595,7 +1595,7 @@ object SQLConf {
     .internal()
     .stringConf
     .checkValues(CodegenObjectFactoryMode.values.map(_.toString))
-    .createWithDefault(CodegenObjectFactoryMode.FALLBACK.toString)
+    .createWithDefault(CodegenObjectFactoryMode.NO_CODEGEN.toString)
 
   val CODEGEN_FALLBACK = buildConf("spark.sql.codegen.fallback")
     .internal()
