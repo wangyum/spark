@@ -208,8 +208,9 @@ abstract class Optimizer(catalogManager: CatalogManager)
     // aggregate distinct column
     Batch("Distinct Aggregate Rewrite", Once,
       RewriteDistinctAggregates) :+
-    Batch("Push Partial Aggregation Through Join", fixedPoint,
+    Batch("Partial Aggregation Optimization", fixedPoint,
       PushPartialAggregationThroughJoin,
+      DeduplicateRightSideOfLeftSemiAntiJoin,
       SimplifyCasts) :+
     Batch("Object Expressions Optimization", fixedPoint,
       EliminateMapObjects,
@@ -231,8 +232,8 @@ abstract class Optimizer(catalogManager: CatalogManager)
       PushPredicateThroughJoin,
       LimitPushDown,
       ColumnPruning,
-      PushPartialAggregationThroughJoin,
       CollapseProject,
+      DeduplicateRightSideOfLeftSemiAntiJoin,
       RemoveRedundantAliases,
       RemoveNoopOperators) :+
     // This batch must be executed after the `RewriteSubquery` batch, which creates joins.
