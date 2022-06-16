@@ -199,7 +199,7 @@ import org.apache.spark.util.collection.Utils
 object RewriteDistinctAggregates extends Rule[LogicalPlan] {
 
   private def mayNeedtoRewrite(a: Aggregate): Boolean = {
-    val distinctAggs = a.aggregateExprs.filter(_.isDistinct)
+    val distinctAggs = a.collectAggregateExprs.filter(_.isDistinct)
     // We need at least two distinct aggregates or the single distinct aggregate group exists filter
     // clause for this rule because aggregation strategy can handle a single distinct aggregate
     // group without filter clause.
@@ -214,7 +214,7 @@ object RewriteDistinctAggregates extends Rule[LogicalPlan] {
 
   def rewrite(a: Aggregate): Aggregate = {
 
-    val aggExpressions = a.aggregateExprs
+    val aggExpressions = a.collectAggregateExprs
     val distinctAggs = aggExpressions.filter(_.isDistinct)
 
     // Extract distinct aggregate expressions.
