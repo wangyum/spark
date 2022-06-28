@@ -1789,8 +1789,8 @@ private[sql] object QueryCompilationErrors extends QueryErrorsBase {
         s"set '${SQLConf.ALLOW_NON_EMPTY_LOCATION_IN_CTAS.key}' to true.")
   }
 
-  def tableOrViewNotFoundError(table: String): Throwable = {
-    new AnalysisException(s"Table or view not found: $table")
+  def tableOrViewNotFoundError(table: String, currentDB: String): Throwable = {
+    new AnalysisException(s"Table or view not found: $table. The current database: $currentDB")
   }
 
   def noSuchFunctionError(

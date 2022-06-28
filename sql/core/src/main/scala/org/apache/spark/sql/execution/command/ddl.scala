@@ -245,7 +245,8 @@ case class DropTableCommand(
     } else if (ifExists) {
       // no-op
     } else {
-      throw QueryCompilationErrors.tableOrViewNotFoundError(tableName.identifier)
+      throw QueryCompilationErrors.tableOrViewNotFoundError(tableName.identifier,
+        catalog.getCurrentDatabase)
     }
     Seq.empty[Row]
   }
