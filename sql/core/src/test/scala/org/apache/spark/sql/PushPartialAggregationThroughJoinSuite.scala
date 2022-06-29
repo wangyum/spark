@@ -56,7 +56,8 @@ class PushPartialAggregationThroughJoinSuite extends QueryTest
         |  (2, 6067.6034),
         |  (2, null),
         |  (3, 999999999999999999999999999999999.2812),
-        |  (3, 999999999999999999999999999999999.2823)
+        |  (3, 999999999999999999999999999999999.2823),
+        |  (4, 99999999999999999999999999999999.2823)
       """.stripMargin)
 
     sql(
@@ -70,7 +71,11 @@ class PushPartialAggregationThroughJoinSuite extends QueryTest
         |  (3, 10002004),
         |  (3, 10002004),
         |  (3, 10002004),
-        |  (3, 10002004)
+        |  (3, 10002004),
+        |  (3, 10002005),
+        |  (3, 10002005),
+        |  (4, 10002004),
+        |  (4, 10002004)
       """.stripMargin)
   }
 
@@ -112,7 +117,8 @@ class PushPartialAggregationThroughJoinSuite extends QueryTest
             } else {
               checkAnswer(
                 df,
-                Row(10002004, BigDecimal("7999999999999999999999999999999994.2540")) ::
+                Row(10002004, BigDecimal("8199999999999999999999999999999992.8186")) ::
+                Row(10002005, BigDecimal("3999999999999999999999999999999997.1270")) ::
                 Row(10002003, BigDecimal("65516.1909")) ::
                 Row(7003002, null) :: Nil)
             }
@@ -148,7 +154,8 @@ class PushPartialAggregationThroughJoinSuite extends QueryTest
             assert(optimizedPlan.exists(_.isInstanceOf[PartialAggregate]) === pushAgg)
             checkAnswer(
               df,
-              Row(10002004, 8, 8, 8, 8) ::
+              Row(10002004, 10, 10, 10, 10) ::
+              Row(10002005, 4, 4, 4, 4) ::
               Row(10002003, 12, 15, 15, 15) ::
               Row(7003002, 6, 6, 6, 6) :: Nil)
           }
@@ -182,8 +189,10 @@ class PushPartialAggregationThroughJoinSuite extends QueryTest
             checkAnswer(
               df,
               Row(10002004, BigDecimal("999999999999999999999999999999999.2812"),
+                BigDecimal("99999999999999999999999999999999.2823")) ::
+              Row(10002005, BigDecimal("999999999999999999999999999999999.2812"),
                 BigDecimal("999999999999999999999999999999999.2823")) ::
-              Row(10002003, BigDecimal("6874.6012"), null) ::
+              Row(10002003, BigDecimal("6067.6034"), BigDecimal("2828.9223")) ::
               Row(7003002, BigDecimal("9999999999999999999999999999999999.6012"),
                 BigDecimal("9999999999999999999999999999999999.2856")) :: Nil)
           }
@@ -216,7 +225,9 @@ class PushPartialAggregationThroughJoinSuite extends QueryTest
             assert(optimizedPlan.exists(_.isInstanceOf[PartialAggregate]) === pushAgg)
             checkAnswer(
               df,
-              Row(10002004, BigDecimal("999999999999999999999999999999999.2812"),
+              Row(10002004, BigDecimal("99999999999999999999999999999999.2823"),
+                BigDecimal("999999999999999999999999999999999.2823")) ::
+              Row(10002005, BigDecimal("999999999999999999999999999999999.2812"),
                 BigDecimal("999999999999999999999999999999999.2823")) ::
               Row(10002003, BigDecimal("2828.9223"), BigDecimal("6874.6012")) ::
               Row(7003002, BigDecimal("9999999999999999999999999999999999.2856"),
@@ -257,6 +268,7 @@ class PushPartialAggregationThroughJoinSuite extends QueryTest
               checkAnswer(
                 df,
                 Row(10002004, null) ::
+                Row(10002005, null) ::
                 Row(10002003, BigDecimal("5459.68257500")) ::
                 Row(7003002, null) :: Nil)
             }
@@ -305,7 +317,8 @@ class PushPartialAggregationThroughJoinSuite extends QueryTest
             assert(optimizedPlan.exists(_.isInstanceOf[PartialAggregate]) === pushAgg)
             checkAnswer(
               df,
-              Row(10002004, 8, 8, 0, 8, 16, 20.0, 28.0, 1, 2, 1, 2, 1, 2, 1, 2, 1.0, 2.0) ::
+              Row(10002004, 10, 10, 0, 10, 20, 25.0, 35.0, 1, 2, 1, 2, 1, 2, 1, 2, 1.0, 2.0) ::
+              Row(10002005, 4, 4, 0, 4, 8, 10.0, 14.0, 1, 2, 1, 2, 1, 2, 1, 2, 1.0, 2.0) ::
               Row(10002003, 15, 15, 0, 15, 30, 37.5, 52.5, 1, 2, 1, 2, 1, 2, 1, 2, 1.0, 2.0) ::
               Row(7003002, 6, 6, 0, 6, 12, 15.0, 21.0, 1, 2, 1, 2, 1, 2, 1, 2, 1.0, 2.0) :: Nil)
           }
