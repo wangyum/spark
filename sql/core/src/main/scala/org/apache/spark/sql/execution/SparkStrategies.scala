@@ -130,12 +130,15 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
           if limit < conf.topKSortFallbackThreshold =>
         Some(TakeOrderedAndProjectExec(
           limit, order, projectList, planLater(child)))
+      // scalastyle:off
       case Sort(order, true, child)
           if child.maxRows.exists(_ < conf.topKSortFallbackThreshold) =>
+        println(s"child.maxRows: ${child.maxRows}")
         Some(TakeOrderedAndProjectExec(
           child.maxRows.get.toInt, order, child.output, planLater(child)))
       case Project(projectList, Sort(order, true, child))
           if child.maxRows.exists(_ < conf.topKSortFallbackThreshold) =>
+        println(s"child.maxRows: ${child.maxRows}")
         Some(TakeOrderedAndProjectExec(
           child.maxRows.get.toInt, order, projectList, planLater(child)))
       case _ => None
