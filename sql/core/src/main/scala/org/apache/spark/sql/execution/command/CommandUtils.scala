@@ -25,7 +25,7 @@ import scala.util.control.NonFatal
 import org.apache.hadoop.fs.{FileSystem, Path, PathFilter}
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{SaveMode, SparkSession}
 import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{CatalogStatistics, CatalogTable, CatalogTablePartition, CatalogTableType}
 import org.apache.spark.sql.catalyst.expressions._
@@ -34,7 +34,7 @@ import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.util.{ArrayData, GenericArrayData}
 import org.apache.spark.sql.errors.QueryCompilationErrors
 import org.apache.spark.sql.execution.QueryExecution
-import org.apache.spark.sql.execution.datasources.{DataSourceUtils, InMemoryFileIndex}
+import org.apache.spark.sql.execution.datasources.{DataSourceUtils, InMemoryFileIndex, WriteStats}
 import org.apache.spark.sql.internal.{SessionState, SQLConf}
 import org.apache.spark.sql.types._
 
@@ -53,18 +53,32 @@ class PathFilterIgnoreNonData(stagingDir: String) extends PathFilter with Serial
 object CommandUtils extends Logging {
 
   /** Change statistics after changing data by commands. */
-  def updateTableStats(sparkSession: SparkSession, table: CatalogTable): Unit = {
-    val catalog = sparkSession.sessionState.catalog
-    if (sparkSession.sessionState.conf.autoSizeUpdateEnabled) {
+  def updateTableStats(
+      sparkSession: SparkSession,
+      table: CatalogTable,
+      wroteStats: Option[WriteStats] = None): Unit = {
+    val sessionState = sparkSession.sessionState
+    val catalog = sessionState.catalog
+    if (sessionState.conf.autoSizeUpdateEnabled) {
       val newTable = catalog.getTableMetadata(table.identifier)
       val (newSize, newPartitions) = CommandUtils.calculateTotalSize(sparkSession, newTable)
-      val isNewStats = newTable.stats.map(newSize != _.sizeInBytes).getOrElse(true)
+      val isNewStats = newTable.stats.forall(newSize != _.sizeInBytes)
       if (isNewStats) {
         val newStats = CatalogStatistics(sizeInBytes = newSize)
         catalog.alterTableStats(table.identifier, Some(newStats))
       }
       if (newPartitions.nonEmpty) {
         catalog.alterPartitions(table.identifier, newPartitions)
+      }
+    } else if (sessionState.conf.autoUpdateBasedOnMetricsEnabled && wroteStats.nonEmpty) {
+      val stat = wroteStats.get
+      stat.mode match {
+        case SaveMode.Overwrite | SaveMode.ErrorIfExists =>
+          catalog.alterTableStats(table.identifier,
+            Some(CatalogStatistics(stat.numBytes, stat.numRows)))
+        case _ if table.stats.nonEmpty => // SaveMode.Append
+          catalog.alterTableStats(table.identifier, None)
+        case _ => // SaveMode.Ignore Do nothing
       }
     } else if (table.stats.nonEmpty) {
       catalog.alterTableStats(table.identifier, None)

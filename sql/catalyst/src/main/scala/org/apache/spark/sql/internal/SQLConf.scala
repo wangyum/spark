@@ -2398,6 +2398,13 @@ object SQLConf {
       .booleanConf
       .createWithDefault(false)
 
+  val AUTO_UPDATE_BASED_ON_METRICS_ENABLED =
+    buildConf("spark.sql.statistics.autoUpdateBasedOnMetrics.enabled")
+      .doc("Enables automatic update for table size and row count based on write metrics.")
+      .version("3.4.0")
+      .booleanConf
+      .createWithDefault(true)
+
   val CBO_ENABLED =
     buildConf("spark.sql.cbo.enabled")
       .doc("Enables CBO for estimation of plan statistics when set true.")
@@ -4425,6 +4432,9 @@ class SQLConf extends Serializable with Logging {
   def planStatsEnabled: Boolean = getConf(SQLConf.PLAN_STATS_ENABLED)
 
   def autoSizeUpdateEnabled: Boolean = getConf(SQLConf.AUTO_SIZE_UPDATE_ENABLED)
+
+  def autoUpdateBasedOnMetricsEnabled: Boolean =
+    getConf(SQLConf.AUTO_UPDATE_BASED_ON_METRICS_ENABLED)
 
   def joinReorderEnabled: Boolean = getConf(SQLConf.JOIN_REORDER_ENABLED)
 
