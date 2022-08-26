@@ -1430,7 +1430,7 @@ class StatisticsSuite extends StatisticsCollectionTestBase with TestHiveSingleto
             if (!isConverted || updateEnabled) {
               assert(catalogTable.stats.nonEmpty)
             } else {
-              assert(catalogTable.stats.isEmpty)
+              assert(catalogTable.stats.exists(_.rowCount.forall(_ == 1)))
             }
           }
         }

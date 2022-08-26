@@ -121,9 +121,13 @@ case class InsertIntoHiveTable(
     CommandUtils.uncacheTableOrView(sparkSession, table.identifier.quotedString)
     sparkSession.sessionState.catalog.refreshTable(table.identifier)
 
-    val mode = if (overwrite) SaveMode.Overwrite else SaveMode.Append
-    val wroteStats = BasicWriteJobStatsTracker.getWriteStats(mode, metrics)
-    CommandUtils.updateTableStats(sparkSession, table, wroteStats)
+    val writeStats = if (partition.isEmpty) {
+      val mode = if (overwrite) SaveMode.Overwrite else SaveMode.Append
+      BasicWriteJobStatsTracker.getWriteStats(mode, metrics)
+    } else {
+      None
+    }
+    CommandUtils.updateTableStats(sparkSession, table, writeStats)
 
     // It would be nice to just return the childRdd unchanged so insert operations could be chained,
     // however for now we return an empty list to simplify compatibility checks with hive, which
