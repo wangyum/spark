@@ -109,7 +109,7 @@ object ConstantFolding extends Rule[LogicalPlan] {
  * - Using this mapping, replace occurrence of the attributes with the corresponding constant values
  *   in the AND node.
  */
-object ConstantPropagation extends Rule[LogicalPlan] {
+object ConstantPropagation extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan.transformUpWithPruning(
     _.containsAllPatterns(LITERAL, FILTER), ruleId) {
     case f: Filter =>
@@ -121,7 +121,7 @@ object ConstantPropagation extends Rule[LogicalPlan] {
       }
   }
 
-  type EqualityPredicates = Seq[((AttributeReference, Literal), BinaryComparison)]
+  type EqualityPredicates = Seq[((AttributeReference, Literal), Predicate)]
 
   /**
    * Traverse a condition as a tree and replace attributes with constant values.
@@ -205,10 +205,10 @@ object ConstantPropagation extends Rule[LogicalPlan] {
     def replaceConstants0(expression: Expression) = expression transform {
       case a: AttributeReference => constantsMap.getOrElse(a, a)
     }
-    condition transform {
-      case e @ EqualTo(_, _) if !predicates.contains(e) => replaceConstants0(e)
-      case e @ EqualNullSafe(_, _) if !predicates.contains(e) => replaceConstants0(e)
-    }
+    splitConjunctivePredicates(condition).map {
+      case p: Predicate if !predicates.contains(p) => replaceConstants0(p)
+      case other => other
+    }.reduceLeft(And)
   }
 }
 
