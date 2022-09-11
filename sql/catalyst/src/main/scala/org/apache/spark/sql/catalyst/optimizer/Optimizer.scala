@@ -1777,6 +1777,40 @@ object PushPredicateThroughNonJoin extends Rule[LogicalPlan] with PredicateHelpe
         filter
       }
 
+    case filter @ Filter(condition, expand: Expand) =>
+      val grandchild = expand.child
+      val (candidates, nonDeterministic) =
+        splitConjunctivePredicates(condition).partition(_.deterministic)
+
+      val (pushDown, rest) = candidates.partition { cond =>
+        cond.references.subsetOf(grandchild.outputSet)
+      }
+
+      val (rewritePushDown, rewriteRest) = rest.map {
+        _.transform {
+          case a: Attribute =>
+            val index = expand.output.indexWhere(_.semanticEquals(a))
+            if (index > -1) {
+              expand.projections.map(_ (index)).find(_.isInstanceOf[Attribute]).getOrElse(a)
+            } else {
+              a
+            }
+        }
+      }.partition { cond =>
+        cond.references.subsetOf(grandchild.outputSet)
+      }
+
+      val allPushDown = pushDown ++ rewritePushDown
+      val stayUp = rewriteRest ++ nonDeterministic
+
+      if (allPushDown.nonEmpty) {
+        val pushDownPredicate = allPushDown.reduceLeft(And)
+        val newExpand = expand.copy(child = Filter(pushDownPredicate, expand.child))
+        if (stayUp.isEmpty) newExpand else Filter(stayUp.reduceLeft(And), newExpand)
+      } else {
+        filter
+      }
+
     case filter @ Filter(_, u: UnaryNode)
         if canPushThrough(u) && u.expressions.forall(_.deterministic) =>
       pushDownPredicate(filter, u.child) { predicate =>
@@ -1798,7 +1832,6 @@ object PushPredicateThroughNonJoin extends Rule[LogicalPlan] with PredicateHelpe
     case _: Sort => true
     case _: BatchEvalPython => true
     case _: ArrowEvalPython => true
-    case _: Expand => true
     case _ => false
   }
 
