@@ -779,6 +779,11 @@ object LimitPushDown extends Rule[LogicalPlan] {
     // Push down local limit 1 if join type is LeftSemiOrAnti and join condition is empty.
     case j @ Join(_, right, LeftSemiOrAnti(_), None, _) if !right.maxRows.exists(_ <= 1) =>
       j.copy(right = maybePushLocalLimit(Literal(1, IntegerType), right))
+    case Limit(le @ IntegerLiteral(limit), a @ Aggregate(groupingExps, aggEps, child))
+        if a.groupOnly && child.maxRowsPerPartition.forall(_ > limit) =>
+      val partialAgg = PartialAggregate(groupingExps, aggEps, child)
+      val finalAgg = FinalAggregate(groupingExps, aggEps, LocalLimit(le, partialAgg))
+      Limit(le, a.copy(child = finalAgg))
   }
 }
 
