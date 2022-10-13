@@ -42,9 +42,11 @@ import org.apache.spark.sql.catalyst.trees.TreePattern.JOIN
  *
  *  This rule should be executed after ReplaceNullWithFalseInPredicate.
  */
-object PullOutComplexJoinCondition extends Rule[LogicalPlan] with PredicateHelper {
+object PullOutComplexJoinCondition extends Rule[LogicalPlan]
+  with PredicateHelper with JoinSelectionHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan.transformUpWithPruning(_.containsPattern(JOIN)) {
-    case j @ Join(left, right, _, Some(condition), _) if !j.isStreaming =>
+    case j @ Join(left, right, _, Some(condition), _)
+        if !j.isStreaming && !canPlanAsBroadcastHashJoin(j, conf) =>
       val complexExps = splitConjunctivePredicates(condition).flatMap {
         case p: Expression => p.children.filter(e => !e.foldable && e.children.nonEmpty)
         case _ => Nil

@@ -146,9 +146,7 @@ abstract class Optimizer(catalogManager: CatalogManager)
         operatorOptimizationRuleSet: _*) ::
       Batch("Push extra predicate through join", fixedPoint,
         PushExtraPredicateThroughJoin,
-        PushDownPredicates) ::
-      Batch("Pull out complex join condition", Once,
-        PullOutComplexJoinCondition) :: Nil
+        PushDownPredicates) :: Nil
     }
 
     val batches = (
@@ -219,6 +217,8 @@ abstract class Optimizer(catalogManager: CatalogManager)
     // aggregate distinct column
     Batch("Distinct Aggregate Rewrite", Once,
       RewriteDistinctAggregates) :+
+    Batch("Pull out complex join condition", Once,
+      PullOutComplexJoinCondition) :+
     Batch("Object Expressions Optimization", fixedPoint,
       EliminateMapObjects,
       CombineTypedFilters,
