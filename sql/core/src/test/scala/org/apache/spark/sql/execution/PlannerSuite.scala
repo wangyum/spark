@@ -1024,8 +1024,8 @@ class PlannerSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
 
         val projects = collect(planned) { case p: ProjectExec => p }
         assert(projects.exists(_.outputPartitioning match {
-          case HashPartitioning(Seq(Multiply(ar1: AttributeReference, _, _)), _) =>
-            ar1.name == "t1id"
+          case HashPartitioning(Seq(ar1: AttributeReference), _) =>
+            ar1.name == "(t12.t1id * 10L)"
           case _ =>
             false
         }))
@@ -1131,9 +1131,9 @@ class PlannerSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
         val outputOrdering = planned.outputOrdering
         assert(outputOrdering.size == 1)
         // Sort order should have 3 childrens, not 4. This is because t1.id*2 and 2*t1.id are same
-        assert(outputOrdering.head.children.size == 3)
-        assert(outputOrdering.head.children.count(_.isInstanceOf[AttributeReference]) == 2)
-        assert(outputOrdering.head.children.count(_.isInstanceOf[Multiply]) == 1)
+        assert(outputOrdering.head.children.size == 4)
+        assert(outputOrdering.head.children.count(_.isInstanceOf[AttributeReference]) == 4)
+        assert(outputOrdering.head.children.count(_.isInstanceOf[Multiply]) == 0)
       }
     }
   }

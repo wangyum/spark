@@ -23,8 +23,25 @@ import org.apache.spark.sql.catalyst.expressions.{Alias, Substring, Upper}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules._
+import org.apache.spark.sql.internal.SQLConf.AUTO_BROADCASTJOIN_THRESHOLD
 
 class PullOutComplexJoinConditionSuite extends PlanTest {
+
+  private var originalThreshold = AUTO_BROADCASTJOIN_THRESHOLD.defaultValue.get
+
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    originalThreshold = conf.autoBroadcastJoinThreshold
+    conf.setConf(AUTO_BROADCASTJOIN_THRESHOLD, -1L)
+  }
+
+  override def afterAll(): Unit = {
+    try {
+      conf.setConf(AUTO_BROADCASTJOIN_THRESHOLD, originalThreshold)
+    } finally {
+      super.afterAll()
+    }
+  }
 
   private object Optimize extends RuleExecutor[LogicalPlan] {
     val batches =
