@@ -1845,6 +1845,27 @@ case class RebalancePartitions(
     copy(child = newChild)
 }
 
+case class EnsureRequirementsRepartition(
+    partitionExpressions: Seq[Expression],
+    child: LogicalPlan)
+  extends RepartitionOperation with HasPartitionExpressions {
+
+  override val partitioning: Partitioning = {
+    if (numPartitions == 1) {
+      SinglePartition
+    } else {
+      super.partitioning
+    }
+  }
+
+  override def shuffle: Boolean = true
+
+  override def optNumPartitions: Option[Int] = Some(conf.numShufflePartitions)
+
+  override protected def withNewChildInternal(
+      newChild: LogicalPlan): EnsureRequirementsRepartition = copy(child = newChild)
+}
+
 /**
  * A relation with one row. This is used in "SELECT ..." without a from clause.
  */

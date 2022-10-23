@@ -46,22 +46,24 @@ object InjectRuntimeFilter extends Rule[LogicalPlan] with PredicateHelper with J
       filterApplicationSideExp: Expression,
       filterApplicationSidePlan: LogicalPlan,
       filterCreationSideExp: Expression,
-      filterCreationSidePlan: LogicalPlan): LogicalPlan = {
+      filterCreationSidePlan: LogicalPlan,
+      joinKeys: Seq[Expression],
+      isBroadcastJoin: Boolean): LogicalPlan = {
     require(conf.runtimeFilterBloomFilterEnabled || conf.runtimeFilterSemiJoinReductionEnabled)
     if (conf.runtimeFilterBloomFilterEnabled) {
       injectBloomFilter(
         filterApplicationSideExp,
         filterApplicationSidePlan,
         filterCreationSideExp,
-        filterCreationSidePlan
-      )
+        filterCreationSidePlan,
+        joinKeys,
+        isBroadcastJoin)
     } else {
       injectInSubqueryFilter(
         filterApplicationSideExp,
         filterApplicationSidePlan,
         filterCreationSideExp,
-        filterCreationSidePlan
-      )
+        filterCreationSidePlan)
     }
   }
 
@@ -69,7 +71,9 @@ object InjectRuntimeFilter extends Rule[LogicalPlan] with PredicateHelper with J
       filterApplicationSideExp: Expression,
       filterApplicationSidePlan: LogicalPlan,
       filterCreationSideExp: Expression,
-      filterCreationSidePlan: LogicalPlan): LogicalPlan = {
+      filterCreationSidePlan: LogicalPlan,
+      joinKeys: Seq[Expression],
+      isBroadcastJoin: Boolean): LogicalPlan = {
     // Skip if the filter creation side is too big
     if (filterCreationSidePlan.stats.sizeInBytes > conf.runtimeFilterCreationSideThreshold) {
       return filterApplicationSidePlan
@@ -81,11 +85,13 @@ object InjectRuntimeFilter extends Rule[LogicalPlan] with PredicateHelper with J
       } else {
         new BloomFilterAggregate(new XxHash64(Seq(filterCreationSideExp)))
       }
-
     val alias = Alias(bloomFilterAgg.toAggregateExpression(), "bloomFilter")()
-    val aggregate =
-      ConstantFolding(ColumnPruning(Aggregate(Nil, Seq(alias), filterCreationSidePlan)))
-    val bloomFilterSubquery = ScalarSubquery(aggregate, Nil)
+    val aggregate = if (isBroadcastJoin) {
+      ColumnPruning(Aggregate(Nil, Seq(alias), filterCreationSidePlan))
+    } else {
+      Aggregate(Nil, Seq(alias), EnsureRequirementsRepartition(joinKeys, filterCreationSidePlan))
+    }
+    val bloomFilterSubquery = ScalarSubquery(ConstantFolding(aggregate), Nil)
     val filter = BloomFilterMightContain(bloomFilterSubquery,
       new XxHash64(Seq(filterApplicationSideExp)))
     Filter(filter, filterApplicationSidePlan)
@@ -289,15 +295,16 @@ object InjectRuntimeFilter extends Rule[LogicalPlan] with PredicateHelper with J
             !hasDynamicPruningSubquery(left, right, l, r) &&
             !hasRuntimeFilter(newLeft, newRight, l, r) &&
             isSimpleExpression(l) && isSimpleExpression(r)) {
+            val isBroadcastJoin = canPlanAsBroadcastHashJoin(join, conf)
             val oldLeft = newLeft
             val oldRight = newRight
             if (canPruneLeft(joinType) && filteringHasBenefit(left, right, l, hint)) {
-              newLeft = injectFilter(l, newLeft, r, right)
+              newLeft = injectFilter(l, newLeft, r, right, rightKeys, isBroadcastJoin)
             }
             // Did we actually inject on the left? If not, try on the right
             if (newLeft.fastEquals(oldLeft) && canPruneRight(joinType) &&
               filteringHasBenefit(right, left, r, hint)) {
-              newRight = injectFilter(r, newRight, l, left)
+              newRight = injectFilter(r, newRight, l, left, leftKeys, isBroadcastJoin)
             }
             if (!newLeft.fastEquals(oldLeft) || !newRight.fastEquals(oldRight)) {
               filterCounter = filterCounter + 1

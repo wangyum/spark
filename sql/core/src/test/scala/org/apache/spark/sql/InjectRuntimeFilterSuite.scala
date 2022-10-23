@@ -24,6 +24,8 @@ import org.apache.spark.sql.catalyst.plans.LeftSemi
 import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Join, LogicalPlan}
 import org.apache.spark.sql.execution.{ReusedSubqueryExec, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEPropagateEmptyRelation}
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.{SharedSparkSession, SQLTestUtils}
 import org.apache.spark.sql.types.{IntegerType, StructType}
@@ -74,7 +76,7 @@ class InjectRuntimeFilterSuite extends QueryTest with SQLTestUtils with SharedSp
 
 
     val data2 = Seq(Seq(67, 17, 45, 91, null, null),
-      Seq(98, 63, 0, 89, null, 40),
+      Seq(8, 63, 0, 89, null, 40),
       Seq(null, 76, 68, 75, 20, 19),
       Seq(8, null, null, null, 78, null),
       Seq(48, 62, null, null, 11, 98),
@@ -263,10 +265,17 @@ class InjectRuntimeFilterSuite extends QueryTest with SQLTestUtils with SharedSp
     } else {
       withSQLConf(SQLConf.RUNTIME_FILTER_SEMI_JOIN_REDUCTION_ENABLED.key -> "false",
         SQLConf.RUNTIME_BLOOM_FILTER_ENABLED.key -> "true") {
-        planEnabled = sql(query).queryExecution.optimizedPlan
-        checkAnswer(sql(query), expectedAnswer)
+        val df = sql(query)
+        planEnabled = df.queryExecution.optimizedPlan
+        checkAnswer(df, expectedAnswer)
         if (shouldReplace) {
-          assert(!columnPruningTakesEffect(planEnabled))
+          if (!df.queryExecution.sparkPlan.exists(_.isInstanceOf[SortMergeJoinExec])) {
+            assert(!columnPruningTakesEffect(planEnabled))
+          } else {
+            assert(collectFirst(df.queryExecution.sparkPlan) {
+              case e: ReusedExchangeExec => e
+            }.isEmpty)
+          }
           assert(getNumBloomFilters(planEnabled) > getNumBloomFilters(planDisabled))
         } else {
           assert(getNumBloomFilters(planEnabled) == getNumBloomFilters(planDisabled))
@@ -353,6 +362,25 @@ class InjectRuntimeFilterSuite extends QueryTest with SQLTestUtils with SharedSp
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "2000") {
       assertRewroteSemiJoin("select * from bf1 join bf2 join bf3 join bf4 on " +
         "bf1.c1 = bf2.c2 and bf2.c2 = bf3.c3 and bf3.c3 = bf4.c4 where bf1.a1 = 5")
+
+
+      spark.sql("select * from bf2").show(10000)
+      spark.sql("select * from bf1").show(10000)
+
+      // scalastyle:off
+      Seq(
+        "select bf2.* from bf1 join bf2 on bf1.a1 = bf2.a2",
+        "select bf2.* from bf1 join bf2 on bf1.b1 = bf2.b2",
+        "select bf2.* from bf1 join bf2 on bf1.c1 = bf2.c2",
+        "select bf2.* from bf1 join bf2 on bf1.d1 = bf2.d2",
+        "select bf2.* from bf1 join bf2 on bf1.e1 = bf2.e2",
+        "select bf2.* from bf1 join bf2 on bf1.f1 = bf2.f2",
+        "select * from bf1 join bf2 join bf3 on " +
+          "bf1.c1 = bf2.c2 and bf2.c2 = bf3.c3 ").foreach { str =>
+        println(str)
+        spark.sql(str).show(10000)
+
+      }
     }
   }
 
@@ -364,19 +392,36 @@ class InjectRuntimeFilterSuite extends QueryTest with SQLTestUtils with SharedSp
       }
       spark.udf.register("square", squared)
       assertDidNotRewriteSemiJoin("select * from bf1 join bf2 on " +
-        "bf1.c1 = bf2.c2 where square(bf2.a2) = 62")
+        "bf1.b1 = bf2.b2 where square(bf2.a2) = 64")
       assertDidNotRewriteSemiJoin("select * from bf1 join bf2 on " +
-        "bf1.c1 = square(bf2.c2) where bf2.a2= 62")
+        "bf1.b1 = square(bf2.b2) where bf2.a2 = 64")
     }
   }
 
   test("Runtime bloom filter join: simple") {
     withSQLConf(SQLConf.RUNTIME_BLOOM_FILTER_APPLICATION_SIDE_SCAN_SIZE_THRESHOLD.key -> "3000",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "2000") {
-      assertRewroteWithBloomFilter("select * from bf1 join bf2 on bf1.c1 = bf2.c2 " +
-        "where bf2.a2 = 62")
-      assertDidNotRewriteWithBloomFilter("select * from bf1 join bf2 on bf1.c1 = bf2.c2")
+      assertRewroteWithBloomFilter("select * from bf1 join bf2 on bf1.d1 = bf2.d2 " +
+        "where bf2.a2 = 57")
+      assertDidNotRewriteWithBloomFilter("select * from bf1 join bf2 on bf1.d1 = bf2.d2")
     }
+
+//    spark.sql("select * from bf2").show(10000)
+//    spark.sql("select * from bf1").show(10000)
+//
+//    // scalastyle:off
+//    Seq(
+//      "select bf2.* from bf1 join bf2 on bf1.a1 = bf2.a2",
+//      "select bf2.* from bf1 join bf2 on bf1.b1 = bf2.b2",
+//      "select bf2.* from bf1 join bf2 on bf1.c1 = bf2.c2",
+//      "select bf2.* from bf1 join bf2 on bf1.d1 = bf2.d2",
+//      "select bf2.* from bf1 join bf2 on bf1.e1 = bf2.e2",
+//      "select bf2.* from bf1 join bf2 on bf1.f1 = bf2.f2").foreach { str =>
+//      println(str)
+//      spark.sql(str).show(10000)
+//    }
+
+    // Thread.sleep(10000000)
   }
 
   test("Runtime bloom filter join: two filters single join") {
