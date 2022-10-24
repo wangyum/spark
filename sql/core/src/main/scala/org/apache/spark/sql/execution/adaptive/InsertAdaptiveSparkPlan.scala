@@ -146,6 +146,17 @@ case class InsertAdaptiveSparkPlan(
           name, broadcastKeyIndex, onlyInBroadcast,
           buildPlan, buildKeys, executedPlan)
         subqueryMap.put(exprId.id, subquery)
+
+      case expressions.DynamicBloomFilterPruningSubquery(value, buildPlan,
+          buildKeys, broadcastKeyIndex, exprId)
+          if !subqueryMap.contains(exprId.id) =>
+        val executedPlan = compileSubquery(buildPlan)
+        verifyAdaptivePlan(executedPlan, buildPlan)
+
+        val name = s"dynamicpruning#${exprId.id}"
+        val subquery = SubqueryAdaptiveShuffleExec(
+          name, broadcastKeyIndex, buildPlan, buildKeys, executedPlan)
+        subqueryMap.put(exprId.id, subquery)
       case _ =>
     }))
 

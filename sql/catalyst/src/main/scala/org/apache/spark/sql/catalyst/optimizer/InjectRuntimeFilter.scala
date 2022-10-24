@@ -78,23 +78,31 @@ object InjectRuntimeFilter extends Rule[LogicalPlan] with PredicateHelper with J
     if (filterCreationSidePlan.stats.sizeInBytes > conf.runtimeFilterCreationSideThreshold) {
       return filterApplicationSidePlan
     }
-    val rowCount = filterCreationSidePlan.stats.rowCount
-    val bloomFilterAgg =
-      if (rowCount.isDefined && rowCount.get.longValue > 0L) {
-        new BloomFilterAggregate(new XxHash64(Seq(filterCreationSideExp)), rowCount.get.longValue)
-      } else {
-        new BloomFilterAggregate(new XxHash64(Seq(filterCreationSideExp)))
-      }
-    val alias = Alias(bloomFilterAgg.toAggregateExpression(), "bloomFilter")()
-    val aggregate = if (isBroadcastJoin) {
-      ColumnPruning(Aggregate(Nil, Seq(alias), filterCreationSidePlan))
+
+    if (conf.getConfString("spark.sql.runtimeFilter.reusedExchange", "true").toBoolean) {
+      val index = joinKeys.indexOf(filterCreationSideExp)
+      val filter = DynamicBloomFilterPruningSubquery(filterApplicationSideExp,
+        filterCreationSidePlan, joinKeys, index)
+
+      Filter(filter, filterApplicationSidePlan)
     } else {
-      Aggregate(Nil, Seq(alias), EnsureRequirementsRepartition(joinKeys, filterCreationSidePlan))
+      val rowCount = filterCreationSidePlan.stats.rowCount
+      val bloomFilterAgg =
+        if (rowCount.isDefined && rowCount.get.longValue > 0L) {
+          new BloomFilterAggregate(new XxHash64(Seq(filterCreationSideExp)),
+            Literal(rowCount.get.longValue))
+        } else {
+          new BloomFilterAggregate(new XxHash64(Seq(filterCreationSideExp)))
+        }
+
+      val alias = Alias(bloomFilterAgg.toAggregateExpression(), "bloomFilter")()
+      val aggregate =
+        ConstantFolding(ColumnPruning(Aggregate(Nil, Seq(alias), filterCreationSidePlan)))
+      val bloomFilterSubquery = ScalarSubquery(aggregate, Nil)
+      val filter = BloomFilterMightContain(bloomFilterSubquery,
+        new XxHash64(Seq(filterApplicationSideExp)))
+      Filter(filter, filterApplicationSidePlan)
     }
-    val bloomFilterSubquery = ScalarSubquery(ConstantFolding(aggregate), Nil)
-    val filter = BloomFilterMightContain(bloomFilterSubquery,
-      new XxHash64(Seq(filterApplicationSideExp)))
-    Filter(filter, filterApplicationSidePlan)
   }
 
   private def injectInSubqueryFilter(

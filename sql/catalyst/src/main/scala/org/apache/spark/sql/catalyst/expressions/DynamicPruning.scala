@@ -87,6 +87,63 @@ case class DynamicPruningSubquery(
 }
 
 /**
+ * The DynamicBloomFilterPruningSubquery expression is only used in join operations to prune one
+ * side of the join with a filter from the other side of the join. It is inserted in cases where
+ * bloom filter pruning can be applied.
+ *
+ * @param pruningKey the filtering key of the plan to be pruned.
+ * @param buildQuery the build side of the join.
+ * @param buildKeys the join keys corresponding to the build side of the join
+ * @param broadcastKeyIndex the index of the filtering key collected from the broadcast
+ */
+case class DynamicBloomFilterPruningSubquery(
+    pruningKey: Expression,
+    buildQuery: LogicalPlan,
+    buildKeys: Seq[Expression],
+    broadcastKeyIndex: Int,
+    exprId: ExprId = NamedExpression.newExprId)
+  extends SubqueryExpression(buildQuery, Seq(pruningKey), exprId)
+    with DynamicPruning
+    with Unevaluable
+    with UnaryLike[Expression] {
+
+  override def child: Expression = pruningKey
+
+  override def plan: LogicalPlan = buildQuery
+
+  override def nullable: Boolean = false
+
+  override def withNewPlan(plan: LogicalPlan): DynamicBloomFilterPruningSubquery =
+    copy(buildQuery = plan)
+
+  override lazy val resolved: Boolean = {
+    pruningKey.resolved &&
+      buildQuery.resolved &&
+      buildKeys.nonEmpty &&
+      buildKeys.forall(_.resolved) &&
+      broadcastKeyIndex >= 0 &&
+      broadcastKeyIndex < buildKeys.size &&
+      buildKeys.forall(_.references.subsetOf(buildQuery.outputSet)) &&
+      pruningKey.dataType == buildKeys(broadcastKeyIndex).dataType
+  }
+
+  final override def nodePatternsInternal: Seq[TreePattern] = Seq(DYNAMIC_PRUNING_SUBQUERY)
+
+  override def toString: String = s"dynamicbloomfilterpruning#${exprId.id} $conditionString"
+
+  override lazy val canonicalized: DynamicPruning = {
+    copy(
+      pruningKey = pruningKey.canonicalized,
+      buildQuery = buildQuery.canonicalized,
+      buildKeys = buildKeys.map(_.canonicalized),
+      exprId = ExprId(0))
+  }
+
+  override protected def withNewChildInternal(
+      newChild: Expression): DynamicBloomFilterPruningSubquery = copy(pruningKey = newChild)
+}
+
+/**
  * Marker for a planned [[DynamicPruning]] expression.
  * The expression is created during planning, and it defers to its child for evaluation.
  *

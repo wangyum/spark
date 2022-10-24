@@ -19,14 +19,17 @@ package org.apache.spark.sql.execution.dynamicpruning
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions
-import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeSeq, BindReferences, DynamicPruningExpression, DynamicPruningSubquery, Expression, ListQuery, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeSeq, BindReferences, BloomFilterMightContain, DynamicBloomFilterPruningSubquery, DynamicPruningExpression, DynamicPruningSubquery, Expression, ListQuery, Literal, XxHash64}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
+import org.apache.spark.sql.catalyst.planning.PhysicalAggregation
 import org.apache.spark.sql.catalyst.plans.logical.Aggregate
 import org.apache.spark.sql.catalyst.plans.physical.BroadcastMode
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreePattern.DYNAMIC_PRUNING_SUBQUERY
-import org.apache.spark.sql.execution.{InSubqueryExec, QueryExecution, SparkPlan, SubqueryBroadcastExec}
-import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
+import org.apache.spark.sql.execution.{InSubqueryExec, QueryExecution, ScalarSubquery => ScalarSubqueryExec, SortExec, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
+import org.apache.spark.sql.execution.aggregate.AggUtils
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, EnsureRequirements}
 import org.apache.spark.sql.execution.joins._
 
 /**
@@ -42,6 +45,13 @@ case class PlanDynamicPruningFilters(sparkSession: SparkSession) extends Rule[Sp
   private def broadcastMode(keys: Seq[Expression], output: AttributeSeq): BroadcastMode = {
     val packedKeys = BindReferences.bindReferences(HashJoin.rewriteKeyExpr(keys), output)
     HashedRelationBroadcastMode(packedKeys)
+  }
+
+  private def getShuffleExchange(sparkPlan: SparkPlan): SparkPlan = {
+    sparkPlan match {
+      case s: SortExec => s.child
+      case o => o
+    }
   }
 
   override def apply(plan: SparkPlan): SparkPlan = {
@@ -84,6 +94,63 @@ case class PlanDynamicPruningFilters(sparkSession: SparkSession) extends Rule[Sp
           val aggregate = Aggregate(Seq(alias), Seq(alias), buildPlan)
           DynamicPruningExpression(expressions.InSubquery(
             Seq(value), ListQuery(aggregate, childOutputs = aggregate.output)))
+        }
+
+      case DynamicBloomFilterPruningSubquery(value, buildPlan, buildKeys, index, exprId) =>
+        val sparkPlan = QueryExecution.createSparkPlan(
+          sparkSession, sparkSession.sessionState.planner, buildPlan)
+
+        // Using `sparkPlan` is a little hacky as it is based on the assumption that this rule is
+        // the first to be applied (apart from `InsertAdaptiveSparkPlan`).
+        val canReuseExchange = conf.exchangeReuseEnabled && buildKeys.nonEmpty &&
+          plan.exists {
+            case BroadcastHashJoinExec(_, _, _, BuildLeft, _, left, _, _) =>
+              left.sameResult(sparkPlan)
+            case BroadcastHashJoinExec(_, _, _, BuildRight, _, _, right, _) =>
+              right.sameResult(sparkPlan)
+            case _ => false
+          }
+
+        if (canReuseExchange) {
+          val executedPlan = QueryExecution.prepareExecutedPlan(sparkSession, sparkPlan)
+          val mode = broadcastMode(buildKeys, executedPlan.output)
+          // plan a broadcast exchange of the build side of the join
+          val exchange = BroadcastExchangeExec(mode, executedPlan)
+          val name = s"dynamicpruning#${exprId.id}"
+          // place the broadcast adaptor for reusing the broadcast results on the probe side
+          val broadcastValues =
+            SubqueryBroadcastExec(name, index, buildKeys, exchange)
+          DynamicPruningExpression(InSubqueryExec(value, broadcastValues, exprId))
+        } else {
+          val reusedExchangeExec = plan.collectFirst {
+            case j: ShuffledJoin if j.left.sameResult(sparkPlan) =>
+              getShuffleExchange(EnsureRequirements()(j).asInstanceOf[ShuffledJoin].left)
+            case j: ShuffledJoin if j.right.sameResult(sparkPlan) =>
+              getShuffleExchange(EnsureRequirements()(j).asInstanceOf[ShuffledJoin].right)
+          }
+
+          val agg = Aggregate(Nil,
+            Seq(Alias(new BloomFilterAggregate(new XxHash64(Seq(buildKeys(index))))
+              .toAggregateExpression(), "bloomFilter")()), buildPlan)
+
+          val physicalAggregation = PhysicalAggregation.unapply(agg)
+
+          if (reusedExchangeExec.nonEmpty && physicalAggregation.nonEmpty) {
+            val (groupingExps, aggExps, resultExps, _) = physicalAggregation.get
+            val aggPlan = AggUtils.planAggregateWithoutDistinct(
+              groupingExps,
+              aggExps.map(_.asInstanceOf[AggregateExpression]),
+              resultExps,
+              reusedExchangeExec.get)
+
+            val executedPlan = QueryExecution.prepareExecutedPlan(sparkSession, aggPlan.head)
+            val scalarSubquery = ScalarSubqueryExec(SubqueryExec.createForScalarSubquery(
+              s"scalar-subquery#${exprId.id}", executedPlan), exprId)
+            DynamicPruningExpression(BloomFilterMightContain(scalarSubquery,
+              new XxHash64(Seq(value))))
+          } else {
+            DynamicPruningExpression(Literal.TrueLiteral)
+          }
         }
     }
   }
