@@ -70,7 +70,7 @@ case class PlanAdaptiveDynamicPruningFilters(rootPlan: AdaptiveSparkPlanExec)
           DynamicPruningExpression(InSubqueryExec(value, broadcastValues, exprId))
         } else if (onlyInBroadcast) {
           DynamicPruningExpression(Literal.TrueLiteral)
-        } else if (canBroadcastBySize(buildPlan, conf)) {
+        } else if (canBroadcastBySize(buildPlan, conf) && false) {
           // we need to apply an aggregate on the buildPlan in order to be column pruned
           val alias = Alias(buildKeys(index), buildKeys(index).toString)()
           val aggregate = Aggregate(Seq(alias), Seq(alias), buildPlan)
