@@ -17,20 +17,25 @@
 
 package org.apache.spark.sql.execution.adaptive
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, BindReferences, DynamicPruningExpression, Literal}
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
+import org.apache.spark.sql.catalyst.expressions.{Alias, BindReferences, BloomFilterMightContain, DynamicPruningExpression, Literal, XxHash64}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, JoinSelectionHelper}
 import org.apache.spark.sql.catalyst.plans.logical.Aggregate
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreePattern._
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.exchange.BroadcastExchangeExec
+import org.apache.spark.sql.execution.{ScalarSubquery => ScalarSubqueryExec}
+import org.apache.spark.sql.execution.dynamicpruning.DynamicPruningHelper
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashedRelationBroadcastMode, HashJoin}
 
 /**
  * A rule to insert dynamic pruning predicates in order to reuse the results of broadcast.
  */
-case class PlanAdaptiveDynamicPruningFilters(
-    rootPlan: AdaptiveSparkPlanExec) extends Rule[SparkPlan] with AdaptiveSparkPlanHelper {
+case class PlanAdaptiveDynamicPruningFilters(rootPlan: AdaptiveSparkPlanExec)
+  extends Rule[SparkPlan]
+    with AdaptiveSparkPlanHelper
+    with JoinSelectionHelper
+    with DynamicPruningHelper {
   def apply(plan: SparkPlan): SparkPlan = {
     if (!conf.dynamicPartitionPruningEnabled) {
       return plan
@@ -65,7 +70,7 @@ case class PlanAdaptiveDynamicPruningFilters(
           DynamicPruningExpression(InSubqueryExec(value, broadcastValues, exprId))
         } else if (onlyInBroadcast) {
           DynamicPruningExpression(Literal.TrueLiteral)
-        } else {
+        } else if (canBroadcastBySize(buildPlan, conf) && false) {
           // we need to apply an aggregate on the buildPlan in order to be column pruned
           val alias = Alias(buildKeys(index), buildKeys(index).toString)()
           val aggregate = Aggregate(Seq(alias), Seq(alias), buildPlan)
@@ -77,6 +82,24 @@ case class PlanAdaptiveDynamicPruningFilters(
           val newAdaptivePlan = sparkPlan.asInstanceOf[AdaptiveSparkPlanExec]
           val values = SubqueryExec(name, newAdaptivePlan)
           DynamicPruningExpression(InSubqueryExec(value, values, exprId))
+        } else if (!conf.exchangeReuseEnabled) {
+          DynamicPruningExpression(Literal.TrueLiteral)
+        } else {
+          val childPlan = adaptivePlan.executedPlan
+          val reusedShuffleExchange = collectFirst(rootPlan) {
+            case s: ShuffleExchangeExec if s.child.sameResult(childPlan) => s
+          }
+
+          val bfLogicalPlan = planBloomFilterLogicalPlan(buildPlan, buildKeys, index)
+          val bfPhysicalPlan =
+            planBloomFilterPhysicalPlan(bfLogicalPlan, reusedShuffleExchange).map { plan =>
+              val executedPlan = QueryExecution.prepareExecutedPlan(
+                adaptivePlan.context.session, plan, adaptivePlan.context)
+              val scalarSubquery = ScalarSubqueryExec(SubqueryExec.createForScalarSubquery(
+                s"scalar-subquery#${exprId.id}", executedPlan), exprId)
+              BloomFilterMightContain(scalarSubquery, new XxHash64(value))
+            }.getOrElse(Literal.TrueLiteral)
+          DynamicPruningExpression(bfPhysicalPlan)
         }
     }
   }
