@@ -166,7 +166,7 @@ object PushPartialAggregationThroughJoin extends Rule[LogicalPlan]
           If(e.children.map(IsNull).reduce(Or), Literal(0L, LongType), Literal(1L, LongType))
         }
         val newChild = otherSideCnt.map(Multiply(child, _)).getOrElse(child)
-        Sum(newChild, conf.ansiEnabled, Some(e.dataType))
+        Sum(newChild, resultDataType = Some(e.dataType))
       case e: Min if hasBenefit && aliasMap.contains(e.canonicalized) =>
         e.copy(child = aliasMap(e.canonicalized).toAttribute)
       case e: Max if hasBenefit && aliasMap.contains(e.canonicalized) =>
@@ -212,12 +212,16 @@ object PushPartialAggregationThroughJoin extends Rule[LogicalPlan]
               val count = Count(e).toAggregateExpression()
               e.dataType match {
                 case _: DecimalType =>
-                  Divide(
-                    CheckOverflowInSum(sum, avg.sumDataType.asInstanceOf[DecimalType], !useAnsiAdd,
-                      avg.getContextOrNull()),
-                    count.cast(DecimalType.LongDecimal), failOnError = false).cast(avg.dataType)
+                  If(EqualTo(count, Literal(0L)),
+                    Literal(null, avg.dataType),
+                    DecimalDivideWithOverflowCheck(
+                      sum,
+                      count.cast(DecimalType.LongDecimal),
+                      avg.dataType.asInstanceOf[DecimalType],
+                      avg.getContextOrNull(),
+                      avg.evalMode != EvalMode.ANSI))
                 case _ =>
-                  Divide(sum.cast(avg.dataType), count.cast(avg.dataType), failOnError = false)
+                  Divide(sum.cast(avg.dataType), count.cast(avg.dataType), EvalMode.LEGACY)
               }
             case _ => ae
           }
@@ -360,7 +364,7 @@ object PushPartialAggregationThroughJoin extends Rule[LogicalPlan]
               case e @ Count(Seq(IntegerLiteral(1))) =>
                 val newChild = (leftCntAttr ++ rightCntAttr)
                   .map(_.asInstanceOf[Expression]).reduceLeft(_ * _)
-                Sum(newChild, conf.ansiEnabled, Some(e.dataType))
+                Sum(newChild, resultDataType = Some(e.dataType))
               case e @ Sum(v, useAnsiAdd, dt) if e.references.isEmpty =>
                 val multiply =
                   v.cast(e.dataType) * (leftCntAttr ++ rightCntAttr)
@@ -368,7 +372,8 @@ object PushPartialAggregationThroughJoin extends Rule[LogicalPlan]
                 e.dataType match {
                   case decType: DecimalType =>
                     // Do not use DecimalPrecision because it may be change the precision and scale
-                    Sum(CheckOverflow(multiply, decType, !useAnsiAdd), useAnsiAdd, Some(decType))
+                    Sum(CheckOverflow(multiply, decType, useAnsiAdd != EvalMode.ANSI), useAnsiAdd,
+                      Some(decType))
                   case _ =>
                     Sum(multiply, useAnsiAdd, Some(dt.getOrElse(e.dataType)))
                 }
