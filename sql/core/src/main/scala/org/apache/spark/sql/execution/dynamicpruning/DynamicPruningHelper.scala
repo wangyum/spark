@@ -28,13 +28,12 @@ trait DynamicPruningHelper {
 
   def planBloomFilterLogicalPlan(
       buildQuery: LogicalPlan,
-      buildKeys: Seq[Expression],
-      index: Int): Aggregate = {
+      buildKey: Expression): Aggregate = {
     val rowCount = buildQuery.stats.rowCount
     val bloomFilterAgg = if (rowCount.exists(_.longValue > 0L)) {
-      new BloomFilterAggregate(new XxHash64(buildKeys(index)), Literal(rowCount.get.longValue))
+      new BloomFilterAggregate(new XxHash64(buildKey), Literal(rowCount.get.longValue))
     } else {
-      new BloomFilterAggregate(new XxHash64(buildKeys(index)))
+      new BloomFilterAggregate(new XxHash64(buildKey))
     }
 
     Aggregate(Nil, Seq(Alias(bloomFilterAgg.toAggregateExpression(), "bloomFilter")()), buildQuery)

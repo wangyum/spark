@@ -51,21 +51,27 @@ case class PlanDynamicPruningFilters(sparkSession: SparkSession)
     }
 
     plan.transformAllExpressionsWithPruning(_.containsPattern(DYNAMIC_PRUNING_SUBQUERY)) {
-      case DynamicPruningSubquery(value, buildPlan, buildKeys, index, onlyInBroadcast, exprId) =>
+      case DynamicPruningSubquery(value, buildPlan, buildKey, onlyInBroadcast, exprId) =>
         val sparkPlan = QueryExecution.createSparkPlan(
           sparkSession, sparkSession.sessionState.planner, buildPlan)
         // Using `sparkPlan` is a little hacky as it is based on the assumption that this rule is
         // the first to be applied (apart from `InsertAdaptiveSparkPlan`).
-        val canReuseExchange = conf.exchangeReuseEnabled && buildKeys.nonEmpty &&
-          plan.exists {
-            case BroadcastHashJoinExec(_, _, _, BuildLeft, _, left, _, _) =>
-              left.sameResult(sparkPlan)
-            case BroadcastHashJoinExec(_, _, _, BuildRight, _, _, right, _) =>
-              right.sameResult(sparkPlan)
-            case _ => false
-          }
+        lazy val exchangeKeys = plan.collectFirst {
+          case BroadcastHashJoinExec(leftKeys, _, _, BuildLeft, _, left, _, _)
+            if left.sameResult(sparkPlan) =>
+            leftKeys.map { e =>
+              sparkPlan.output(left.output.indexWhere(_.semanticEquals(e)))
+            }
+          case BroadcastHashJoinExec(_, rightKeys, _, BuildRight, _, _, right, _)
+            if right.sameResult(sparkPlan) =>
+            rightKeys.map { e =>
+              sparkPlan.output(right.output.indexWhere(_.semanticEquals(e)))
+            }
+        }
 
-        if (canReuseExchange) {
+        if (conf.exchangeReuseEnabled && exchangeKeys.nonEmpty) {
+          val buildKeys = exchangeKeys.get
+          val index = buildKeys.indexWhere(_.semanticEquals(buildKey))
           val executedPlan = QueryExecution.prepareExecutedPlan(sparkSession, sparkPlan)
           val mode = broadcastMode(buildKeys, executedPlan.output)
           // plan a broadcast exchange of the build side of the join
@@ -79,7 +85,7 @@ case class PlanDynamicPruningFilters(sparkSession: SparkSession)
           DynamicPruningExpression(Literal.TrueLiteral)
         } else if (canBroadcastBySize(buildPlan, conf) && false) {
           // we need to apply an aggregate on the buildPlan in order to be column pruned
-          val alias = Alias(buildKeys(index), buildKeys(index).toString)()
+          val alias = Alias(buildKey, buildKey.toString)()
           val aggregate = Aggregate(Seq(alias), Seq(alias), buildPlan)
           DynamicPruningExpression(expressions.InSubquery(
             Seq(value), ListQuery(aggregate, childOutputs = aggregate.output)))
@@ -93,7 +99,7 @@ case class PlanDynamicPruningFilters(sparkSession: SparkSession)
               }
           }.flatten
 
-          val bfLogicalPlan = planBloomFilterLogicalPlan(buildPlan, buildKeys, index)
+          val bfLogicalPlan = planBloomFilterLogicalPlan(buildPlan, buildKey)
           val bfPhysicalPlan =
             planBloomFilterPhysicalPlan(bfLogicalPlan, reusedShuffleExchange).map { plan =>
               val executedPlan = QueryExecution.prepareExecutedPlan(sparkSession, plan)

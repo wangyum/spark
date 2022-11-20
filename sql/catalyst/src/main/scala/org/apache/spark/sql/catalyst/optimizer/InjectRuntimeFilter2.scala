@@ -49,23 +49,8 @@ object InjectRuntimeFilter2 extends Rule[LogicalPlan]
       filterCreationSideExp: Expression,
       filterCreationSidePlan: LogicalPlan,
       joinKeys: Seq[Expression]): LogicalPlan = {
-    injectBloomFilter(
-      filterApplicationSideExp,
-      filterApplicationSidePlan,
-      filterCreationSideExp,
-      filterCreationSidePlan,
-      joinKeys
-    )
-  }
-
-  private def injectBloomFilter(
-      filterApplicationSideExp: Expression,
-      filterApplicationSidePlan: LogicalPlan,
-      filterCreationSideExp: Expression,
-      filterCreationSidePlan: LogicalPlan,
-      joinKeys: Seq[Expression]): LogicalPlan = {
     val filter = DynamicPruningSubquery(filterApplicationSideExp,
-      filterCreationSidePlan, joinKeys, joinKeys.indexOf(filterCreationSideExp),
+      filterCreationSidePlan, filterCreationSideExp,
       onlyInBroadcast = false)
     Filter(filter, filterApplicationSidePlan)
   }
@@ -126,11 +111,13 @@ object InjectRuntimeFilter2 extends Rule[LogicalPlan]
       hint: JoinHint): Boolean = {
     probablyPushThroughShuffle(filterApplicationSideExp, filterApplicationSide) &&
       satisfyByteSizeRequirement(filterApplicationSide) &&
-      filterCreationSide.stats.sizeInBytes < conf.runtimeFilterCreationSideThreshold &&
-      filterCreationSide.exists {
-        case f: Filter => isLikelySelective(f.condition)
-        case _ => false
-    }
+      filterCreationSide.stats.sizeInBytes < conf.runtimeFilterCreationSideThreshold
+//      filterCreationSide.collect {
+//        case _: Join | _: Aggregate | _: Window => true
+//      }.size < 1 && filterCreationSide.exists {
+//      case f: Filter => isLikelySelective(f.condition)
+//      case _ => false
+//    }
   }
 
   def hasRuntimeFilter(left: LogicalPlan, right: LogicalPlan, leftKey: Expression,
@@ -149,9 +136,9 @@ object InjectRuntimeFilter2 extends Rule[LogicalPlan]
       leftKey: Expression,
       rightKey: Expression): Boolean = {
     (left, right) match {
-      case (Filter(DynamicPruningSubquery(pruningKey, _, _, _, _, _), plan), _) =>
+      case (Filter(DynamicPruningSubquery(pruningKey, _, _, _, _), plan), _) =>
         pruningKey.fastEquals(leftKey) || hasDynamicPruningSubquery(plan, right, leftKey, rightKey)
-      case (_, Filter(DynamicPruningSubquery(pruningKey, _, _, _, _, _), plan)) =>
+      case (_, Filter(DynamicPruningSubquery(pruningKey, _, _, _, _), plan)) =>
         pruningKey.fastEquals(rightKey) ||
           hasDynamicPruningSubquery(left, plan, leftKey, rightKey)
       case _ => false
@@ -210,6 +197,46 @@ object InjectRuntimeFilter2 extends Rule[LogicalPlan]
     }
   }
 
+  private def filterSide(
+      exp: Expression, plan: LogicalPlan): Option[(Expression, LogicalPlan)] = {
+    if (exp.references.isEmpty) return None
+
+    plan match {
+      case p @ Project(_, Filter(condition, _: LeafNode))
+        if splitConjunctivePredicates(condition).exists(!_.isInstanceOf[IsNotNull]) &&
+          p.outputSet.exists(_.semanticEquals(exp)) =>
+        Some(exp, p)
+
+      case f @ Filter(condition, _: LeafNode)
+        if splitConjunctivePredicates(condition).exists(!_.isInstanceOf[IsNotNull]) &&
+          f.outputSet.exists(_.semanticEquals(exp)) =>
+        Some(exp, f)
+
+      case p: Project =>
+        val aliases = getAliasMap(p)
+        filterSide(replaceAlias(exp, aliases), p.child)
+      // we can unwrap only if there are row projections, and no aggregation operation
+      case a: Aggregate =>
+        val aliasMap = getAliasMap(a)
+        filterSide(replaceAlias(exp, aliasMap), a.child)
+
+      case w: Window =>
+        filterSide(exp, w.child)
+
+      case j: Join =>
+        j.children.flatMap {
+          child => if (exp.references.subsetOf(child.outputSet)) {
+            filterSide(exp, child)
+          } else {
+            None
+          }
+        }.headOption
+
+      case _ =>
+        None
+    }
+  }
+
   private def tryInjectRuntimeFilter(plan: LogicalPlan): LogicalPlan = {
     var filterCounter = 0
     val numFilterThreshold = conf.getConf(SQLConf.RUNTIME_FILTER_NUMBER_THRESHOLD)
@@ -228,14 +255,25 @@ object InjectRuntimeFilter2 extends Rule[LogicalPlan]
             isSimpleExpression(l) && isSimpleExpression(r)) {
             val oldLeft = newLeft
             val oldRight = newRight
-            if (canPruneLeft(joinType) && filteringHasBenefit(left, right, l, hint)) {
-              newLeft = injectFilter(l, newLeft, r, right, rightKeys)
+
+            lazy val rightSideFilter = filterSide(r, right)
+            lazy val leftSideFilter = filterSide(l, left)
+
+            rightSideFilter match {
+              case Some((filterExp, value))
+                  if canPruneLeft(joinType) && filteringHasBenefit(left, value, l, hint) =>
+                newLeft = injectFilter(l, newLeft, filterExp, value, rightKeys)
+              case _ =>
             }
-            // Did we actually inject on the left? If not, try on the right
-            if (newLeft.fastEquals(oldLeft) && canPruneRight(joinType) &&
-              filteringHasBenefit(right, left, r, hint)) {
-              newRight = injectFilter(r, newRight, l, left, leftKeys)
+
+            leftSideFilter match {
+              case Some((filterExp, value)) if newLeft.fastEquals(oldLeft) &&
+                canPruneRight(joinType) &&
+                filteringHasBenefit(right, value, r, hint) =>
+                newRight = injectFilter(r, newRight, filterExp, value, leftKeys)
+              case _ =>
             }
+
             if (!newLeft.fastEquals(oldLeft) || !newRight.fastEquals(oldRight)) {
               filterCounter = filterCounter + 1
             }

@@ -17,7 +17,7 @@
 
 package org.apache.spark.sql.execution.adaptive
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, BindReferences, BloomFilterMightContain, DynamicPruningExpression, Literal, XxHash64}
+import org.apache.spark.sql.catalyst.expressions.{Alias, BloomFilterMightContain, DynamicPruningExpression, Literal, XxHash64}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, JoinSelectionHelper}
 import org.apache.spark.sql.catalyst.plans.logical.Aggregate
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -26,8 +26,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.{ScalarSubquery => ScalarSubqueryExec}
 import org.apache.spark.sql.execution.dynamicpruning.DynamicPruningHelper
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashedRelationBroadcastMode, HashJoin}
-
+import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 /**
  * A rule to insert dynamic pruning predicates in order to reuse the results of broadcast.
  */
@@ -44,35 +43,37 @@ case class PlanAdaptiveDynamicPruningFilters(rootPlan: AdaptiveSparkPlanExec)
     plan.transformAllExpressionsWithPruning(
       _.containsAllPatterns(DYNAMIC_PRUNING_EXPRESSION, IN_SUBQUERY_EXEC)) {
       case DynamicPruningExpression(InSubqueryExec(
-          value, SubqueryAdaptiveBroadcastExec(name, index, onlyInBroadcast, buildPlan, buildKeys,
+          value, SubqueryAdaptiveBroadcastExec(name, onlyInBroadcast, buildPlan, buildKey,
           adaptivePlan: AdaptiveSparkPlanExec), exprId, _, _, _)) =>
-        val packedKeys = BindReferences.bindReferences(
-          HashJoin.rewriteKeyExpr(buildKeys), adaptivePlan.executedPlan.output)
-        val mode = HashedRelationBroadcastMode(packedKeys)
-        // plan a broadcast exchange of the build side of the join
-        val exchange = BroadcastExchangeExec(mode, adaptivePlan.executedPlan)
+        lazy val exchangeKeys = collectFirst(rootPlan) {
+          case BroadcastHashJoinExec(leftKeys, _, _, BuildLeft, _, l: BroadcastExchangeExec, _, _)
+            if leftKeys.nonEmpty && l.child.sameResult(adaptivePlan.executedPlan) =>
+            val buildKeys = leftKeys.map { e =>
+              adaptivePlan.executedPlan.output(l.output.indexWhere(_.semanticEquals(e)))
+            }
+            (buildKeys, l.mode)
+          case BroadcastHashJoinExec(_, rightKeys, _, BuildRight, _, _, r: BroadcastExchangeExec, _)
+            if rightKeys.nonEmpty && r.child.sameResult(adaptivePlan.executedPlan) =>
+            val buildKeys = rightKeys.map { e =>
+              adaptivePlan.executedPlan.output(r.output.indexWhere(_.semanticEquals(e)))
+            }
+            (buildKeys, r.mode)
+        }
 
-        val canReuseExchange = conf.exchangeReuseEnabled && buildKeys.nonEmpty &&
-          find(rootPlan) {
-            case BroadcastHashJoinExec(_, _, _, BuildLeft, _, left, _, _) =>
-              left.sameResult(exchange)
-            case BroadcastHashJoinExec(_, _, _, BuildRight, _, _, right, _) =>
-              right.sameResult(exchange)
-            case _ => false
-          }.isDefined
-
-        if (canReuseExchange) {
+        if (conf.exchangeReuseEnabled && exchangeKeys.nonEmpty) {
+          val (buildKeys, exchangeMode) = exchangeKeys.get
+          val exchange = BroadcastExchangeExec(exchangeMode, adaptivePlan.executedPlan)
           exchange.setLogicalLink(adaptivePlan.executedPlan.logicalLink.get)
           val newAdaptivePlan = adaptivePlan.copy(inputPlan = exchange)
 
           val broadcastValues = SubqueryBroadcastExec(
-            name, index, buildKeys, newAdaptivePlan)
+            name, buildKeys.indexOf(buildKey), buildKeys, newAdaptivePlan)
           DynamicPruningExpression(InSubqueryExec(value, broadcastValues, exprId))
         } else if (onlyInBroadcast) {
           DynamicPruningExpression(Literal.TrueLiteral)
         } else if (canBroadcastBySize(buildPlan, conf) && false) {
           // we need to apply an aggregate on the buildPlan in order to be column pruned
-          val alias = Alias(buildKeys(index), buildKeys(index).toString)()
+          val alias = Alias(buildKey, buildKey.toString)()
           val aggregate = Aggregate(Seq(alias), Seq(alias), buildPlan)
 
           val session = adaptivePlan.context.session
@@ -90,7 +91,7 @@ case class PlanAdaptiveDynamicPruningFilters(rootPlan: AdaptiveSparkPlanExec)
             case s: ShuffleExchangeExec if s.child.sameResult(childPlan) => s
           }
 
-          val bfLogicalPlan = planBloomFilterLogicalPlan(buildPlan, buildKeys, index)
+          val bfLogicalPlan = planBloomFilterLogicalPlan(buildPlan, buildKey)
           val bfPhysicalPlan =
             planBloomFilterPhysicalPlan(bfLogicalPlan, reusedShuffleExchange).map { plan =>
               val executedPlan = QueryExecution.prepareExecutedPlan(
