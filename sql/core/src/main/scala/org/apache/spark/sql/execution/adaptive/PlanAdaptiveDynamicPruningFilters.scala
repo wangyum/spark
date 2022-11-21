@@ -67,7 +67,7 @@ case class PlanAdaptiveDynamicPruningFilters(rootPlan: AdaptiveSparkPlanExec)
           val newAdaptivePlan = adaptivePlan.copy(inputPlan = exchange)
 
           val broadcastValues = SubqueryBroadcastExec(
-            name, buildKeys.indexOf(buildKey), buildKeys, newAdaptivePlan)
+            name, buildKeys.indexWhere(_.semanticEquals(buildKey)), buildKeys, newAdaptivePlan)
           DynamicPruningExpression(InSubqueryExec(value, broadcastValues, exprId))
         } else if (onlyInBroadcast) {
           DynamicPruningExpression(Literal.TrueLiteral)
