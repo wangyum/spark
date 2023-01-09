@@ -754,6 +754,11 @@ object LimitPushDown extends Rule[LogicalPlan] {
       Limit(le, Project(a.aggregateExpressions, LocalLimit(le, a.child)))
     case Limit(le @ IntegerLiteral(1), p @ Project(_, a: Aggregate)) if a.groupOnly =>
       Limit(le, p.copy(child = Project(a.aggregateExpressions, LocalLimit(le, a.child))))
+    case Limit(le@IntegerLiteral(limit), a @ Aggregate(groupingExps, aggEps, child))
+        if a.groupOnly && child.maxRowsPerPartition.forall(_ > limit) =>
+      val partialAgg = PartialAggregate(groupingExps, aggEps, child)
+      val finalAgg = FinalAggregate(groupingExps, aggEps, LocalLimit(le, partialAgg))
+      Limit(le, a.copy(child = finalAgg))
   }
 }
 
