@@ -169,8 +169,8 @@ class PushPartialAggregationThroughJoinSuite extends PlanTest {
       .analyze
 
     val correctLeft = PartialAggregate(Seq('a, 'b),
-      Seq(sumWithDataType('c, datatype = Some(DoubleType)).as("_pushed_sum_c"), 'a, 'b,
-        count(1).as("cnt")),
+      Seq(count('c).as("_pushed_count_c"),
+        sumWithDataType('c, datatype = Some(DoubleType)).as("_pushed_sum_c"), 'a, 'b),
       testRelation1.select('a, 'b, 'c)).as("l")
     val correctRight = PartialAggregate(Seq('x),
       Seq(count(1).as("cnt"), 'x),
@@ -178,13 +178,13 @@ class PushPartialAggregationThroughJoinSuite extends PlanTest {
     val newAvg =
       Divide(Sum($"l._pushed_sum_c" * $"r.cnt".cast(DoubleType), resultDataType = Some(DoubleType))
         .toAggregateExpression(),
-        Sum($"l.cnt" * $"r.cnt", resultDataType = Some(LongType))
+        Sum($"l._pushed_count_c" * $"r.cnt", resultDataType = Some(LongType))
           .toAggregateExpression().cast(DoubleType),
         failOnError = false)
 
     val correctAnswer = correctLeft.join(correctRight, joinType = Inner,
       condition = Some('a === 'x))
-      .select( $"l._pushed_sum_c", 'b, $"l.cnt", $"r.cnt")
+      .select($"l._pushed_count_c", $"l._pushed_sum_c", 'b, $"r.cnt")
       .groupBy('b)(newAvg.as("avg_c"))
       .analyze
 
@@ -439,8 +439,9 @@ class PushPartialAggregationThroughJoinSuite extends PlanTest {
           .analyze
 
         val correctLeft = PartialAggregate(Seq('a, 'b),
-          Seq(sumWithDataType('c, ansiEnabled, Some(DecimalType(27, 2))).as("_pushed_sum_c"),
-            'a, 'b, count(1).as("cnt")),
+          Seq(count('c).as("_pushed_count_c"),
+            sumWithDataType('c, ansiEnabled, Some(DecimalType(27, 2))).as("_pushed_sum_c"),
+            'a, 'b),
           testRelation3.select('a, 'b, 'c)).as("l")
         val correctRight = PartialAggregate(Seq('x), Seq(count(1).as("cnt"), 'x),
           testRelation4.select('x)).as("r")
@@ -448,12 +449,12 @@ class PushPartialAggregationThroughJoinSuite extends PlanTest {
         val correctAnswer =
           correctLeft.join(correctRight,
             joinType = Inner, condition = Some('a === 'x))
-            .select('_pushed_sum_c, 'b, $"l.cnt", $"r.cnt")
+            .select($"l._pushed_count_c", '_pushed_sum_c, 'b, $"r.cnt")
             .groupBy('b)(Cast(CheckOverflow(Divide(PromotePrecision(CheckOverflowInSum(
               sumWithDataType(CheckOverflow($"_pushed_sum_c" * Cast($"r.cnt", DecimalType(27, 2)),
                 DecimalType(27, 2), !ansiEnabled), ansiEnabled, Some(DecimalType(27, 2))),
               DecimalType(27, 2), !ansiEnabled)),
-              PromotePrecision(Cast(sumWithDataType($"l.cnt" * $"r.cnt", ansiEnabled,
+              PromotePrecision(Cast(sumWithDataType($"l._pushed_count_c" * $"r.cnt", ansiEnabled,
                 Some(LongType)), DecimalType(27, 2))), failOnError = false),
               DecimalType(38, 13),
               !ansiEnabled), DecimalType(21, 6)).as("avg_c"))

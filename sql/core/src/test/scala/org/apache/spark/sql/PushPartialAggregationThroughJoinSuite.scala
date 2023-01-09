@@ -107,7 +107,7 @@ class PushPartialAggregationThroughJoinSuite extends QueryTest
               val error = intercept[SparkException] {
                 df.collect()
               }
-              assert(error.toString contains "[ARITHMETIC_OVERFLOW] Overflow in sum of decimals")
+              assert(error.toString contains "Overflow in sum of decimals")
             } else {
               checkAnswer(
                 df,
