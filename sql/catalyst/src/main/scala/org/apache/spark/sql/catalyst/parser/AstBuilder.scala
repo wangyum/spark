@@ -3251,7 +3251,7 @@ class AstBuilder extends SqlBaseParserBaseVisitor[AnyRef] with SQLConfHelper wit
    */
   override def visitCreateTableHeader(
       ctx: CreateTableHeaderContext): TableHeader = withOrigin(ctx) {
-    val temporary = ctx.TEMPORARY != null
+    val temporary = ctx.TEMPORARY != null || ctx.VOLATILE != null
     val ifNotExists = ctx.EXISTS != null
     if (temporary && ifNotExists) {
       operationNotAllowed("CREATE TEMPORARY TABLE ... IF NOT EXISTS", ctx)
@@ -3788,6 +3788,7 @@ class AstBuilder extends SqlBaseParserBaseVisitor[AnyRef] with SQLConfHelper wit
     val columns = Option(ctx.createOrReplaceTableColTypeList())
       .map(visitCreateOrReplaceTableColTypeList).getOrElse(Nil)
     val provider = Option(ctx.tableProvider).map(_.multipartIdentifier.getText)
+      .orElse { if (temp) Some(conf.defaultDataSourceName) else None }
     val (partTransforms, partCols, bucketSpec, properties, options, location, comment, serdeInfo) =
       visitCreateTableClauses(ctx.createTableClauses())
 
@@ -3795,7 +3796,7 @@ class AstBuilder extends SqlBaseParserBaseVisitor[AnyRef] with SQLConfHelper wit
       operationNotAllowed(s"CREATE TABLE ... USING ... ${serdeInfo.get.describe}", ctx)
     }
 
-    if (temp) {
+    if (temp && !conf.rewriteTempViewToTempTable) {
       val asSelect = if (ctx.query == null) "" else " AS ..."
       operationNotAllowed(
         s"CREATE TEMPORARY TABLE ...$asSelect, use CREATE TEMPORARY VIEW instead", ctx)
@@ -3804,7 +3805,14 @@ class AstBuilder extends SqlBaseParserBaseVisitor[AnyRef] with SQLConfHelper wit
     val partitioning =
       partitionExpressions(partTransforms, partCols, ctx) ++ bucketSpec.map(_.asTransform)
     val tableSpec = TableSpec(properties, provider, options, location, comment,
-      serdeInfo, external)
+      serdeInfo, external, temp)
+
+    if (temp && partitioning.nonEmpty) {
+      operationNotAllowed("PARTITIONED BY in temporary table", ctx)
+    }
+    if (temp && location.nonEmpty) {
+      operationNotAllowed("specify LOCATION in temporary table", ctx)
+    }
 
     Option(ctx.query).map(plan) match {
       case Some(_) if columns.nonEmpty =>
@@ -3874,7 +3882,7 @@ class AstBuilder extends SqlBaseParserBaseVisitor[AnyRef] with SQLConfHelper wit
     val partitioning =
       partitionExpressions(partTransforms, partCols, ctx) ++ bucketSpec.map(_.asTransform)
     val tableSpec = TableSpec(properties, provider, options, location, comment,
-      serdeInfo, false)
+      serdeInfo, false, false)
 
     Option(ctx.query).map(plan) match {
       case Some(_) if columns.nonEmpty =>

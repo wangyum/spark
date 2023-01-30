@@ -3424,4 +3424,12 @@ private[sql] object QueryCompilationErrors extends QueryErrorsBase {
       errorClass = "NULLABLE_ROW_ID_ATTRIBUTES",
       messageParameters = Map("nullableRowIdAttrs" -> nullableRowIdAttrs.mkString(", ")))
   }
+
+  def temporaryTableUnsupported(table: TableIdentifier, cmd: String): Throwable = {
+    new AnalysisException(
+      errorClass = "UNSUPPORTED_FEATURE.TEMPORARY_TABLE_UNSUPPORTED",
+      messageParameters = Map(
+        "cmd" -> cmd,
+        "tableName" -> table.identifier))
+  }
 }

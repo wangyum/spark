@@ -321,6 +321,17 @@ private[sql] trait SQLTestUtilsBase
   }
 
   /**
+   * Drops temporary table `tableNames` after calling `f`.
+   */
+  protected def withTempTable(tableNames: String*)(f: => Unit): Unit = {
+    try f finally {
+      tableNames.foreach { name =>
+        spark.sql(s"DROP TABLE IF EXISTS $name")
+      }
+    }
+  }
+
+  /**
    * Drops cache `cacheName` after calling `f`.
    */
   protected def withCache(cacheNames: String*)(f: => Unit): Unit = {

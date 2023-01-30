@@ -310,7 +310,9 @@ class SparkSqlAstBuilder extends AstBuilder {
   override def visitCreateTable(ctx: CreateTableContext): LogicalPlan = withOrigin(ctx) {
     val (ident, temp, ifNotExists, external) = visitCreateTableHeader(ctx.createTableHeader)
 
-    if (!temp || ctx.query != null) {
+    if (temp && conf.rewriteTempViewToTempTable) {
+      super.visitCreateTable(ctx)
+    } else if (!temp || ctx.query != null) {
       super.visitCreateTable(ctx)
     } else {
       if (external) {
@@ -664,6 +666,7 @@ class SparkSqlAstBuilder extends AstBuilder {
   override def visitCreateTableLike(ctx: CreateTableLikeContext): LogicalPlan = withOrigin(ctx) {
     val targetTable = visitTableIdentifier(ctx.target)
     val sourceTable = visitTableIdentifier(ctx.source)
+    val isTemp = ctx.TEMPORARY != null || ctx.VOLATILE != null
     checkDuplicateClauses(ctx.tableProvider, "PROVIDER", ctx)
     checkDuplicateClauses(ctx.createFileFormat, "STORED AS/BY", ctx)
     checkDuplicateClauses(ctx.rowFormat, "ROW FORMAT", ctx)
@@ -693,7 +696,7 @@ class SparkSqlAstBuilder extends AstBuilder {
     val properties = Option(ctx.tableProps).map(visitPropertyKeyValues).getOrElse(Map.empty)
     val cleanedProperties = cleanTableProperties(ctx, properties)
     CreateTableLikeCommand(
-      targetTable, sourceTable, storage, provider, cleanedProperties, ctx.EXISTS != null)
+      targetTable, sourceTable, storage, provider, cleanedProperties, ctx.EXISTS != null, isTemp)
   }
 
   /**

@@ -1576,6 +1576,11 @@
         "message" : [
           "TRANSFORM with SERDE is only supported in hive mode."
         ]
+      },
+      "TEMPORARY_TABLE_UNSUPPORTED" : {
+        "message" : [
+          "<tableName> is a temporary table. <cmd> are not supported on temporary tables."
+        ]
       }
     },
     "sqlState" : "0A000"

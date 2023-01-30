@@ -26,9 +26,12 @@ import scala.collection.JavaConverters._
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.control.NonFatal
 
+import org.apache.hadoop.fs.Path
+
 import org.apache.spark.{SPARK_VERSION, SparkConf, SparkContext, TaskContext}
 import org.apache.spark.annotation.{DeveloperApi, Experimental, Stable, Unstable}
 import org.apache.spark.api.java.JavaRDD
+import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{ConfigEntry, EXECUTOR_ALLOW_SPARK_CONTEXT}
 import org.apache.spark.rdd.RDD
@@ -109,6 +112,11 @@ class SparkSession private(
   private[sql] def this(sc: SparkContext) = this(sc, new java.util.HashMap[String, String]())
 
   private[sql] val sessionUUID: String = UUID.randomUUID.toString
+
+  private val scratchRootPath =
+    new Path(s"${sessionState.conf.scratchDir}/${sparkContext.applicationId}")
+
+  private[sql] val scratchSessionRootPath = s"${scratchRootPath}/$sessionUUID"
 
   sparkContext.assertNotStopped()
 
@@ -742,6 +750,7 @@ class SparkSession private(
    * @since 2.0.0
    */
   def stop(): Unit = {
+    SparkHadoopUtil.deletePath(scratchRootPath, sparkContext.hadoopConfiguration)
     sparkContext.stop()
   }
 

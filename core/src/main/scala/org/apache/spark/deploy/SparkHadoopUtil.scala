@@ -648,4 +648,12 @@ private[spark] object SparkHadoopUtil extends Logging {
     }
   }
 
+  def deletePath(path: Path, conf: Configuration): Boolean = {
+    val fs = path.getFileSystem(conf)
+    if (fs.exists(path)) {
+      fs.delete(path, true)
+    } else {
+      true
+    }
+  }
 }
