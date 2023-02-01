@@ -91,7 +91,7 @@ statement
     | createTableHeader (LEFT_PAREN createOrReplaceTableColTypeList RIGHT_PAREN)? tableProvider?
         createTableClauses
         (AS? query)?                                                   #createTable
-    | CREATE (TEMPORARY | VOLATILE)? TABLE (IF NOT EXISTS)? target=tableIdentifier
+    | CREATE (TEMPORARY)? TABLE (IF NOT EXISTS)? target=tableIdentifier
         LIKE source=tableIdentifier
         (tableProvider |
         rowFormat |
@@ -285,7 +285,7 @@ unsupportedHiveNativeCommands
     ;
 
 createTableHeader
-    : CREATE (TEMPORARY | VOLATILE)? EXTERNAL? TABLE (IF NOT EXISTS)? multipartIdentifier
+    : CREATE (TEMPORARY)? EXTERNAL? TABLE (IF NOT EXISTS)? multipartIdentifier
     ;
 
 replaceTableHeader
@@ -1398,7 +1398,6 @@ ansiNonReserved
     | VERSION
     | VIEW
     | VIEWS
-    | VOLATILE
     | WEEK
     | WEEKS
     | WINDOW
@@ -1710,7 +1709,6 @@ nonReserved
     | VERSION
     | VIEW
     | VIEWS
-    | VOLATILE
     | WEEK
     | WEEKS
     | WHEN

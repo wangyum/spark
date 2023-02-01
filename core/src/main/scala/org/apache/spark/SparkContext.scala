@@ -357,6 +357,8 @@ class SparkContext(config: SparkConf) extends Logging {
 
   private[spark] var checkpointDir: Option[String] = None
 
+  private[spark] var scratchRootDir: String = _
+
   // Thread Local variable that can be used by users to pass information down the stack
   protected[spark] val localProperties = new InheritableThreadLocal[Properties] {
     override def childValue(parent: Properties): Properties = {
@@ -603,6 +605,15 @@ class SparkContext(config: SparkConf) extends Logging {
     _ui.foreach(_.setAppId(_applicationId))
     _env.blockManager.initialize(_applicationId)
     FallbackStorage.registerBlockManagerIfNeeded(_env.blockManager.master, _conf)
+
+    scratchRootDir = {
+      val path = new Path(s"${_conf.get(SCRATCH_DIR)}/${applicationId}")
+      val fs = path.getFileSystem(hadoopConfiguration)
+      if (!fs.mkdirs(path)) {
+        throw new IOException("Failed to create scratch dir.")
+      }
+      path.toString
+    }
 
     // The metrics system for Driver need to be set spark.app.id to app ID.
     // So it should start after we get app ID from the task scheduler and set spark.app.id.
@@ -2092,6 +2103,9 @@ class SparkContext(config: SparkConf) extends Logging {
    * @param exitCode Specified exit code that will passed to scheduler backend in client mode.
    */
   def stop(exitCode: Int): Unit = {
+    if (scratchRootDir != null) {
+      SparkHadoopUtil.deleteDir(new Path(scratchRootDir), hadoopConfiguration)
+    }
     if (LiveListenerBus.withinListenerThread.value) {
       throw new SparkException(s"Cannot stop SparkContext within listener bus thread.")
     }

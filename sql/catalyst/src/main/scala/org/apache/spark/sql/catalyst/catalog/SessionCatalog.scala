@@ -122,6 +122,8 @@ class SessionCatalog(
     this(externalCatalog, new SimpleFunctionRegistry)
   }
 
+  SparkHadoopUtil.createSessionDir(new Path(scratchPath), hadoopConf)
+
   lazy val externalCatalog = externalCatalogBuilder()
   lazy val globalTempViewManager = globalTempViewManagerBuilder()
 
@@ -407,9 +409,7 @@ class SessionCatalog(
         validateTableLocation(newTableDefinition)
       }
       if (tableDefinition.isTemporary) {
-        val tempTablePath = new Path(newTableDefinition.location)
-        val fs = tempTablePath.getFileSystem(hadoopConf)
-        fs.mkdirs(tempTablePath)
+        SparkHadoopUtil.createSessionDir(new Path(newTableDefinition.location), hadoopConf)
         tempTables.put(qualifiedIdent, newTableDefinition)
       } else {
         externalCatalog.createTable(newTableDefinition, ignoreIfExists)
@@ -897,7 +897,7 @@ class SessionCatalog(
       }
     } else {
       if (tempTables.contains(qualifiedIdent)) {
-        SparkHadoopUtil.deletePath(new Path(tempTables(qualifiedIdent).location), hadoopConf)
+        SparkHadoopUtil.deleteDir(new Path(tempTables(qualifiedIdent).location), hadoopConf)
         tempTables.remove(qualifiedIdent)
       } else if (name.database.isDefined || !tempViews.contains(table)) {
         requireDbExists(db)
@@ -1200,7 +1200,7 @@ class SessionCatalog(
    */
   def clearTempTables(): Unit = synchronized {
     tempViews.clear()
-    SparkHadoopUtil.deletePath(getScratchRootPath, hadoopConf)
+    SparkHadoopUtil.deleteDir(getScratchRootPath, hadoopConf)
     tempTables.clear()
   }
 
@@ -1208,7 +1208,7 @@ class SessionCatalog(
    * Drop all existing temporary tables.
    */
   def dropAllTempTables(): Unit = synchronized {
-    SparkHadoopUtil.deletePath(getScratchRootPath, hadoopConf)
+    SparkHadoopUtil.deleteDir(getScratchRootPath, hadoopConf)
     tempTables.clear()
   }
 

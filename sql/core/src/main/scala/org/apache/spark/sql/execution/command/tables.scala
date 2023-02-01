@@ -1167,7 +1167,7 @@ case class ShowCreateTableCommand(
 
         builder.toString()
       } else {
-        builder ++= s"CREATE ${temporary(metadata)} TABLE ${table.quoted} "
+        builder ++= s"CREATE${temporary(metadata)}TABLE ${table.quoted} "
 
         showCreateDataSourceTable(metadata, builder)
         builder.toString()
@@ -1256,7 +1256,7 @@ case class ShowCreateTableCommand(
     showTableProperties(metadata, builder)
   }
 
-  private def temporary(table: CatalogTable): String = if (table.isTemporary) "TEMPORARY" else ""
+  private def temporary(table: CatalogTable): String = if (table.isTemporary) " TEMPORARY " else " "
 }
 
 /**

@@ -4919,8 +4919,6 @@ class SQLConf extends Serializable with Logging {
 
   def rewriteTempViewToTempTable: Boolean = getConf(SQLConf.REWRITE_TEMP_VIEW_TO_TEMP_TABLE)
 
-  def scratchDir: String = getConf(StaticSQLConf.SCRATCH_DIR)
-
   /** ********************** SQLConf functionality methods ************ */
 
   /** Set Spark SQL configuration properties. */

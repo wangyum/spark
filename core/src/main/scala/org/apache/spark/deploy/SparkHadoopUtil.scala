@@ -32,6 +32,7 @@ import scala.util.control.NonFatal
 import com.google.common.primitives.Longs
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs._
+import org.apache.hadoop.fs.permission.FsPermission
 import org.apache.hadoop.mapred.JobConf
 import org.apache.hadoop.security.{Credentials, UserGroupInformation}
 import org.apache.hadoop.security.token.{Token, TokenIdentifier}
@@ -648,7 +649,13 @@ private[spark] object SparkHadoopUtil extends Logging {
     }
   }
 
-  def deletePath(path: Path, conf: Configuration): Boolean = {
+  def createSessionDir(path: Path, conf: Configuration): Unit = {
+    if (!path.getFileSystem(conf).mkdirs(path, new FsPermission("700"))) {
+      throw new IOException("Failed to create scratch root dir.")
+    }
+  }
+
+  def deleteDir(path: Path, conf: Configuration): Boolean = {
     val fs = path.getFileSystem(conf)
     if (fs.exists(path)) {
       fs.delete(path, true)
