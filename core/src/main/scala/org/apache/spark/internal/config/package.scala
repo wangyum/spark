@@ -2474,5 +2474,5 @@ package object config {
       "stopping Spark context.")
     .version("3.5.0")
     .stringConf
-    .createWithDefault(Utils.resolveURI("/tmp/spark-scratch").toString)
+    .createWithDefault("/tmp/spark-scratch")
 }

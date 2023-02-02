@@ -310,7 +310,7 @@ class SparkSqlAstBuilder extends AstBuilder {
   override def visitCreateTable(ctx: CreateTableContext): LogicalPlan = withOrigin(ctx) {
     val (ident, temp, ifNotExists, external) = visitCreateTableHeader(ctx.createTableHeader)
 
-    if (temp && conf.rewriteTempViewToTempTable) {
+    if (temp) {
       super.visitCreateTable(ctx)
     } else if (!temp || ctx.query != null) {
       super.visitCreateTable(ctx)

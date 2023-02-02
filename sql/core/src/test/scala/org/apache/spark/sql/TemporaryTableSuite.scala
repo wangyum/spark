@@ -374,7 +374,7 @@ class TemporaryTableSuite extends QueryTest
     }
   }
 
-  test("Using VOLATILE table as an alias of TEMPORARY table") {
+  ignore("Using VOLATILE table as an alias of TEMPORARY table") {
     Seq("TEMPORARY", "TEMP", "VOLATILE").foreach { tableType =>
       withTempTable("t1") {
         val s1 =

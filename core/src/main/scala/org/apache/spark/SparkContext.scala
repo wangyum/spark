@@ -607,12 +607,13 @@ class SparkContext(config: SparkConf) extends Logging {
     FallbackStorage.registerBlockManagerIfNeeded(_env.blockManager.master, _conf)
 
     scratchRootDir = {
-      val path = new Path(s"${_conf.get(SCRATCH_DIR)}/${applicationId}")
-      val fs = path.getFileSystem(hadoopConfiguration)
-      if (!fs.mkdirs(path)) {
+      val hadoopPath = new Path(s"${_conf.get(SCRATCH_DIR)}/${_applicationId}")
+      val fs = hadoopPath.getFileSystem(_hadoopConfiguration)
+      val qualifiedPath = fs.makeQualified(hadoopPath)
+      if (!fs.mkdirs(qualifiedPath)) {
         throw new IOException("Failed to create scratch dir.")
       }
-      path.toString
+      qualifiedPath.toString
     }
 
     // The metrics system for Driver need to be set spark.app.id to app ID.

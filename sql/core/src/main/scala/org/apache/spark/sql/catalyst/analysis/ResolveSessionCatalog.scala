@@ -494,8 +494,7 @@ class ResolveSessionCatalog(val catalogManager: CatalogManager)
       provider: Option[String],
       options: Map[String, String]): (CatalogStorageFormat, String) = {
     val nonHiveStorageFormat = CatalogStorageFormat.empty.copy(
-      locationUri =
-        Some(new Path(catalogManager.v1SessionCatalog.getScratchRootPath, identifier).toUri),
+      locationUri = Some(new Path(catalogManager.v1SessionCatalog.scratchPath, identifier).toUri),
       properties = options)
     (nonHiveStorageFormat, provider.getOrElse(conf.defaultDataSourceName))
   }

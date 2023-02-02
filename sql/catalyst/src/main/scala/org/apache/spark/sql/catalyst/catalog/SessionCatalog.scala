@@ -71,7 +71,7 @@ class SessionCatalog(
     cacheSize: Int = SQLConf.get.tableRelationCacheSize,
     cacheTTL: Long = SQLConf.get.metadataCacheTTL,
     defaultDatabase: String = SQLConf.get.defaultDatabase,
-    scratchPath: String = Utils.createTempDir().getPath)
+    private[sql] val scratchPath: String = Utils.createTempDir().getPath)
   extends SQLConfHelper with Logging {
   import SessionCatalog._
   import CatalogTypes.TablePartitionSpec
@@ -121,8 +121,6 @@ class SessionCatalog(
   def this(externalCatalog: ExternalCatalog) = {
     this(externalCatalog, new SimpleFunctionRegistry)
   }
-
-  SparkHadoopUtil.createSessionDir(new Path(scratchPath), hadoopConf)
 
   lazy val externalCatalog = externalCatalogBuilder()
   lazy val globalTempViewManager = globalTempViewManagerBuilder()
@@ -528,14 +526,6 @@ class SessionCatalog(
   }
 
   /**
-   * Return whether a temp table with the specified name exists. If no database is specified, check
-   * with current database.
-   */
-  def tempTableExists(name: TableIdentifier): Boolean = {
-    tempTables.contains(qualifyIdentifier(name))
-  }
-
-  /**
    * Return whether a table/view with the specified name exists. If no database is specified, check
    * with current database.
    */
@@ -649,15 +639,6 @@ class SessionCatalog(
     requireNonEmptyValueInPartitionSpec(Seq(spec))
     externalCatalog.loadPartition(
       db, table, loadPath, spec, isOverwrite, inheritTableSpecs, isSrcLocal)
-  }
-
-  /**
-   * List all matching temporary tables.
-   */
-  def listLocalTempTables(db: String, pattern: String): Seq[TableIdentifier] = {
-    tempTables.keys.filter(_.database.contains(db)).filter { t =>
-      StringUtils.filterPattern(t.table :: Nil, pattern).nonEmpty
-    }.toSeq
   }
 
   def defaultTablePath(tableIdent: TableIdentifier): URI = {
@@ -805,8 +786,22 @@ class SessionCatalog(
   // | Methods that interact with temp tables only |
   // ----------------------------------------------
 
-  private[sql] val getScratchRootPath: Path =
-    new Path(makeQualifiedPath(CatalogUtils.stringToURI(scratchPath)))
+  /**
+   * Return whether a temp table with the specified name exists. If no database is specified, check
+   * with current database.
+   */
+  def tempTableExists(name: TableIdentifier): Boolean = {
+    tempTables.contains(qualifyIdentifier(name))
+  }
+
+  /**
+   * List all matching temporary tables.
+   */
+  def listLocalTempTables(db: String, pattern: String): Seq[TableIdentifier] = {
+    tempTables.keys.filter(_.database.contains(db)).filter { t =>
+      StringUtils.filterPattern(t.table :: Nil, pattern).nonEmpty
+    }.toSeq
+  }
 
   // -------------------------------------------------------------
   // | Methods that interact with temporary and metastore tables |
@@ -1200,7 +1195,7 @@ class SessionCatalog(
    */
   def clearTempTables(): Unit = synchronized {
     tempViews.clear()
-    SparkHadoopUtil.deleteDir(getScratchRootPath, hadoopConf)
+    SparkHadoopUtil.deleteDir(new Path(scratchPath), hadoopConf)
     tempTables.clear()
   }
 
@@ -1208,7 +1203,7 @@ class SessionCatalog(
    * Drop all existing temporary tables.
    */
   def dropAllTempTables(): Unit = synchronized {
-    SparkHadoopUtil.deleteDir(getScratchRootPath, hadoopConf)
+    SparkHadoopUtil.deleteDir(new Path(scratchPath), hadoopConf)
     tempTables.clear()
   }
 

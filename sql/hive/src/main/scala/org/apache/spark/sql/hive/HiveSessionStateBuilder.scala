@@ -74,7 +74,8 @@ class HiveSessionStateBuilder(
       SessionState.newHadoopConf(session.sparkContext.hadoopConfiguration, conf),
       sqlParser,
       resourceLoader,
-      HiveUDFExpressionBuilder)
+      HiveUDFExpressionBuilder,
+      scratchPath = session.scratchSessionRootPath)
     parentState.foreach(_.catalog.copyStateTo(catalog))
     catalog
   }
