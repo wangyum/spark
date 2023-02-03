@@ -22,7 +22,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog.CatalogTableType
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.sql.test.SharedSparkSession
 
 class TemporaryTableSuite extends QueryTest
@@ -32,7 +32,7 @@ class TemporaryTableSuite extends QueryTest
   override protected def sparkConf: SparkConf =
     super
       .sparkConf
-      .set(SQLConf.REWRITE_TEMP_VIEW_TO_TEMP_TABLE, true)
+      .set(StaticSQLConf.SCRATCH_DIR, "/tmp/spark-scratch")
 
   override def afterEach(): Unit = {
     try {

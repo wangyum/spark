@@ -75,7 +75,7 @@ class HiveSessionStateBuilder(
       sqlParser,
       resourceLoader,
       HiveUDFExpressionBuilder,
-      scratchPath = session.scratchSessionRootPath)
+      scratchSessionDir = session.scratchSessionDir)
     parentState.foreach(_.catalog.copyStateTo(catalog))
     catalog
   }

@@ -2468,11 +2468,4 @@ package object config {
       .version("3.4.0")
       .booleanConf
       .createWithDefault(false)
-
-  private[spark] val SCRATCH_DIR = ConfigBuilder("spark.scratch.dir")
-    .doc("Scratch space for Spark temporary table and so on. It will automatically cleaned when " +
-      "stopping Spark context.")
-    .version("3.5.0")
-    .stringConf
-    .createWithDefault("/tmp/spark-scratch")
 }

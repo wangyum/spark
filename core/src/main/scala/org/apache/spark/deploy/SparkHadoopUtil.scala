@@ -655,6 +655,10 @@ private[spark] object SparkHadoopUtil extends Logging {
     }
   }
 
+  def deleteDir(path: String, conf: Configuration): Boolean = {
+    deleteDir(new Path(path), conf)
+  }
+
   def deleteDir(path: Path, conf: Configuration): Boolean = {
     val fs = path.getFileSystem(conf)
     if (fs.exists(path)) {

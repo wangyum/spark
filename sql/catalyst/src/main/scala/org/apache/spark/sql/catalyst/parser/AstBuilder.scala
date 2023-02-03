@@ -3796,7 +3796,7 @@ class AstBuilder extends SqlBaseParserBaseVisitor[AnyRef] with SQLConfHelper wit
       operationNotAllowed(s"CREATE TABLE ... USING ... ${serdeInfo.get.describe}", ctx)
     }
 
-    if (temp && !conf.rewriteTempViewToTempTable) {
+    if (temp && !conf.enableTemporayTable) {
       val asSelect = if (ctx.query == null) "" else " AS ..."
       operationNotAllowed(
         s"CREATE TEMPORARY TABLE ...$asSelect, use CREATE TEMPORARY VIEW instead", ctx)

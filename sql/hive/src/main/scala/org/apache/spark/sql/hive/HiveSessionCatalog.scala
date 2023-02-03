@@ -33,7 +33,7 @@ private[sql] class HiveSessionCatalog(
     parser: ParserInterface,
     functionResourceLoader: FunctionResourceLoader,
     functionExpressionBuilder: FunctionExpressionBuilder,
-    scratchPath: String)
+    scratchSessionDir: Option[String])
   extends SessionCatalog(
     externalCatalogBuilder,
     globalTempViewManagerBuilder,
@@ -43,5 +43,5 @@ private[sql] class HiveSessionCatalog(
     parser,
     functionResourceLoader,
     functionExpressionBuilder,
-    scratchPath = scratchPath) {
+    scratchSessionDir = scratchSessionDir) {
 }

@@ -159,7 +159,7 @@ abstract class BaseSessionStateBuilder(
       sqlParser,
       resourceLoader,
       new SparkUDFExpressionBuilder,
-      scratchPath = session.scratchSessionRootPath)
+      scratchSessionDir = session.scratchSessionDir)
     parentState.foreach(_.catalog.copyStateTo(catalog))
     catalog
   }

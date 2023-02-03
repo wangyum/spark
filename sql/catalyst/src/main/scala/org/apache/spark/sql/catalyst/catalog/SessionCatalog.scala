@@ -32,6 +32,7 @@ import org.apache.hadoop.fs.Path
 
 import org.apache.spark.deploy.SparkHadoopUtil
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst._
 import org.apache.spark.sql.catalyst.analysis._
 import org.apache.spark.sql.catalyst.analysis.FunctionRegistry.FunctionBuilder
@@ -42,7 +43,7 @@ import org.apache.spark.sql.catalyst.trees.{CurrentOrigin, Origin}
 import org.apache.spark.sql.catalyst.util.{CharVarcharUtils, StringUtils}
 import org.apache.spark.sql.connector.catalog.CatalogManager
 import org.apache.spark.sql.errors.{QueryCompilationErrors, QueryExecutionErrors}
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.internal.StaticSQLConf.GLOBAL_TEMP_DATABASE
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.{CaseInsensitiveStringMap, PartitioningUtils}
@@ -71,7 +72,7 @@ class SessionCatalog(
     cacheSize: Int = SQLConf.get.tableRelationCacheSize,
     cacheTTL: Long = SQLConf.get.metadataCacheTTL,
     defaultDatabase: String = SQLConf.get.defaultDatabase,
-    private[sql] val scratchPath: String = Utils.createTempDir().getPath)
+    scratchSessionDir: Option[String] = None)
   extends SQLConfHelper with Logging {
   import SessionCatalog._
   import CatalogTypes.TablePartitionSpec
@@ -132,6 +133,11 @@ class SessionCatalog(
   /** List of temporary tables. */
   @GuardedBy("this")
   protected val tempTables = new mutable.HashMap[TableIdentifier, CatalogTable]
+
+  private[sql] def sessionDir: String = {
+    scratchSessionDir.getOrElse(throw new AnalysisException(
+      s"Please set ${StaticSQLConf.SCRATCH_DIR.key} if you want to use temporary table."))
+  }
 
   // Note: we track current database here because certain operations do not explicitly
   // specify the database (e.g. DROP TABLE my_table). In these cases we must first
@@ -1195,7 +1201,7 @@ class SessionCatalog(
    */
   def clearTempTables(): Unit = synchronized {
     tempViews.clear()
-    SparkHadoopUtil.deleteDir(new Path(scratchPath), hadoopConf)
+    scratchSessionDir.foreach(SparkHadoopUtil.deleteDir(_, hadoopConf))
     tempTables.clear()
   }
 
@@ -1203,7 +1209,7 @@ class SessionCatalog(
    * Drop all existing temporary tables.
    */
   def dropAllTempTables(): Unit = synchronized {
-    SparkHadoopUtil.deleteDir(new Path(scratchPath), hadoopConf)
+    scratchSessionDir.foreach(SparkHadoopUtil.deleteDir(_, hadoopConf))
     tempTables.clear()
   }
 

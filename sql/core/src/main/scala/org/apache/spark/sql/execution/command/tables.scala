@@ -106,7 +106,7 @@ case class CreateTableLikeCommand(
 
     val newStorage = if (isTemp) {
       fileFormat.copy(
-        locationUri = Some(new Path(catalog.scratchPath, targetTable.unquotedString).toUri))
+        locationUri = Some(new Path(catalog.sessionDir, targetTable.unquotedString).toUri))
     } else if (fileFormat.inputFormat.isDefined) {
       fileFormat
     } else {
