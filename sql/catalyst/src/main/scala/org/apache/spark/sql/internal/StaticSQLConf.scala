@@ -285,5 +285,4 @@ object StaticSQLConf {
     .version("3.5.0")
     .stringConf
     .createOptional
-    // .createWithDefault("/tmp/spark-scratch")
 }

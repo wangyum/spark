@@ -139,7 +139,7 @@ case class CreateTableLikeCommand(
           if (isTemp) false else sourceTableDesc.tracksPartitionsInCatalog)
 
     if (newTableDesc.partitionColumnNames.nonEmpty) {
-      DDLUtils.verifyOperationNotSupported(newTableDesc, getClass.getSimpleName)
+      DDLUtils.verifyOperationNotSupported(newTableDesc, "Create table like partitioned table")
     }
     catalog.createTable(newTableDesc, ifNotExists)
     Seq.empty[Row]
@@ -205,7 +205,7 @@ case class AlterTableRenameCommand(
       catalog.renameTable(oldName, newName)
     } else {
       val table = catalog.getTableMetadata(oldName)
-      DDLUtils.verifyOperationNotSupported(table, getClass.getSimpleName)
+      DDLUtils.verifyOperationNotSupported(table, "Rename table")
       DDLUtils.verifyAlterTableType(catalog, table, isView)
       // If `optStorageLevel` is defined, the old table was cached.
       val optCachedData = sparkSession.sharedState.cacheManager.lookupCachedData(
@@ -241,7 +241,7 @@ case class AlterTableAddColumnsCommand(
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
     val catalogTable = verifyAlterTableAddColumn(sparkSession.sessionState.conf, catalog, table)
-    DDLUtils.verifyOperationNotSupported(catalogTable, getClass.getSimpleName)
+    DDLUtils.verifyOperationNotSupported(catalogTable, "Add column to table")
     val colsWithProcessedDefaults =
       constantFoldCurrentDefaultsToExistDefaults(sparkSession, catalogTable.provider)
 
@@ -1004,7 +1004,6 @@ case class ShowPartitionsCommand(
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
     val table = catalog.getTableMetadata(tableName)
-    DDLUtils.verifyOperationNotSupported(table, getClass.getSimpleName)
     val tableIdentWithDB = table.identifier.quotedString
 
     /**

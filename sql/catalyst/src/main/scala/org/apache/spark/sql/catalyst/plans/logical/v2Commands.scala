@@ -1363,4 +1363,4 @@ case class TableSpec(
     comment: Option[String],
     serde: Option[SerdeInfo],
     external: Boolean,
-    temporary: Boolean = false)
+    temporary: Boolean)

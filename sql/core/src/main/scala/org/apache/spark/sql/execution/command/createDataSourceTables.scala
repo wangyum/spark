@@ -50,7 +50,7 @@ case class CreateDataSourceTableCommand(table: CatalogTable, ignoreIfExists: Boo
     assert(table.provider.isDefined)
 
     if (table.partitionColumnNames.nonEmpty) {
-      DDLUtils.verifyOperationNotSupported(table, getClass.getSimpleName)
+      DDLUtils.verifyOperationNotSupported(table, "Create partitioned table")
     }
 
     val sessionState = sparkSession.sessionState
@@ -159,7 +159,7 @@ case class CreateDataSourceTableAsSelectCommand(
     val table = catalogTable.copy(identifier = tableIdentWithDB)
     val tableName = tableIdentWithDB.unquotedString
     if (table.partitionColumnNames.nonEmpty) {
-      DDLUtils.verifyOperationNotSupported(table, getClass.getSimpleName)
+      DDLUtils.verifyOperationNotSupported(table, "Create partitioned table")
     }
 
     if (sessionState.catalog.tableExists(table)) {

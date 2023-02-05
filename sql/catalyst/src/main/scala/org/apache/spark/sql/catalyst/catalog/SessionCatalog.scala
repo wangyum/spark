@@ -1201,8 +1201,6 @@ class SessionCatalog(
    */
   def clearTempTables(): Unit = synchronized {
     tempViews.clear()
-    scratchSessionDir.foreach(SparkHadoopUtil.deleteDir(_, hadoopConf))
-    tempTables.clear()
   }
 
   /**
