@@ -45,6 +45,11 @@ class TemporaryTableSuite extends QueryTest
     }
   }
 
+  test("Scratch dir is set and temporary tables are supported") {
+    assert(spark.sessionState.catalog.sessionDir.contains(sparkScratch))
+    assert(spark.sessionState.conf.enableTemporayTable)
+  }
+
   test("create temporary table across different sessions") {
     val sparkSession1 = spark.newSession()
     val sparkSession2 = spark.newSession()
