@@ -168,7 +168,7 @@ class ResolveSessionCatalog(val catalogManager: CatalogManager)
 
     case c @ CreateTable(ResolvedV1Identifier(ident), _, _, tableSpec, _) if tableSpec.temporary =>
       val (storageFormat, provider) = getTempTableStorageFormatAndProvider(
-        ident.identifier,
+        ident.unquotedString,
         c.tableSpec.provider,
         c.tableSpec.options)
       val withLocationUri = c.tableSpec.copy(location = storageFormat.locationUri.map(_.toString))
