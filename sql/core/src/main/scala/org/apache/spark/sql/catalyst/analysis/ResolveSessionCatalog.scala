@@ -166,7 +166,6 @@ class ResolveSessionCatalog(val catalogManager: CatalogManager)
           throw new IllegalStateException(s"[BUG] unexpected column expression: $column")
       }
 
-    // For CREATE TEMPORARY TABLE [AS SELECT]
     case c @ CreateTable(ResolvedV1Identifier(ident), _, _, tableSpec, _) if tableSpec.temporary =>
       val (storageFormat, provider) = getTempTableStorageFormatAndProvider(
         ident.identifier,

@@ -3808,10 +3808,10 @@ class AstBuilder extends SqlBaseParserBaseVisitor[AnyRef] with SQLConfHelper wit
       serdeInfo, external, temp)
 
     if (temp && partitioning.nonEmpty) {
-      operationNotAllowed("PARTITIONED BY in temporary table", ctx)
+      operationNotAllowed("PARTITIONED BY on temporary table", ctx)
     }
     if (temp && location.nonEmpty) {
-      operationNotAllowed("specify LOCATION in temporary table", ctx)
+      operationNotAllowed("specify LOCATION on temporary table", ctx)
     }
 
     Option(ctx.query).map(plan) match {

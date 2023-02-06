@@ -293,7 +293,7 @@ class TemporaryTableSuite extends QueryTest
             |create temporary table tt1 (id int) using parquet
             |LOCATION '/PATH'
             |""".stripMargin))
-      assert(e.message.contains("specify LOCATION in temporary table"))
+      assert(e.message.contains("specify LOCATION on temporary table"))
     }
   }
 

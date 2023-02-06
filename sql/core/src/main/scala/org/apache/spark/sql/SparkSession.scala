@@ -26,8 +26,6 @@ import scala.collection.JavaConverters._
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.control.NonFatal
 
-import org.apache.hadoop.fs.Path
-
 import org.apache.spark.{SPARK_VERSION, SparkConf, SparkContext, TaskContext}
 import org.apache.spark.annotation.{DeveloperApi, Experimental, Stable, Unstable}
 import org.apache.spark.api.java.JavaRDD
@@ -114,13 +112,8 @@ class SparkSession private(
   private[sql] val sessionUUID: String = UUID.randomUUID.toString
 
   private val scratchAppDir = sparkContext.getConf.get(StaticSQLConf.SCRATCH_DIR).map { dir =>
-    val path = new Path(s"$dir/${sparkContext.applicationId}")
-    val fs = path.getFileSystem(sparkContext.hadoopConfiguration)
-    val qualifiedPath = fs.makeQualified(path)
-    if (!fs.mkdirs(qualifiedPath)) {
-      throw new IllegalArgumentException(s"Failed to create scratch dir: $qualifiedPath.")
-    }
-    qualifiedPath.toString
+    SparkHadoopUtil.createSessionDir(s"$dir/${sparkContext.applicationId}",
+      sparkContext.hadoopConfiguration)
   }
 
   private[sql] val scratchSessionDir = scratchAppDir.map(dir => s"$dir/$sessionUUID")

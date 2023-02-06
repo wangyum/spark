@@ -649,10 +649,16 @@ private[spark] object SparkHadoopUtil extends Logging {
     }
   }
 
-  def createSessionDir(path: Path, conf: Configuration): Unit = {
-    if (!path.getFileSystem(conf).mkdirs(path, new FsPermission("700"))) {
-      throw new IOException("Failed to create scratch root dir.")
+  def createSessionDir(dir: String, conf: Configuration): String = {
+    createSessionDir(new Path(dir), conf)
+  }
+
+  def createSessionDir(path: Path, conf: Configuration): String = {
+    val fs = path.getFileSystem(conf)
+    if (!fs.mkdirs(path, new FsPermission("700"))) {
+      throw new IOException(s"Failed to create dir: $path.")
     }
+    fs.makeQualified(path).toString
   }
 
   def deleteDir(path: String, conf: Configuration): Boolean = {

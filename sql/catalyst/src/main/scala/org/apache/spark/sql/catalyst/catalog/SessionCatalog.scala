@@ -130,7 +130,7 @@ class SessionCatalog(
   @GuardedBy("this")
   protected val tempViews = new mutable.HashMap[String, TemporaryViewRelation]
 
-  /** List of temporary tables. */
+  /** List of temporary tables, mapping from table identifier to their catalog table. */
   @GuardedBy("this")
   protected val tempTables = new mutable.HashMap[TableIdentifier, CatalogTable]
 
@@ -423,8 +423,7 @@ class SessionCatalog(
 
   def validateTableLocation(table: CatalogTable): Unit = {
     // SPARK-19724: the default location of a managed table should be non-existent or empty.
-    if (table.tableType == CatalogTableType.MANAGED ||
-      table.tableType == CatalogTableType.TEMPORARY) {
+    if (table.tableType == CatalogTableType.MANAGED) {
       val tableLocation =
         new Path(table.storage.locationUri.getOrElse(defaultTablePath(table.identifier)))
       val fs = tableLocation.getFileSystem(hadoopConf)
@@ -788,9 +787,9 @@ class SessionCatalog(
     SubqueryAlias(toNameParts(viewInfo.tableMeta.identifier).map(format), getTempViewPlan(viewInfo))
   }
 
-  // ----------------------------------------------
-  // | Methods that interact with temp tables only |
-  // ----------------------------------------------
+  // -------------------------------------------------------------
+  // | Methods that interact with temporary and metastore tables |
+  // -------------------------------------------------------------
 
   /**
    * Return whether a temp table with the specified name exists. If no database is specified, check
@@ -809,9 +808,13 @@ class SessionCatalog(
     }.toSeq
   }
 
-  // -------------------------------------------------------------
-  // | Methods that interact with temporary and metastore tables |
-  // -------------------------------------------------------------
+  /**
+   * Remove all existing temporary tables and their data.
+   */
+  def dropAllTempTables(): Unit = synchronized {
+    scratchSessionDir.foreach(SparkHadoopUtil.deleteDir(_, hadoopConf))
+    tempTables.clear()
+  }
 
   /**
    * Retrieve the metadata of an existing temporary view or permanent table/view.
@@ -1201,14 +1204,6 @@ class SessionCatalog(
    */
   def clearTempTables(): Unit = synchronized {
     tempViews.clear()
-  }
-
-  /**
-   * Drop all existing temporary tables.
-   */
-  def dropAllTempTables(): Unit = synchronized {
-    scratchSessionDir.foreach(SparkHadoopUtil.deleteDir(_, hadoopConf))
-    tempTables.clear()
   }
 
   // ----------------------------------------------------------------------------
