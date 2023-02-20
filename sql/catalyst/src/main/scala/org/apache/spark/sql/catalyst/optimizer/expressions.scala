@@ -200,14 +200,21 @@ object ConstantPropagation extends Rule[LogicalPlan] {
 
   private def replaceConstants(condition: Expression, equalityPredicates: EqualityPredicates)
     : Expression = {
-    val constantsMap = AttributeMap(equalityPredicates.map(_._1))
-    val predicates = equalityPredicates.map(_._2).toSet
-    def replaceConstants0(expression: Expression) = expression transform {
+    val defaultConstantsMap = AttributeMap(equalityPredicates.map(_._1))
+    val defaultPredicates = equalityPredicates.map(_._2).toSet
+    def replaceConstants0(
+        expression: Expression, constantsMap: AttributeMap[Literal]) = expression transform {
       case a: AttributeReference => constantsMap.getOrElse(a, a)
     }
     condition transform {
-      case e @ EqualTo(_, _) if !predicates.contains(e) => replaceConstants0(e)
-      case e @ EqualNullSafe(_, _) if !predicates.contains(e) => replaceConstants0(e)
+      case b: BinaryComparison =>
+        if (!defaultPredicates.contains(b)) {
+          replaceConstants0(b, defaultConstantsMap)
+        } else {
+          val excludedEqualityPredicates = equalityPredicates.filterNot(_._2.semanticEquals(b))
+          val constantsMap = AttributeMap(excludedEqualityPredicates.map(_._1))
+          replaceConstants0(b, constantsMap)
+        }
     }
   }
 }
