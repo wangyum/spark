@@ -113,8 +113,8 @@ object UnwrapCastInBinaryComparison extends Rule[LogicalPlan] {
     // Not a canonical form. In this case we first canonicalize the expression by swapping the
     // literal and cast side, then process the result and swap the literal and cast again to
     // restore the original order.
-    case BinaryComparison(Literal(_, literalType), Cast(fromExp, toType, _, _))
-        if needToCanonicalizeExpression(fromExp, toType, literalType) =>
+    case BinaryComparison(Literal(value, literalType), Cast(fromExp, toType, _, _))
+        if value != null && needToCanonicalizeExpression(fromExp, toType, literalType) =>
       def swap(e: Expression): Expression = e match {
         case GreaterThan(left, right) => LessThan(right, left)
         case GreaterThanOrEqual(left, right) => LessThanOrEqual(right, left)
@@ -131,13 +131,24 @@ object UnwrapCastInBinaryComparison extends Rule[LogicalPlan] {
     // moving cast to the literal side.
     case be @ BinaryComparison(
       Cast(fromExp, toType: NumericType, _, _), Literal(value, literalType))
-        if canImplicitlyCast(fromExp, toType, literalType) =>
+        if value != null && canImplicitlyCast(fromExp, toType, literalType) =>
       simplifyNumericComparison(be, fromExp, toType, value)
 
     case be @ BinaryComparison(
       Cast(fromExp, _, timeZoneId, evalMode), date @ Literal(value, DateType))
         if AnyTimestampType.acceptsType(fromExp.dataType) && value != null =>
       unwrapDateToTimestamp(be, fromExp, date, timeZoneId, evalMode)
+
+    case be @ BinaryComparison(
+      Cast(fromExp, _, timeZoneId, evalMode), date@Literal(value, DateType))
+        if fromExp.dataType == StringType && value != null =>
+      be.withNewChildren(Seq(fromExp, Cast(date, StringType, timeZoneId, evalMode)))
+
+    case be @ BinaryComparison(
+      Cast(fromExp, toType: AtomicType, timeZoneId, evalMode),
+        date @ Literal(value, TimestampType | TimestampNTZType))
+        if fromExp.dataType == DateType && value != null =>
+      unwrapTimestampToDate(be, fromExp, toType, date, timeZoneId, evalMode)
 
     // As the analyzer makes sure that the list of In is already of the same data type, then the
     // rule can simply check the first literal in `in.list` can implicitly cast to `toType` or not,
@@ -327,6 +338,43 @@ object UnwrapCastInBinaryComparison extends Rule[LogicalPlan] {
     }
   }
 
+  private def unwrapTimestampToDate(
+      exp: BinaryComparison,
+      fromExp: Expression,
+      toType: AtomicType,
+      date: Literal,
+      tz: Option[String],
+      evalMode: EvalMode.Value): Expression = {
+    val beginTs = Cast(Cast(date, DateType, tz, evalMode), date.dataType, tz, evalMode)
+    val ordering = toType.ordering.asInstanceOf[Ordering[Any]]
+    val cmp = ordering.compare(date.eval(), beginTs.eval())
+    exp match {
+      case _: GreaterThan =>
+        GreaterThan(fromExp, Cast(date, fromExp.dataType, tz, evalMode))
+      case _: GreaterThanOrEqual =>
+        if (cmp == 0) {
+          GreaterThanOrEqual(fromExp, Cast(date, fromExp.dataType, tz, evalMode))
+        } else {
+          GreaterThan(fromExp, Cast(date, fromExp.dataType, tz, evalMode))
+        }
+      case Equality(_, _) =>
+        if (cmp == 0) {
+          EqualTo(fromExp, Cast(date, fromExp.dataType, tz, evalMode))
+        } else {
+          Literal.FalseLiteral
+        }
+      case _: LessThan =>
+        if (cmp == 0) {
+          LessThan(fromExp, Cast(date, fromExp.dataType, tz, evalMode))
+        } else {
+          LessThanOrEqual(fromExp, Cast(date, fromExp.dataType, tz, evalMode))
+        }
+      case _: LessThanOrEqual =>
+        LessThanOrEqual(fromExp, Cast(date, fromExp.dataType, tz, evalMode))
+      case _ => exp
+    }
+  }
+
   private def simplifyIn[IN <: Expression](
       fromExp: Expression,
       toType: NumericType,
@@ -377,9 +425,16 @@ object UnwrapCastInBinaryComparison extends Rule[LogicalPlan] {
       toType: DataType,
       literalType: DataType): Boolean = {
     toType.sameType(literalType) &&
-      !fromExp.foldable &&
-      ((toType.isInstanceOf[NumericType] && canImplicitlyCast(fromExp, toType, literalType)) ||
-        (toType.isInstanceOf[DateType] && AnyTimestampType.acceptsType(fromExp.dataType)))
+      !fromExp.foldable && {
+      toType match {
+        case _: NumericType =>
+          canUnwrapCast(fromExp.dataType, toType)
+        case _: DateType =>
+          AnyTimestampType.acceptsType(fromExp.dataType) || fromExp.dataType == StringType
+        case TimestampType | TimestampNTZType =>
+          fromExp.dataType == DateType
+      }
+    }
   }
 
   /**
