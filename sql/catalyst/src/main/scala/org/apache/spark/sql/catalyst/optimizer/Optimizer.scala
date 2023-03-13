@@ -209,6 +209,8 @@ abstract class Optimizer(catalogManager: CatalogManager)
     // aggregate distinct column
     Batch("Distinct Aggregate Rewrite", Once,
       RewriteDistinctAggregates) :+
+    Batch("Rewrite GetJsonObject", Once,
+      RewriteGetJsonObject) :+
     Batch("Object Expressions Optimization", fixedPoint,
       EliminateMapObjects,
       CombineTypedFilters,

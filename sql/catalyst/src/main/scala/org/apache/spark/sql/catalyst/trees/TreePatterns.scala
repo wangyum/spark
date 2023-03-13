@@ -48,6 +48,7 @@ object TreePattern extends Enumeration  {
   val EXTRACT_VALUE: Value = Value
   val GENERATE: Value = Value
   val GENERATOR: Value = Value
+  val GET_JSON_OBJECT: Value = Value
   val HIGH_ORDER_FUNCTION: Value = Value
   val IF: Value = Value
   val IN: Value = Value
