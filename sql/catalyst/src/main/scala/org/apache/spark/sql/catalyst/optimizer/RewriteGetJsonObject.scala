@@ -34,7 +34,7 @@ object RewriteGetJsonObject extends Rule[LogicalPlan] {
     case p: Project =>
       val getJsonObjects = p.projectList.flatMap {
         _.collect {
-          case gjo: GetJsonObject if gjo.rewrittenPathName.nonEmpty => gjo
+          case gjo: GetJsonObject if gjo.rewriteToJsonTuplePath.nonEmpty => gjo
         }
       }
 
@@ -45,12 +45,12 @@ object RewriteGetJsonObject extends Rule[LogicalPlan] {
         groupedGetJsonObjects.foreach {
           case (json, getJsonObjects) =>
             val generatorOutput = getJsonObjects.map { j =>
-              val attr = AttributeReference(j.rewrittenPathName.get.toString, StringType)()
-              keyValues.put(j.canonicalized, attr)
+              val attr = AttributeReference(j.rewriteToJsonTuplePath.get.toString, StringType)()
+              keyValues.put(j, attr)
               attr
             }
             newChild = Generate(
-              JsonTuple(json +: getJsonObjects.map(_.rewrittenPathName.get)),
+              JsonTuple(json +: getJsonObjects.map(_.rewriteToJsonTuplePath.get)),
               Nil,
               outer = false,
               Some(json.sql),
@@ -58,9 +58,9 @@ object RewriteGetJsonObject extends Rule[LogicalPlan] {
               newChild)
         }
 
-        val newProjectList = p.projectList.map { p =>
-          p.transformDown {
-            case gjo: GetJsonObject => keyValues.getOrElse(gjo.canonicalized, gjo)
+        val newProjectList = p.projectList.map {
+          _.transformUp {
+            case gjo: GetJsonObject => keyValues.getOrElse(gjo, gjo)
           }.asInstanceOf[NamedExpression]
         }
         p.copy(newProjectList, newChild)
