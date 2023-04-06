@@ -604,22 +604,18 @@ class Analyzer(override val catalogManager: CatalogManager) extends RuleExecutor
         groupByAliases: Seq[Alias],
         groupingAttrs: Seq[Expression],
         gid: Attribute): Seq[NamedExpression] = aggregations.map { agg =>
-      def replaceExprs(e: Expression): Expression = {
-        e.mapChildren {
-          case e if AggregateExpression.isAggregate(e) => e
-          case e =>
-            // Replace expression by expand output attribute.
-            val index = groupByAliases.indexWhere(_.child.semanticEquals(e))
-            if (index == -1) {
-              replaceExprs(e)
-            } else {
-              groupingAttrs(index)
-            }
-        }
+      def replaceExprs(e: Expression): Expression = e match {
+        case e if AggregateExpression.isAggregate(e) => e
+        case e =>
+          // Replace expression by expand output attribute.
+          val index = groupByAliases.indexWhere(_.child.semanticEquals(e))
+          if (index == -1) {
+            e.mapChildren(replaceExprs)
+          } else {
+            groupingAttrs(index)
+          }
       }
-      replaceGroupingFunc(agg, groupByExprs, gid)
-        .mapChildren(replaceExprs)
-        .asInstanceOf[NamedExpression]
+      replaceExprs(replaceGroupingFunc(agg, groupByExprs, gid)).asInstanceOf[NamedExpression]
     }
 
     /*
