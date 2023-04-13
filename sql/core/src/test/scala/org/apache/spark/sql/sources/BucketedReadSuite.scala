@@ -1048,7 +1048,7 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
           Some(4))
         // Coalescing is not applied when join expressions do not match with bucket columns.
         verify("SELECT * FROM t1 JOIN t2 ON t1.i = t2.i", 2, None)
-        // Coalescing applied on broadcast join stream side
+        // Coalescing applied on broadcast join stream side.
         verify(
           """
             |SELECT *
@@ -1063,6 +1063,14 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
             |        FROM   t1 JOIN t3 ON t1.i > t3.i AND t1.j < t3.j) t
             |       JOIN t2 ON t.i = t2.i AND t.j = t2.j
             |""".stripMargin, 0, Some(4))
+        // Coalescing is not applied on broadcast join build side.
+        verify(
+          """
+            |SELECT *
+            |FROM   (SELECT /*+ BROADCAST(t1) */ t1.i, t1.j
+            |        FROM   t1 LEFT JOIN t3 ON t1.i = t3.i AND t1.j = t3.j) t
+            |       LEFT JOIN t2 ON t.i = t2.i AND t.j = t2.j
+            |""".stripMargin, 2, None)
       }
     }
   }
