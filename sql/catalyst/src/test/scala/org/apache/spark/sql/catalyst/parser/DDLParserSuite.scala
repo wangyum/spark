@@ -2742,12 +2742,12 @@ class DDLParserSuite extends AnalysisTest {
       "CREATE TABLE my_tab(a INT, b INT NOT NULL GENERATED ALWAYS AS (a+1)) USING parquet"),
       CreateTable(UnresolvedIdentifier(Seq("my_tab")), schemaWithGeneratedColumn,
         Seq.empty[Transform], LogicalTableSpec(Map.empty[String, String], Some("parquet"),
-          Map.empty[String, String], None, None, None, false), false))
+          Map.empty[String, String], None, None, None, false, false), false))
     comparePlans(parsePlan(
       "REPLACE TABLE my_tab(a INT, b INT NOT NULL GENERATED ALWAYS AS (a+1)) USING parquet"),
       ReplaceTable(UnresolvedIdentifier(Seq("my_tab")), schemaWithGeneratedColumn,
         Seq.empty[Transform], LogicalTableSpec(Map.empty[String, String], Some("parquet"),
-          Map.empty[String, String], None, None, None, false), false))
+          Map.empty[String, String], None, None, None, false, false), false))
     // Two generation expressions
     checkError(
       exception = parseException("CREATE TABLE my_tab(a INT, " +
