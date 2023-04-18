@@ -18,34 +18,26 @@
 package org.apache.spark.sql.hive.thriftserver;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
+import java.util.Locale;
 
-import com.google.common.base.Splitter;
 import jline.console.completer.ArgumentCompleter;
 import jline.console.completer.ArgumentCompleter.ArgumentDelimiter;
 import jline.console.completer.ArgumentCompleter.AbstractArgumentDelimiter;
 import jline.console.completer.Completer;
 import jline.console.completer.StringsCompleter;
-import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.conf.Validator;
-import org.apache.hadoop.hive.ql.parse.HiveParser;
-
-import static org.apache.hadoop.hive.cli.CliDriver.DELIMITED_CANDIDATE_THRESHOLD;
+import org.apache.spark.sql.catalyst.util.SQLKeywordUtils;
 
 public class CliDriverUtils {
 
-  public static Completer[] getCommandCompleter(List<String> funcs, List<String> confs) {
+  public static Completer[] getCommandCompleter(List<String> functions, List<String> confs) {
     // StringsCompleter matches against a pre-defined wordlist
     // We start with an empty wordlist and build it up
     List<String> candidateStrings = new ArrayList<String>();
-    // We add Hive function names
+    // We add Spark SQL function names
     // For functions that aren't infix operators, we add an open
     // parenthesis at the end.
-    funcs.forEach(s -> {
+    functions.forEach(s -> {
       if (s.matches("[a-z_]+")) {
         candidateStrings.add(s + "(");
       } else {
@@ -53,11 +45,12 @@ public class CliDriverUtils {
       }
     });
 
-    // We add Hive keywords, including lower-cased versions
-    for (String s : HiveParser.getKeywords()) {
+    // We add Spark SQL keywords, including lower-cased versions
+    SQLKeywordUtils.keywords().foreach(s -> {
       candidateStrings.add(s);
-      candidateStrings.add(s.toLowerCase());
-    }
+      candidateStrings.add(s.toLowerCase(Locale.ROOT));
+      return null;
+    });
 
     StringsCompleter strCompleter = new StringsCompleter(candidateStrings);
 
@@ -106,40 +99,7 @@ public class CliDriverUtils {
     StringsCompleter confCompleter = new StringsCompleter(confs) {
       @Override
       public int complete(final String buffer, final int cursor, final List<CharSequence> clist) {
-        int result = super.complete(buffer, cursor, clist);
-        if (clist.isEmpty() && cursor > 1 && buffer.charAt(cursor - 1) == '=') {
-          HiveConf.ConfVars var = HiveConf.getConfVars(buffer.substring(0, cursor - 1));
-          if (var == null) {
-            return result;
-          }
-          if (var.getValidator() instanceof Validator.StringSet) {
-            Validator.StringSet validator = (Validator.StringSet)var.getValidator();
-            clist.addAll(validator.getExpected());
-          } else if (var.getValidator() != null) {
-            clist.addAll(Arrays.asList(var.getValidator().toDescription(), ""));
-          } else {
-            clist.addAll(Arrays.asList("Expects " + var.typeString() + " type value", ""));
-          }
-          return cursor;
-        }
-        if (clist.size() > DELIMITED_CANDIDATE_THRESHOLD) {
-          Set<CharSequence> delimited = new LinkedHashSet<CharSequence>();
-          for (CharSequence candidate : clist) {
-            Iterator<String> it = Splitter.on(".").split(
-                candidate.subSequence(cursor, candidate.length())).iterator();
-            if (it.hasNext()) {
-              String next = it.next();
-              if (next.isEmpty()) {
-                next = ".";
-              }
-              candidate = buffer != null ? buffer.substring(0, cursor) + next : next;
-            }
-            delimited.add(candidate);
-          }
-          clist.clear();
-          clist.addAll(delimited);
-        }
-        return result;
+        return super.complete(buffer, cursor, clist);
       }
     };
 
