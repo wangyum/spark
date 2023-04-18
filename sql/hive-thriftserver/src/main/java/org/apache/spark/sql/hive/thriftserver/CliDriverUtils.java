@@ -81,9 +81,9 @@ public class CliDriverUtils {
     // the opening parenthesis is unnecessary (and uncommon) in Hive.
     // We stack a custom Completor on top of our ArgumentCompletor
     // to reverse this.
-    Completer customCompletor = new Completer () {
+    Completer customCompletor = new Completer() {
       @Override
-      public int complete (String buffer, int offset, List completions) {
+      public int complete(String buffer, int offset, List completions) {
         List<String> comp = completions;
         int ret = argCompleter.complete(buffer, offset, completions);
         // ConsoleReader will do the substitution if and only if there
