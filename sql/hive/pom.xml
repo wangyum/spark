@@ -146,6 +146,7 @@
     <dependency>
       <groupId>org.codehaus.jackson</groupId>
       <artifactId>jackson-mapper-asl</artifactId>
+      <version>${codehaus.jackson.version}</version>
       <scope>test</scope>
     </dependency>
     <!-- transitive dependencies of hive-exec-core doesn't declare -->
