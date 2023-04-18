@@ -235,7 +235,10 @@ private[hive] object SparkSQLCLIDriver extends Logging {
     reader.setBellEnabled(false)
     reader.setExpandEvents(false)
     // reader.setDebug(new PrintWriter(new FileWriter("writer.debug", true)))
-    CliDriver.getCommandCompleter.foreach(reader.addCompleter)
+    val functions = SparkSQLEnv.sqlContext.sessionState
+      .functionRegistry.listFunction().map(_.funcName).asJava
+    val confs = SparkSQLEnv.sqlContext.conf.getAllDefinedConfs.map(_._1).asJava
+    CliDriverUtils.getCommandCompleter(functions, confs).foreach(reader.addCompleter)
 
     val historyDirectory = System.getProperty("user.home")
 
