@@ -19,11 +19,9 @@ package org.apache.spark.sql.hive.thriftserver
 
 import java.io._
 import java.nio.charset.StandardCharsets.UTF_8
-import java.util.{ArrayList => JArrayList, List => JList, Locale}
+import java.util.{Locale, ArrayList => JArrayList, List => JList}
 import java.util.concurrent.TimeUnit
-
 import scala.collection.JavaConverters._
-
 import jline.console.ConsoleReader
 import jline.console.history.FileHistory
 import org.apache.commons.lang3.StringUtils
@@ -235,7 +233,10 @@ private[hive] object SparkSQLCLIDriver extends Logging {
     reader.setBellEnabled(false)
     reader.setExpandEvents(false)
     // reader.setDebug(new PrintWriter(new FileWriter("writer.debug", true)))
-    CliDriverUtils.getCommandCompleter.foreach(reader.addCompleter)
+    val funcs = SparkSQLEnv.sqlContext.sessionState
+      .functionRegistry.listFunction().map(_.funcName).asJava
+    val confs = SparkSQLEnv.sqlContext.conf.getAllDefinedConfs.map(_._1).asJava
+    CliDriverUtils.getCommandCompleter(funcs, confs).foreach(reader.addCompleter)
 
     val historyDirectory = System.getProperty("user.home")
 

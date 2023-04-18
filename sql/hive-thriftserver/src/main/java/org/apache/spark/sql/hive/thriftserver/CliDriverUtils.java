@@ -32,28 +32,26 @@ import jline.console.completer.Completer;
 import jline.console.completer.StringsCompleter;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.Validator;
-import org.apache.hadoop.hive.ql.exec.FunctionRegistry;
 import org.apache.hadoop.hive.ql.parse.HiveParser;
 
 import static org.apache.hadoop.hive.cli.CliDriver.DELIMITED_CANDIDATE_THRESHOLD;
 
 public class CliDriverUtils {
 
-  public static Completer[] getCommandCompleter() {
+  public static Completer[] getCommandCompleter(List<String> funcs, List<String> confs) {
     // StringsCompleter matches against a pre-defined wordlist
     // We start with an empty wordlist and build it up
     List<String> candidateStrings = new ArrayList<String>();
-
     // We add Hive function names
     // For functions that aren't infix operators, we add an open
     // parenthesis at the end.
-    for (String s : FunctionRegistry.getFunctionNames()) {
+    funcs.forEach(s -> {
       if (s.matches("[a-z_]+")) {
         candidateStrings.add(s + "(");
       } else {
         candidateStrings.add(s);
       }
-    }
+    });
 
     // We add Hive keywords, including lower-cased versions
     for (String s : HiveParser.getKeywords()) {
@@ -105,12 +103,7 @@ public class CliDriverUtils {
       }
     };
 
-    List<String> vars = new ArrayList<String>();
-    for (HiveConf.ConfVars conf : HiveConf.ConfVars.values()) {
-      vars.add(conf.varname);
-    }
-
-    StringsCompleter confCompleter = new StringsCompleter(vars) {
+    StringsCompleter confCompleter = new StringsCompleter(confs) {
       @Override
       public int complete(final String buffer, final int cursor, final List<CharSequence> clist) {
         int result = super.complete(buffer, cursor, clist);
