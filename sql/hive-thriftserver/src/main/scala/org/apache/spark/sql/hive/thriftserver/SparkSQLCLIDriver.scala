@@ -368,20 +368,20 @@ private[hive] object SparkSQLCLIDriver extends Logging {
         Character.isWhitespace(c) || c == '(' || c == ')' || c == '[' || c == ']'
       }
     }
-    // The ArgumentCompletor allows us to match multiple tokens
+    // The ArgumentCompleter allows us to match multiple tokens
     // in the same line.
     val argCompleter = new ArgumentCompleter(delim, strCompleter)
-    // By default ArgumentCompletor is in "strict" mode meaning
+    // By default ArgumentCompleter is in "strict" mode meaning
     // a token is only auto-completed if all prior tokens
     // match. We don't want that since there are valid tokens
     // that are not in our wordlist (eg. table and column names)
     argCompleter.setStrict(false)
-    // ArgumentCompletor always adds a space after a matched token.
+    // ArgumentCompleter always adds a space after a matched token.
     // This is undesirable for function names because a space after
     // the opening parenthesis is unnecessary (and uncommon) in Hive.
-    // We stack a custom Completor on top of our ArgumentCompletor
+    // We stack a custom Completer on top of our ArgumentCompleter
     // to reverse this.
-    val customCompletor: Completer = new Completer() {
+    val customCompleter: Completer = new Completer() {
       override def complete(buffer: String, offset: Int, completions: JList[CharSequence]): Int = {
         val comp: JList[String] = completions.asInstanceOf[JList[String]]
         val ret = argCompleter.complete(buffer, offset, completions)
@@ -415,7 +415,7 @@ private[hive] object SparkSQLCLIDriver extends Logging {
         ret
       }
     }
-    Array[Completer](propCompleter, customCompletor)
+    Array[Completer](propCompleter, customCompleter)
   }
 }
 
