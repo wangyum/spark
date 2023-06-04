@@ -109,15 +109,15 @@ $env:PATH = "$tools\sbt\bin;" + $env:PATH
 Pop-Location
 
 # ========================== Hadoop bin package
-# This must match the version at https://github.com/cdarlint/winutils/tree/master/hadoop-3.2.0
-$hadoopVer = "3.2.0"
+# This must match the version at https://github.com/kontext-tech/winutils/tree/master/hadoop-3.3.1
+$hadoopVer = "3.3.1"
 $hadoopPath = "$tools\hadoop"
 if (!(Test-Path $hadoopPath)) {
     New-Item -ItemType Directory -Force -Path $hadoopPath | Out-Null
 }
 Push-Location $hadoopPath
 
-Start-FileDownload "https://codeload.github.com/cdarlint/winutils/zip/master" "winutils-master.zip"
+Start-FileDownload "https://codeload.github.com/kontext-tech/winutils/zip/master" "winutils-master.zip"
 
 # extract
 Invoke-Expression "7z.exe x winutils-master.zip"
