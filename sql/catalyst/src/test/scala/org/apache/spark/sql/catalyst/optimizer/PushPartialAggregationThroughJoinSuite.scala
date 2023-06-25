@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.analysis._
 import org.apache.spark.sql.catalyst.catalog.{CatalogDatabase, InMemoryCatalog, SessionCatalog}
 import org.apache.spark.sql.catalyst.dsl.expressions._
 import org.apache.spark.sql.catalyst.dsl.plans._
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeMap, Cast, CheckOverflow, CheckOverflowInSum, Divide, Expression, If, IsNull, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeMap, Cast, CheckOverflow, CheckOverflowInSum, Divide, EvalMode, Expression, If, IsNull, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Sum}
 import org.apache.spark.sql.catalyst.optimizer.customAnalyze._
 import org.apache.spark.sql.catalyst.plans._
@@ -146,9 +146,9 @@ class PushPartialAggregationThroughJoinSuite
 
   private def sumWithDataType(
       sum: Expression,
-      useAnsiAdd: Boolean = conf.ansiEnabled,
+      evalMode: EvalMode.Value = EvalMode.fromSQLConf(conf),
       dataType: Option[DataType] = None): AggregateExpression = {
-    Sum(sum, useAnsiAdd, resultDataType = dataType).toAggregateExpression()
+    Sum(sum, evalMode, resultDataType = dataType).toAggregateExpression()
   }
 
   test("Push down sum") {
@@ -309,7 +309,7 @@ class PushPartialAggregationThroughJoinSuite
           .toAggregateExpression(),
           Sum($"l._pushed_count_c" * $"r.cnt", resultDataType = Some(LongType))
             .toAggregateExpression().cast(DoubleType),
-          failOnError = false)
+          evalMode = EvalMode.LEGACY)
 
       val correctAnswer = correctLeft.join(correctRight, joinType = Inner,
         condition = Some('a === 'x))
@@ -336,7 +336,7 @@ class PushPartialAggregationThroughJoinSuite
           resultDataType = Some(DoubleType)).toAggregateExpression(),
           Sum(If(IsNull('c), Literal(0L, LongType), Literal(1L, LongType)) * $"r.cnt",
             resultDataType = Some(LongType)).toAggregateExpression().cast(DoubleType),
-          failOnError = false)
+          evalMode = EvalMode.LEGACY)
 
       val correctAnswer = correctLeft.join(correctRight, joinType = Inner,
         condition = Some('a === 'x))
@@ -362,7 +362,7 @@ class PushPartialAggregationThroughJoinSuite
           resultDataType = Some(DoubleType)).toAggregateExpression(),
           Sum(If(IsNull('z), Literal(0L, LongType), Literal(1L, LongType)) * $"l.cnt",
             resultDataType = Some(LongType)).toAggregateExpression().cast(DoubleType),
-          failOnError = false)
+          evalMode = EvalMode.LEGACY)
 
       val correctAnswer = correctLeft.join(correctRight, joinType = Inner,
         condition = Some('a === 'x))
@@ -436,7 +436,7 @@ class PushPartialAggregationThroughJoinSuite
           dataType = Some(LongType)).as("sum_2"),
           sumWithDataType(CheckOverflow(Literal(BigDecimal("2.5")).cast(DecimalType(12, 1)) *
             ($"l.cnt" * $"r.cnt").cast(DecimalType(12, 1)), DecimalType(12, 1), !conf.ansiEnabled),
-            conf.ansiEnabled, dataType = Some(DecimalType(12, 1))).as("sum_25"),
+            dataType = Some(DecimalType(12, 1))).as("sum_25"),
           avg(Literal(2)).as("avg_2"),
           min(Literal(2)).as("min_2"), max(Literal(2)).as("max_2"),
           first(Literal(2)).as("first_2"), last(Literal(2)).as("last_2"))
@@ -576,8 +576,7 @@ class PushPartialAggregationThroughJoinSuite
             joinType = Inner, condition = Some('a === 'x))
             .select('b, '_pushed_sum_c, 'cnt)
             .groupBy('b)(sumWithDataType('_pushed_sum_c * 'cnt.cast(DecimalType.LongDecimal),
-              ansiEnabled,
-              Some(DecimalType(27, 2))).as("sum_c"))
+              dataType = Some(DecimalType(27, 2))).as("sum_c"))
             .analyzePlan
 
         comparePlans(Optimize.execute(originalQuery), correctAnswer)
@@ -602,7 +601,7 @@ class PushPartialAggregationThroughJoinSuite
           correctLeft.join(correctRight,
             joinType = Inner, condition = Some('a === 'x))
             .select('b, '_pushed_count_c, 'cnt)
-            .groupBy('b)(sumWithDataType('_pushed_count_c * 'cnt, ansiEnabled, Some(LongType))
+            .groupBy('b)(sumWithDataType('_pushed_count_c * 'cnt, dataType = Some(LongType))
               .as("count_c"))
             .analyzePlan
 
@@ -621,7 +620,7 @@ class PushPartialAggregationThroughJoinSuite
 
         val correctLeft = PartialAggregate(Seq('a, 'b),
           Seq('a, 'b,
-            sumWithDataType('c, ansiEnabled, Some(DecimalType(27, 2))).as("_pushed_sum_c"),
+            sumWithDataType('c, dataType = Some(DecimalType(27, 2))).as("_pushed_sum_c"),
             count('c).as("_pushed_count_c")),
           testRelation3.select('a, 'b, 'c)).as("l")
         val correctRight = PartialAggregate(Seq('x), Seq('x, count(1).as("cnt")),
@@ -637,10 +636,10 @@ class PushPartialAggregationThroughJoinSuite
             .select('b, '_pushed_sum_c, $"l._pushed_count_c", $"r.cnt")
             .groupBy('b)(Cast(Divide(CheckOverflowInSum(
               sumWithDataType($"_pushed_sum_c" * Cast($"r.cnt", DecimalType.LongDecimal),
-                ansiEnabled, Some(DecimalType(27, 2))),
+                dataType = Some(DecimalType(27, 2))),
               DecimalType(27, 2), !ansiEnabled, context),
-              Cast(sumWithDataType($"l._pushed_count_c" * $"r.cnt", ansiEnabled,
-                Some(LongType)), DecimalType(20, 0)), failOnError = false),
+              Cast(sumWithDataType($"l._pushed_count_c" * $"r.cnt",
+                dataType = Some(LongType)), DecimalType(20, 0))),
               DecimalType(21, 6)).as("avg_c"))
             .analyzePlan
 
