@@ -129,9 +129,15 @@ package object dsl {
     def getField(fieldName: String): UnresolvedExtractValue =
       UnresolvedExtractValue(expr, Literal(fieldName))
 
-    def cast(to: DataType): Expression = {
+    def cast(to: DataType, timeZoneId: Option[String] = None): Expression = {
       if (expr.resolved && DataTypeUtils.sameType(expr.dataType, to)) {
-        expr
+        expr match {
+          case e: TimeZoneAwareExpression
+            if timeZoneId.nonEmpty && e.timeZoneId.forall(!_.equals(timeZoneId.get)) =>
+            e.withTimeZone(timeZoneId.get)
+          case _ =>
+            expr
+        }
       } else {
         val cast = Cast(expr, to)
         cast.setTagValue(Cast.USER_SPECIFIED_CAST, true)
