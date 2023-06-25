@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.analysis.ResolveTimeZone
 import org.apache.spark.sql.catalyst.dsl.expressions._
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
-import org.apache.spark.sql.catalyst.planning.ExtractEquiJoinKeys
+import org.apache.spark.sql.catalyst.planning.{ExtractEquiJoinKeys, ExtractPushablePartialAggAndJoins}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -166,7 +166,7 @@ object PushPartialAggregationThroughJoin extends Rule[LogicalPlan]
           If(e.children.map(IsNull).reduce(Or), Literal(0L, LongType), Literal(1L, LongType))
         }
         val newChild = otherSideCnt.map(Multiply(child, _)).getOrElse(child)
-        Sum(newChild, conf.ansiEnabled, Some(e.dataType))
+        Sum(newChild, EvalMode.TRY, Some(e.dataType))
       case e: Min if hasBenefit && aliasMap.contains(e.canonicalized) =>
         e.copy(child = aliasMap(e.canonicalized).toAttribute)
       case e: Max if hasBenefit && aliasMap.contains(e.canonicalized) =>
@@ -207,17 +207,18 @@ object PushPartialAggregationThroughJoin extends Rule[LogicalPlan]
       val newAggAggregateExpressions = agg.aggregateExpressions.map { expr =>
         expr.mapChildren(_.transformUp {
           case ae @ AggregateExpression(af, _, _, _, _) => af match {
-            case avg @ Average(e, useAnsiAdd) if e.references.nonEmpty =>
-              val sum = Sum(e, useAnsiAdd, Some(avg.sumDataType)).toAggregateExpression()
+            case avg @ Average(e, evalMode) if e.references.nonEmpty =>
+              val sum = Sum(e, evalMode, Some(avg.sumDataType)).toAggregateExpression()
               val count = Count(e).toAggregateExpression()
               e.dataType match {
                 case _: DecimalType =>
                   Divide(
-                    CheckOverflowInSum(sum, avg.sumDataType.asInstanceOf[DecimalType], !useAnsiAdd,
+                    CheckOverflowInSum(sum, avg.sumDataType.asInstanceOf[DecimalType],
+                      evalMode != EvalMode.ANSI,
                       avg.getContextOrNull()),
-                    count.cast(DecimalType.LongDecimal), failOnError = false).cast(avg.dataType)
+                    count.cast(DecimalType.LongDecimal), evalMode).cast(avg.dataType)
                 case _ =>
-                  Divide(sum.cast(avg.dataType), count.cast(avg.dataType), failOnError = false)
+                  Divide(sum.cast(avg.dataType), count.cast(avg.dataType), evalMode)
               }
             case _ => ae
           }
@@ -252,6 +253,16 @@ object PushPartialAggregationThroughJoin extends Rule[LogicalPlan]
       plan: LogicalPlan): PartialAggregate = {
     val partialGroupingExps = ExpressionSet(joinKeys ++ groupExps).toSeq
     val partialAggExps = joinKeys ++ groupExps ++ remainingExps ++ (aliasMap.values.toSeq :+ rowCnt)
+    PartialAggregate(partialGroupingExps, deduplicateNamedExpressions(partialAggExps), plan)
+  }
+
+  private def constructPartialAgg(
+      joinKeys: Seq[Attribute],
+      groupExps: Seq[NamedExpression],
+      remainingExps: Seq[NamedExpression],
+      plan: LogicalPlan): PartialAggregate = {
+    val partialGroupingExps = ExpressionSet(joinKeys ++ groupExps).toSeq
+    val partialAggExps = joinKeys ++ groupExps ++ remainingExps
     PartialAggregate(partialGroupingExps, deduplicateNamedExpressions(partialAggExps), plan)
   }
 
@@ -360,17 +371,18 @@ object PushPartialAggregationThroughJoin extends Rule[LogicalPlan]
               case e @ Count(Seq(IntegerLiteral(1))) =>
                 val newChild = (leftCntAttr ++ rightCntAttr)
                   .map(_.asInstanceOf[Expression]).reduceLeft(_ * _)
-                Sum(newChild, conf.ansiEnabled, Some(e.dataType))
-              case e @ Sum(v, useAnsiAdd, dt) if e.references.isEmpty =>
+                Sum(newChild, resultDataType = Some(e.dataType))
+              case e @ Sum(v, evMode, dt) if e.references.isEmpty =>
                 val multiply =
                   v.cast(e.dataType) * (leftCntAttr ++ rightCntAttr)
                     .map(_.asInstanceOf[Expression]).reduceLeft(_ * _).cast(e.dataType)
                 e.dataType match {
                   case decType: DecimalType =>
                     // Do not use DecimalPrecision because it may be change the precision and scale
-                    Sum(CheckOverflow(multiply, decType, !useAnsiAdd), useAnsiAdd, Some(decType))
+                    Sum(CheckOverflow(multiply, decType, evMode != EvalMode.ANSI), evMode,
+                      Some(decType))
                   case _ =>
-                    Sum(multiply, useAnsiAdd, Some(dt.getOrElse(e.dataType)))
+                    Sum(multiply, evMode, Some(dt.getOrElse(e.dataType)))
                 }
               // These expression do not need to rewrite:
               // Min/Max(Literal(_)), First/Last(Literal(_), _) and Average(Literal(_), _)
@@ -394,6 +406,43 @@ object PushPartialAggregationThroughJoin extends Rule[LogicalPlan]
     }
   }
 
+  private def pushDownPartialAggregation(
+      groupExps: Seq[Attribute],
+      leftKeys: Seq[Attribute],
+      rightKeys: Seq[Attribute],
+      agg: PartialAggregate,
+      join: Join): LogicalPlan = {
+    val aggRefs = AttributeSet(agg.collectAggregateExprs.flatMap(_.references))
+    val canPushLeft = aggRefs.subsetOf(join.left.outputSet) && canPruneRight(join.joinType) &&
+      (!canPlanAsBroadcastHashJoin(join, conf) || join.left.exists {
+        case j: Join => !canPlanAsBroadcastHashJoin(j, conf)
+        case _ => false
+      })
+    val canPushRight = aggRefs.subsetOf(join.right.outputSet) && canPruneLeft(join.joinType) &&
+      (!canPlanAsBroadcastHashJoin(join, conf) || join.right.exists {
+        case j: Join => !canPlanAsBroadcastHashJoin(j, conf)
+        case _ => false
+      })
+    lazy val pushedLeft = constructPartialAgg(
+      leftKeys,
+      groupExps.filter(_.references.subsetOf(join.left.outputSet)),
+      agg.aggregateExpressions.filter(_.references.subsetOf(join.left.outputSet)),
+      join.left)
+    lazy val pushedRight = constructPartialAgg(
+      rightKeys,
+      groupExps.filter(_.references.subsetOf(join.right.outputSet)),
+      agg.aggregateExpressions.filter(_.references.subsetOf(join.right.outputSet)),
+      join.right)
+
+    if (canPushLeft) {
+      Project(agg.aggregateExpressions.map(_.toAttribute), join.copy(left = pushedLeft))
+    } else if (canPushRight) {
+      Project(agg.aggregateExpressions.map(_.toAttribute), join.copy(right = pushedRight))
+    } else {
+      agg
+    }
+  }
+
   def apply(plan: LogicalPlan): LogicalPlan = {
     if (!conf.partialAggregationOptimizationEnabled) {
       plan
@@ -406,12 +455,8 @@ object PushPartialAggregationThroughJoin extends Rule[LogicalPlan]
             if j.children.exists(_.isInstanceOf[AggregateBase]) =>
           agg
 
-        case agg @ PartialAggregate(_, _, j: Join)
-            if j.children.exists(_.isInstanceOf[AggregateBase]) =>
-          agg
-        case agg @ PartialAggregate(_, _, Project(_, j: Join))
-            if j.children.exists(_.isInstanceOf[AggregateBase]) =>
-          agg
+        case ExtractPushablePartialAggAndJoins(groupExps, leftKeys, rightKeys, agg, j) =>
+          pushDownPartialAggregation(groupExps, leftKeys, rightKeys, agg, j)
 
         case agg @ Aggregate(_, aggExps,
           j @ Join(_, _, Inner | LeftOuter | RightOuter | FullOuter | Cross, _, _))

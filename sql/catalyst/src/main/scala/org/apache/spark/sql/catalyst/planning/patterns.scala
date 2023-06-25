@@ -19,6 +19,7 @@ package org.apache.spark.sql.catalyst.planning
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.AnalysisException
+import org.apache.spark.sql.catalyst.SQLConfHelper
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
 import org.apache.spark.sql.catalyst.optimizer.JoinSelectionHelper
@@ -273,6 +274,34 @@ object ExtractFiltersAndInnerJoins extends PredicateHelper {
       Some(flattenJoin(j))
     case _ => None
   }
+}
+
+object ExtractPushablePartialAggAndJoins
+  extends PredicateHelper with JoinSelectionHelper with SQLConfHelper {
+  type ReturnType = (Seq[Attribute], Seq[Attribute], Seq[Attribute], PartialAggregate, Join)
+
+  def unapply(plan: LogicalPlan): Option[ReturnType] = plan match {
+    case agg @ PartialAggregate(groupExps, _,
+        j @ ExtractEquiJoinKeys(Inner | LeftOuter, leftKeys, rightKeys, None, _, _, _, _))
+      if !j.children.exists(_.isInstanceOf[AggregateBase]) &&
+        (groupExps ++ leftKeys ++ rightKeys).forall(_.isInstanceOf[Attribute]) =>
+      Some((groupExps.map(_.asInstanceOf[Attribute]),
+        leftKeys.map(_.asInstanceOf[Attribute]),
+        rightKeys.map(_.asInstanceOf[Attribute]),
+        agg,
+        j))
+
+      case agg @ PartialAggregate(groupExps, _, Project(projectList,
+          j @ ExtractEquiJoinKeys(Inner | LeftOuter, leftKeys, rightKeys, None, _, _, _, _)))
+        if !j.children.exists(_.isInstanceOf[AggregateBase]) &&
+          (groupExps ++ projectList ++ leftKeys ++ rightKeys).forall(_.isInstanceOf[Attribute]) =>
+        Some((groupExps.map(_.asInstanceOf[Attribute]),
+          leftKeys.map(_.asInstanceOf[Attribute]),
+          rightKeys.map(_.asInstanceOf[Attribute]),
+          agg,
+          j))
+      case _ => None
+    }
 }
 
 /**

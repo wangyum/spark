@@ -208,7 +208,7 @@ abstract class Optimizer(catalogManager: CatalogManager)
     // aggregate distinct column
     Batch("Distinct Aggregate Rewrite", Once,
       RewriteDistinctAggregates) :+
-    Batch("Partial Aggregation Optimization", Once,
+    Batch("Partial Aggregation Optimization", fixedPoint,
       PushPartialAggregationThroughJoin,
       DeduplicateRightSideOfLeftSemiAntiJoin) :+
     Batch("Object Expressions Optimization", fixedPoint,
