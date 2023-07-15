@@ -261,7 +261,8 @@ jobs:
     - name: Build with maven
       run: |
         curl https://gist.githubusercontent.com/wangyum/2fd2208619b6759575568fbbae03007d/raw/d0c02ede154a61049a5ecd39fcb34238de9027eb/settings.xml --output ~/.m2/settings.xml
-        build/mvn clean install -DskipTests=true -Dmaven.scaladoc.skip=true -Dcyclonedx.skip=true
+        cat  ~/.m2/settings.xml
+        build/mvn --settings  ~/.m2/settings.xml clean install -DskipTests=true -Dmaven.scaladoc.skip=true -Dcyclonedx.skip=true
       # Run the tests.
     - name: Run tests
       env: ${{ fromJSON(inputs.envs) }}
