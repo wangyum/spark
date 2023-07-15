@@ -258,7 +258,11 @@ jobs:
       run: |
         python3.8 -m pip install 'numpy>=1.20.0' pyarrow pandas scipy unittest-xml-reporting 'grpcio==1.56.0' 'protobuf==3.20.3'
         python3.8 -m pip list
-    # Run the tests.
+    - name: Build with maven
+      run: |
+        echo "<settings><profiles><profile><id>github</id><repositories><repository><id>github</id><name>GitHub Maven Packages</name><url>https://maven.pkg.github.com/wangyum</url></repository></repositories></profile></profiles><servers><server><id>github</id><username>wangyum</username><password>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</password></server></servers></settings>" > ~/.m2/settings.xml
+        build/mvn clean install -DskipTests=true
+      # Run the tests.
     - name: Run tests
       env: ${{ fromJSON(inputs.envs) }}
       shell: 'script -q -e -c "bash {0}"'
