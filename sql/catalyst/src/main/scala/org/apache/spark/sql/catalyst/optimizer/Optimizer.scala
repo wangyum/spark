@@ -770,6 +770,10 @@ object LimitPushDown extends Rule[LogicalPlan] {
     // Merge offset value and limit value into LocalLimit and pushes down LocalLimit through Offset.
     case LocalLimit(le, Offset(oe, grandChild)) =>
       Offset(oe, LocalLimit(Add(le, oe), grandChild))
+    case LocalLimit(exp, g: Generate) =>
+      LocalLimit(exp, g.copy(child = maybePushLocalLimit(exp, g.child)))
+    case LocalLimit(exp, p @ Project(_, g: Generate)) =>
+      LocalLimit(exp, p.copy(child = g.copy(child = maybePushLocalLimit(exp, g.child))))
     // Push down local limit 1 if join type is LeftSemiOrAnti and join condition is empty.
     case j @ Join(_, right, LeftSemiOrAnti(_), None, _) if !right.maxRows.exists(_ <= 1) =>
       j.copy(right = maybePushLocalLimit(Literal(1, IntegerType), right))
