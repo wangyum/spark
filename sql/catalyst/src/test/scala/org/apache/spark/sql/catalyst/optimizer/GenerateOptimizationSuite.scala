@@ -19,12 +19,12 @@ package org.apache.spark.sql.catalyst.optimizer
 
 import org.apache.spark.sql.catalyst.dsl.expressions._
 import org.apache.spark.sql.catalyst.dsl.plans._
-import org.apache.spark.sql.catalyst.expressions.Explode
+import org.apache.spark.sql.catalyst.expressions.{Explode, MapKeys, MapValues}
 import org.apache.spark.sql.catalyst.optimizer.NestedColumnAliasingSuite.collectGeneratedAliases
 import org.apache.spark.sql.catalyst.plans.PlanTest
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
 import org.apache.spark.sql.catalyst.rules.RuleExecutor
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{StringType, StructType}
 
 class GenerateOptimizationSuite extends PlanTest {
 
@@ -36,7 +36,10 @@ class GenerateOptimizationSuite extends PlanTest {
   }
 
   private val item = StructType.fromDDL("item_id int, item_data string, item_price int")
-  private val relation = LocalRelation($"items".array(item))
+  private val relation = LocalRelation(
+    $"key".string,
+    $"items".array(item),
+    Symbol("kvs").map(StringType, StringType))
 
   test("Prune unnecessary field on Explode from count-only aggregate") {
     val query = relation
@@ -71,11 +74,55 @@ class GenerateOptimizationSuite extends PlanTest {
     val optimized = Optimize.execute(query)
 
     val expected = relation
+      .select($"items")
       .generate(Explode($"items"), unrequiredChildIndex = Seq(0), outputNames = Seq("explode"))
       .select($"explode")
       .groupBy()(count(1), collectList($"explode"))
       .analyze
 
     comparePlans(optimized, expected)
+  }
+
+  test("Prune values if only referenced by keys") {
+    val query = relation
+      .generate(Explode($"kvs"), outer = true, outputNames = Seq("map_key", "map_value"))
+      .select($"map_key")
+      .analyze
+    val expected = relation
+      .select(MapKeys($"kvs").as("keys"))
+      .generate(Explode($"keys"), Seq(0), outer = true, outputNames = Seq("map_key"))
+      .select($"map_key")
+      .analyze
+
+    comparePlans(Optimize.execute(query), expected)
+  }
+
+  test("Prune keys if only referenced by values") {
+    val query = relation
+      .generate(Explode($"kvs"), outputNames = Seq("map_key", "map_value"))
+      .select($"map_value")
+      .analyze
+    val expected = relation
+      .select(MapValues($"kvs").as("values"))
+      .generate(Explode($"values"), Seq(0), outputNames = Seq("map_value"))
+      .select($"map_value")
+      .analyze
+
+    comparePlans(Optimize.execute(query), expected)
+  }
+
+  test("Do not prune if referenced by keys and values") {
+    val query = relation
+      .generate(Explode($"kvs"), outer = true, outputNames = Seq("map_key", "map_value"))
+      .select($"map_key", $"map_value")
+      .analyze
+
+    val expected = relation
+      .select($"kvs")
+      .generate(Explode($"kvs"), Seq(0), outer = true, outputNames = Seq("map_key", "map_value"))
+      .select($"map_key", $"map_value")
+      .analyze
+
+    comparePlans(Optimize.execute(query), expected)
   }
 }

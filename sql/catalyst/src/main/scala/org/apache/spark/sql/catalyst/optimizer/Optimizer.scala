@@ -2411,8 +2411,9 @@ object RemoveLiteralFromGroupExpressions extends Rule[LogicalPlan] {
 }
 
 /**
- * Prunes unnecessary fields from a [[Generate]] if it is under a project which does not refer
+ * 1. Prunes unnecessary fields from a [[Generate]] if it is under a project which does not refer
  * any generated attributes, .e.g., count-like aggregation on an exploded array.
+ * 2. Prunes keys or values from a [[Generate]] if it is a map type.
  */
 object GenerateOptimization extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan.transformDownWithPruning(
@@ -2442,6 +2443,31 @@ object GenerateOptimization extends Rule[LogicalPlan] {
             val updatedGenerate = rewrittenG.copy(generatorOutput = updatedGeneratorOutput)
             p.withNewChildren(Seq(updatedGenerate))
           case _ => p
+        }
+
+      case p @ Project(_, g @ Generate(Explode(expChild), _, _, _, generatorOutput, child))
+          if expChild.dataType.isInstanceOf[MapType] =>
+        val generateRefs = p.references.filter(a => generatorOutput.exists(_.semanticEquals(a)))
+        if (generateRefs.size == 1) {
+          generatorOutput.indexWhere(_.semanticEquals(generateRefs.head)) match {
+            case 0 =>
+              val keys = Alias(MapKeys(expChild), "keys")()
+              val newGenerate = g.copy(
+                generator = Explode(keys.toAttribute),
+                generatorOutput = generateRefs.toSeq,
+                child = Project(Seq(keys), child))
+              p.copy(child = newGenerate)
+            case 1 =>
+              val values = Alias(MapValues(expChild), "values")()
+              val newGenerate = g.copy(
+                generator = Explode(values.toAttribute),
+                generatorOutput = generateRefs.toSeq,
+                child = Project(Seq(values), child))
+              p.copy(child = newGenerate)
+            case _ => p
+          }
+        } else {
+          p
         }
     }
 }
