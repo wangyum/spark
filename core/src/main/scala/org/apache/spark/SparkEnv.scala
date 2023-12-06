@@ -42,7 +42,7 @@ import org.apache.spark.rpc.{RpcEndpoint, RpcEndpointRef, RpcEnv}
 import org.apache.spark.scheduler.{LiveListenerBus, OutputCommitCoordinator}
 import org.apache.spark.scheduler.OutputCommitCoordinator.OutputCommitCoordinatorEndpoint
 import org.apache.spark.security.CryptoStreamUtils
-import org.apache.spark.serializer.{JavaSerializer, Serializer, SerializerManager}
+import org.apache.spark.serializer.{KryoSerializer, Serializer, SerializerManager}
 import org.apache.spark.shuffle.ShuffleManager
 import org.apache.spark.storage._
 import org.apache.spark.util.{RpcUtils, Utils}
@@ -342,7 +342,7 @@ object SparkEnv extends Logging {
 
     val serializerManager = new SerializerManager(serializer, conf, ioEncryptionKey)
 
-    val closureSerializer = new JavaSerializer(conf)
+    val closureSerializer = new KryoSerializer(conf)
 
     def registerOrLookupEndpoint(
         name: String, endpointCreator: => RpcEndpoint):
