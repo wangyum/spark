@@ -20,7 +20,7 @@ package org.apache.spark.status
 import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
 
-import scala.collection.mutable.{ArrayBuffer, HashMap}
+import scala.collection.mutable.{ArrayBuffer, HashMap, LongMap}
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
@@ -75,7 +75,7 @@ private[spark] class AppStatusListener(
   private val liveJobs = new HashMap[Int, LiveJob]()
   private[spark] val liveExecutors = new HashMap[String, LiveExecutor]()
   private[spark] val deadExecutors = new HashMap[String, LiveExecutor]()
-  private val liveTasks = new HashMap[Long, LiveTask]()
+  private val liveTasks = new LongMap[LiveTask]()
   private val liveRDDs = new HashMap[Int, LiveRDD]()
   private val pools = new HashMap[String, SchedulerPool]()
   private val liveResourceProfiles = new HashMap[Int, LiveResourceProfile]()

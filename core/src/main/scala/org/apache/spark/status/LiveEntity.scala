@@ -21,6 +21,7 @@ import java.util.Date
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.immutable.{HashSet, TreeSet}
+import scala.collection.mutable.AnyRefMap
 import scala.collection.mutable.HashMap
 import scala.jdk.CollectionConverters._
 
@@ -463,7 +464,7 @@ private class LiveStage(var info: StageInfo) extends LiveEntity {
 
   var metrics = createMetrics(default = 0L)
 
-  val executorSummaries = new HashMap[String, LiveExecutorStageSummary]()
+  val executorSummaries = new AnyRefMap[String, LiveExecutorStageSummary]()
 
   val activeTasksPerExecutor = new HashMap[String, Int]().withDefaultValue(0)
 

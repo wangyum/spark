@@ -17,7 +17,7 @@
 
 package org.apache.spark.scheduler
 
-import scala.collection.mutable.HashMap
+import scala.collection.mutable.LongMap
 
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.executor.TaskMetrics
@@ -53,7 +53,7 @@ class StageInfo(
    * Terminal values of accumulables updated during this stage, including all the user-defined
    * accumulators.
    */
-  val accumulables = HashMap[Long, AccumulableInfo]()
+  val accumulables = LongMap[AccumulableInfo]()
 
   def stageFailed(reason: String): Unit = {
     failureReason = Some(reason)
