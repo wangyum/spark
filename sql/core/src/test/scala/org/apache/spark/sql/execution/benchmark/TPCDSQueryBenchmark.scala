@@ -51,14 +51,15 @@ object TPCDSQueryBenchmark extends SqlBasedBenchmark with Logging {
     val conf = new SparkConf()
       .setMaster(System.getProperty("spark.sql.test.master", "local[1]"))
       .setAppName("test-sql-context")
-      .set("spark.sql.parquet.compression.codec", "snappy")
-      .set("spark.sql.shuffle.partitions", System.getProperty("spark.sql.shuffle.partitions", "4"))
-      .set("spark.driver.memory", "3g")
-      .set("spark.executor.memory", "3g")
-      .set("spark.sql.autoBroadcastJoinThreshold", (20 * 1024 * 1024).toString)
-      .set("spark.sql.crossJoin.enabled", "true")
-      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .set("spark.kryo.registrationRequired", "true")
+      .setIfMissing("spark.sql.parquet.compression.codec", "snappy")
+      .setIfMissing("spark.sql.shuffle.partitions",
+        System.getProperty("spark.sql.shuffle.partitions", "4"))
+      .setIfMissing("spark.driver.memory", "3g")
+      .setIfMissing("spark.executor.memory", "3g")
+      .setIfMissing("spark.sql.autoBroadcastJoinThreshold", (20 * 1024 * 1024).toString)
+      .setIfMissing("spark.sql.crossJoin.enabled", "true")
+      .setIfMissing("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      .setIfMissing("spark.kryo.registrationRequired", "true")
 
     SparkSession.builder.config(conf).getOrCreate()
   }
