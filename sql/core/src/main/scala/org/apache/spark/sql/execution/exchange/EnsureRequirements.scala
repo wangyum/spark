@@ -153,8 +153,7 @@ case class EnsureRequirements(
         val (candidateSpecsWithShuffle, candidateSpecsWithoutShuffle) = candidateSpecs.partition {
           case (k, _) => children(k).isInstanceOf[ShuffleExchangeLike]
         }
-        val maxShufflePartNumOpt =
-          candidateSpecsWithShuffle.values.map(_.numPartitions).reduceOption(_ max _)
+        val maxShufflePartNumOpt = candidateSpecsWithShuffle.values.map(_.numPartitions).maxOption
         val finalCandidateSpecs = if (candidateSpecsWithoutShuffle.nonEmpty &&
           maxShufflePartNumOpt.forall { n =>
             n / candidateSpecsWithoutShuffle.values.map(_.numPartitions).max <=
