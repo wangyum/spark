@@ -35,6 +35,20 @@ Spark SQL provides `spark.read().csv("file_name")` to read a file or directory o
 {% include_example csv_dataset java/org/apache/spark/examples/sql/JavaSQLDataSourceExample.java %}
 </div>
 
+<div data-lang="SQL"  markdown="1">
+{% highlight sql %}
+CREATE TEMPORARY VIEW cvsTable
+(name string, age int, job string)
+USING csv
+OPTIONS (
+  path "examples/src/main/resources/people.csv",
+  delimiter ';',
+  header 'true'
+)
+
+SELECT * FROM cvsTable
+{% endhighlight %}
+</div>
 </div>
 
 ## Data Source Option
