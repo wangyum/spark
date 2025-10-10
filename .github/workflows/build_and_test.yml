@@ -345,6 +345,8 @@ jobs:
         if [ -f ./dev/free_disk_space ]; then
           ./dev/free_disk_space
         fi
+    - name: Show kernel version
+      run: uname -a
     - name: Install Java ${{ matrix.java }}
       uses: actions/setup-java@v4
       with:
