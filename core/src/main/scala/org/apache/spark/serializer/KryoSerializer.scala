@@ -35,6 +35,7 @@ import com.esotericsoftware.kryo.pool.{KryoCallback, KryoFactory, KryoPool}
 import com.esotericsoftware.kryo.serializers.{JavaSerializer => KryoJavaSerializer}
 import com.twitter.chill.{AllScalaRegistrar, EmptyScalaKryoInstantiator}
 import org.apache.avro.generic.{GenericContainer, GenericData, GenericRecord}
+import org.apache.hadoop.fs.{FileStatus, LocatedFileStatus, Path}
 import org.roaringbitmap.RoaringBitmap
 
 import org.apache.spark._
@@ -553,10 +554,12 @@ private[serializer] object KryoSerializer {
     classOf[TaskCommitMessage],
     classOf[SerializedLambda],
     classOf[BitSet],
-    Utils.classForName("org.apache.hadoop.fs.Path"),
-    Utils.classForName("[Lorg.apache.hadoop.fs.Path;"),
-    Utils.classForName("org.apache.hadoop.fs.FileStatus"),
-    Utils.classForName("[Lorg.apache.hadoop.fs.FileStatus;")
+    classOf[Path],
+    classOf[Array[Path]],
+    classOf[FileStatus],
+    classOf[Array[FileStatus]],
+    classOf[LocatedFileStatus],
+    classOf[Array[LocatedFileStatus]]
   )
 
   private val toRegisterSerializer = Map[Class[_], KryoClassSerializer[_]](
