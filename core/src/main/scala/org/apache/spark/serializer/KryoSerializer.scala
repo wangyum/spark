@@ -554,7 +554,9 @@ private[serializer] object KryoSerializer {
     classOf[SerializedLambda],
     classOf[BitSet],
     Utils.classForName("org.apache.hadoop.fs.Path"),
-    Utils.classForName("[Lorg.apache.hadoop.fs.Path;")
+    Utils.classForName("[Lorg.apache.hadoop.fs.Path;"),
+    Utils.classForName("org.apache.hadoop.fs.FileStatus"),
+    Utils.classForName("[Lorg.apache.hadoop.fs.FileStatus;")
   )
 
   private val toRegisterSerializer = Map[Class[_], KryoClassSerializer[_]](
