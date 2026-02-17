@@ -552,7 +552,9 @@ private[serializer] object KryoSerializer {
     classOf[SparkConf],
     classOf[TaskCommitMessage],
     classOf[SerializedLambda],
-    classOf[BitSet]
+    classOf[BitSet],
+    Utils.classForName("org.apache.hadoop.fs.Path"),
+    Utils.classForName("[Lorg.apache.hadoop.fs.Path;")
   )
 
   private val toRegisterSerializer = Map[Class[_], KryoClassSerializer[_]](
