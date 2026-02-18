@@ -391,7 +391,7 @@ trait TPCDSSchema {
         |`c_birth_country` VARCHAR(20),
         |`c_login` CHAR(13),
         |`c_email_address` CHAR(50),
-        |`c_last_review_date` INT
+        |`c_last_review_date` STRING
       """.stripMargin,
     "customer_address" ->
       """
