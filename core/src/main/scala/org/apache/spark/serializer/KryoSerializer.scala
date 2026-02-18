@@ -35,7 +35,8 @@ import com.esotericsoftware.kryo.pool.{KryoCallback, KryoFactory, KryoPool}
 import com.esotericsoftware.kryo.serializers.{JavaSerializer => KryoJavaSerializer}
 import com.twitter.chill.{AllScalaRegistrar, EmptyScalaKryoInstantiator}
 import org.apache.avro.generic.{GenericContainer, GenericData, GenericRecord}
-import org.apache.hadoop.fs.{BlockLocation, FileStatus, LocatedFileStatus, Path}
+import org.apache.hadoop.fs.{BlockLocation, FileStatus, LocatedFileStatus, Path, StorageType}
+import org.apache.hadoop.fs.permission.{FsAction, FsPermission}
 import org.roaringbitmap.RoaringBitmap
 
 import org.apache.spark._
@@ -562,6 +563,10 @@ private[serializer] object KryoSerializer {
     classOf[Array[LocatedFileStatus]],
     classOf[BlockLocation],
     classOf[Array[BlockLocation]],
+    classOf[StorageType],
+    classOf[Array[StorageType]],
+    classOf[FsPermission],
+    classOf[FsAction],
     Utils.classForName("java.util.Collections$EmptySet")
   )
 
