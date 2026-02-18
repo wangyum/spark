@@ -559,7 +559,8 @@ private[serializer] object KryoSerializer {
     classOf[FileStatus],
     classOf[Array[FileStatus]],
     classOf[LocatedFileStatus],
-    classOf[Array[LocatedFileStatus]]
+    classOf[Array[LocatedFileStatus]],
+    Utils.classForName("java.util.Collections$EmptySet")
   )
 
   private val toRegisterSerializer = Map[Class[_], KryoClassSerializer[_]](
