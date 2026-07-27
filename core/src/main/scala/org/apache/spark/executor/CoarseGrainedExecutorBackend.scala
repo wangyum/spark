@@ -104,7 +104,7 @@ private[spark] class CoarseGrainedExecutorBackend(
       driver = Some(ref)
       env.executorBackend = Option(this)
       ref.ask[Boolean](RegisterExecutor(executorId, self, hostname, cores, extractLogUrls,
-        extractAttributes, _resources, resourceProfile.id))
+        extractAttributes, _resources, resourceProfile.id, env.conf.getAppId))
     }(ThreadUtils.sameThread).onComplete {
       case Success(_) =>
         self.send(RegisteredExecutor)
@@ -455,7 +455,6 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
       }
 
       val cfg = driver.askSync[SparkAppConfig](RetrieveSparkAppConfig(arguments.resourceProfileId))
-      verifyAppId(cfg.sparkProperties, arguments.appId)
       val props = cfg.sparkProperties ++ Seq[(String, String)](("spark.app.id", arguments.appId))
       fetcher.shutdown()
 
@@ -608,24 +607,5 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
       |""".stripMargin)
     // scalastyle:on println
     System.exit(1)
-  }
-
-  /**
-   * Verify that the executor's app ID (from the --app-id launch argument) matches the driver's
-   * app ID (from spark.app.id in the driver's SparkConf). A mismatch indicates the executor has
-   * connected to the wrong driver, likely due to driver port reuse after the original driver
-   * released its RPC port (e.g. via SparkContext.stop() following a fatal error) while the
-   * driver process remained in a zombie state. Throw SparkException to prevent the executor
-   * from registering to the wrong application and corrupting data.
-   */
-  private[spark] def verifyAppId(
-      sparkProperties: Seq[(String, String)],
-      executorAppId: String): Unit = {
-    sparkProperties.find(_._1 == "spark.app.id").map(_._2).foreach { driverAppId =>
-      if (driverAppId != executorAppId) {
-        throw new SparkException(s"Executor app ID $executorAppId does not match driver app ID " +
-          s"$driverAppId. This likely means the executor connected to the wrong driver. Exiting.")
-      }
-    }
   }
 }

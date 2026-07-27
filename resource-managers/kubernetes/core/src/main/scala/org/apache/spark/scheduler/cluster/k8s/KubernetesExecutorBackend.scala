@@ -95,7 +95,6 @@ private[spark] object KubernetesExecutorBackend extends Logging {
       }
 
       val cfg = driver.askSync[SparkAppConfig](RetrieveSparkAppConfig(arguments.resourceProfileId))
-      CoarseGrainedExecutorBackend.verifyAppId(cfg.sparkProperties, arguments.appId)
       val props = cfg.sparkProperties ++ Seq[(String, String)](("spark.app.id", arguments.appId))
       val execId: String = arguments.executorId match {
         case null | "EXECID" | "" =>

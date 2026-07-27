@@ -260,7 +260,7 @@ class BlockManagerSuite extends SparkFunSuite with Matchers with PrivateMethodTe
         private val executorSet = mutable.HashSet[String]()
         override val rpcEnv: RpcEnv = BlockManagerSuite.this.rpcEnv
         override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
-          case CoarseGrainedClusterMessages.RegisterExecutor(executorId, _, _, _, _, _, _, _) =>
+          case CoarseGrainedClusterMessages.RegisterExecutor(executorId, _, _, _, _, _, _, _, _) =>
             executorSet += executorId
             context.reply(true)
           case CoarseGrainedClusterMessages.IsExecutorAlive(executorId) =>
@@ -412,7 +412,7 @@ class BlockManagerSuite extends SparkFunSuite with Matchers with PrivateMethodTe
         override val rpcEnv: RpcEnv = BlockManagerSuite.this.rpcEnv
 
         override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
-          case CoarseGrainedClusterMessages.RegisterExecutor(executorId, _, _, _, _, _, _, _) =>
+          case CoarseGrainedClusterMessages.RegisterExecutor(executorId, _, _, _, _, _, _, _, _) =>
             context.reply(true)
           case CoarseGrainedClusterMessages.IsExecutorAlive(executorId) =>
             // always return false

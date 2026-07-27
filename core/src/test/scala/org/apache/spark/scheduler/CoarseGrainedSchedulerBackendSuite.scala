@@ -27,7 +27,7 @@ import scala.language.postfixOps
 import scala.reflect.ClassTag
 
 import org.mockito.ArgumentMatchers.any
-import org.mockito.Mockito.when
+import org.mockito.Mockito.{spy, when}
 import org.mockito.invocation.InvocationOnMock
 import org.scalatest.concurrent.Eventually
 import org.scalatestplus.mockito.MockitoSugar._
@@ -41,7 +41,7 @@ import org.apache.spark.resource.{ExecutorResourceRequests, ResourceInformation,
 import org.apache.spark.resource.ResourceAmountUtils.ONE_ENTIRE_RESOURCE
 import org.apache.spark.resource.ResourceUtils._
 import org.apache.spark.resource.TestResourceIDs._
-import org.apache.spark.rpc.{RpcAddress, RpcEndpointRef, RpcEnv, RpcTimeout}
+import org.apache.spark.rpc.{RpcAddress, RpcCallContext, RpcEndpoint, RpcEndpointRef, RpcEnv, RpcTimeout}
 import org.apache.spark.scheduler.cluster.{CoarseGrainedSchedulerBackend, ExecutorInfo}
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
 import org.apache.spark.util.{RpcUtils, SerializableBuffer, Utils}
@@ -604,6 +604,142 @@ class CoarseGrainedSchedulerBackendSuite extends SparkFunSuite with LocalSparkCo
 
     sc.listenerBus.waitUntilEmpty(executorUpTimeout.toMillis)
     assert(mockEndpointRef.decommissionReceived)
+  }
+
+  test("SPARK-58322: reject RegisterExecutor with mismatched app ID") {
+    val conf = new SparkConf()
+      .setMaster("local-cluster[0, 3, 1024]")
+      .setAppName("test")
+    sc = new SparkContext(conf)
+    val backend = sc.schedulerBackend.asInstanceOf[CoarseGrainedSchedulerBackend]
+    val mockEndpointRef = mock[RpcEndpointRef]
+    val mockAddress = mock[RpcAddress]
+
+    val ex = intercept[SparkException] {
+      backend.driverEndpoint.askSync[Boolean](
+        RegisterExecutor("1", mockEndpointRef, mockAddress.host, 1, Map.empty, Map.empty,
+          Map.empty, ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID, "wrong-app-id"))
+    }
+    assert(ex.getCause.getMessage.contains("Executor app ID wrong-app-id does not match"))
+  }
+
+  test("SPARK-58322: accept RegisterExecutor with matching app ID") {
+    val conf = new SparkConf()
+      .setMaster("local-cluster[0, 3, 1024]")
+      .setAppName("test")
+    sc = new SparkContext(conf)
+    val backend = sc.schedulerBackend.asInstanceOf[CoarseGrainedSchedulerBackend]
+    val mockEndpointRef = mock[RpcEndpointRef]
+    val mockAddress = mock[RpcAddress]
+
+    val result = backend.driverEndpoint.askSync[Boolean](
+      RegisterExecutor("1", mockEndpointRef, mockAddress.host, 1, Map.empty, Map.empty,
+        Map.empty, ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID, sc.applicationId))
+    assert(result)
+  }
+
+  test("SPARK-58322: accept RegisterExecutor with null app ID for backward compatibility") {
+    val conf = new SparkConf()
+      .setMaster("local-cluster[0, 3, 1024]")
+      .setAppName("test")
+    sc = new SparkContext(conf)
+    val backend = sc.schedulerBackend.asInstanceOf[CoarseGrainedSchedulerBackend]
+    val mockEndpointRef = mock[RpcEndpointRef]
+    val mockAddress = mock[RpcAddress]
+
+    val result = backend.driverEndpoint.askSync[Boolean](
+      RegisterExecutor("1", mockEndpointRef, mockAddress.host, 1, Map.empty, Map.empty,
+        Map.empty, ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID, null))
+    assert(result)
+  }
+
+  test("SPARK-58322: reject RegisterExecutor after driver swap between config fetch and " +
+    "registration") {
+    // Simulate the port-reuse scenario: executor fetches config from driver A, then driver A
+    // dies and releases its RPC port, driver B binds the same address, and the executor sends
+    // RegisterExecutor to driver B. The app ID carried by the executor (from driver A) will not
+    // match driver B's applicationId, so registration must be rejected.
+    val driverAAppId = "app-driver-A"
+
+    // Set up a fake "driver A" endpoint that responds to RetrieveSparkAppConfig.
+    val driverRpcEnv = RpcEnv.create("test-driverA", "localhost", 0, new SparkConf(),
+      new SecurityManager(new SparkConf()), clientMode = false)
+    try {
+      driverRpcEnv.setupEndpoint("fake-driverA", new RpcEndpoint {
+        override val rpcEnv: RpcEnv = driverRpcEnv
+        override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
+          case RetrieveSparkAppConfig(_) =>
+            context.reply(SparkAppConfig(
+              Seq("spark.app.id" -> driverAAppId),
+              None, None, ResourceProfile.getOrCreateDefaultProfile(new SparkConf()), None))
+        }
+      })
+
+      // Executor fetches config from driver A.
+      val driverARef = driverRpcEnv.setupEndpointRefByURI("spark://fake-driverA@localhost:" +
+        driverRpcEnv.address.port)
+      val cfg = driverARef.askSync[SparkAppConfig](
+        RetrieveSparkAppConfig(ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID))
+      val fetchedAppId = cfg.sparkProperties.find(_._1 == "spark.app.id").map(_._2).orNull
+      assert(fetchedAppId == driverAAppId)
+
+      // Now create driver B (a real SparkContext with a different applicationId).
+      val conf = new SparkConf()
+        .setMaster("local-cluster[0, 3, 1024]")
+        .setAppName("test")
+      sc = new SparkContext(conf)
+      val backend = sc.schedulerBackend.asInstanceOf[CoarseGrainedSchedulerBackend]
+      assert(sc.applicationId != driverAAppId)
+
+      // Executor sends RegisterExecutor to driver B with the app ID from driver A.
+      val mockEndpointRef = mock[RpcEndpointRef]
+      val mockAddress = mock[RpcAddress]
+      val ex = intercept[SparkException] {
+        backend.driverEndpoint.askSync[Boolean](
+          RegisterExecutor("1", mockEndpointRef, mockAddress.host, 1, Map.empty, Map.empty,
+            Map.empty, ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID, fetchedAppId))
+      }
+      assert(ex.getCause.getMessage.contains(s"Executor app ID $driverAAppId does not match"))
+    } finally {
+      driverRpcEnv.shutdown()
+    }
+  }
+
+  test("SPARK-58322: accept RegisterExecutor when sc.applicationId is not yet set " +
+    "(e.g. YARN client mode during start())") {
+    // In YARN client mode, YarnClientSchedulerBackend.start() calls bindToYarn() with the
+    // correct app ID before entering waitForApplication. The AM can launch legitimate
+    // executors during that window. scheduler.applicationId() returns the backend's
+    // already-bound ID, but scheduler.sc.applicationId is still null because SparkContext
+    // sets _applicationId only after _taskScheduler.start() returns. Using
+    // scheduler.sc.applicationId would reject those legitimate executors; using
+    // scheduler.applicationId() accepts them.
+    val conf = new SparkConf()
+      .setMaster("local-cluster[0, 3, 1024]")
+      .setAppName("test")
+    sc = spy[SparkContext](new SparkContext(conf))
+    when(sc.applicationId).thenReturn(null)
+
+    val ts = mock[TaskSchedulerImpl]
+    when(ts.sc).thenReturn(sc)
+    when(ts.applicationId()).thenReturn("app-yarn-123")
+    when(ts.excludedNodes()).thenReturn(Set.empty[String])
+
+    val rpcEnv = RpcEnv.create("test-rpcenv", "localhost", 0, conf,
+      new SecurityManager(conf), clientMode = false)
+    try {
+      val backend = new CoarseGrainedSchedulerBackend(ts, rpcEnv)
+      backend.start()
+
+      val mockEndpointRef = mock[RpcEndpointRef]
+      val mockAddress = mock[RpcAddress]
+      val result = backend.driverEndpoint.askSync[Boolean](
+        RegisterExecutor("1", mockEndpointRef, mockAddress.host, 1, Map.empty, Map.empty,
+          Map.empty, ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID, "app-yarn-123"))
+      assert(result)
+    } finally {
+      rpcEnv.shutdown()
+    }
   }
 
   private def testSubmitJob(sc: SparkContext, rdd: RDD[Int]): Unit = {

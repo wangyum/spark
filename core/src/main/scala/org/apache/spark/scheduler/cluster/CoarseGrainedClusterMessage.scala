@@ -69,7 +69,8 @@ private[spark] object CoarseGrainedClusterMessages {
       logUrls: Map[String, String],
       attributes: Map[String, String],
       resources: Map[String, ResourceInformation],
-      resourceProfileId: Int)
+      resourceProfileId: Int,
+      appId: String = null)
     extends CoarseGrainedClusterMessage
 
   case class LaunchedExecutor(executorId: String) extends CoarseGrainedClusterMessage

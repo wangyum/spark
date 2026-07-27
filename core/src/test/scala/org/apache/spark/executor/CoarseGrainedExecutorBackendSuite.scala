@@ -626,24 +626,6 @@ class CoarseGrainedExecutorBackendSuite extends SparkFunSuite
     SparkEnv.set(mockEnv)
     mockEnv
   }
-
-  test("appId verification passes when app IDs match") {
-    val props = Seq("spark.app.id" -> "app-123")
-    CoarseGrainedExecutorBackend.verifyAppId(props, "app-123")
-  }
-
-  test("appId verification throws when app IDs mismatch") {
-    val props = Seq("spark.app.id" -> "app-new")
-    val ex = intercept[SparkException] {
-      CoarseGrainedExecutorBackend.verifyAppId(props, "app-old")
-    }
-    assert(ex.getMessage.contains("Executor app ID app-old does not match driver app ID app-new."))
-  }
-
-  test("appId verification no-op when spark.app.id absent from driver properties") {
-    val props = Seq("spark.executor.cores" -> "2")
-    CoarseGrainedExecutorBackend.verifyAppId(props, "app-old")
-  }
 }
 
 private class TestFatalErrorPlugin extends SparkPlugin {
