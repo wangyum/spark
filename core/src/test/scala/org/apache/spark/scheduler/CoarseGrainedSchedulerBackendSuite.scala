@@ -705,15 +705,11 @@ class CoarseGrainedSchedulerBackendSuite extends SparkFunSuite with LocalSparkCo
     }
   }
 
-  test("SPARK-58322: accept RegisterExecutor when sc.applicationId is not yet set " +
-    "(e.g. YARN client mode during start())") {
-    // In YARN client mode, YarnClientSchedulerBackend.start() calls bindToYarn() with the
-    // correct app ID before entering waitForApplication. The AM can launch legitimate
-    // executors during that window. scheduler.applicationId() returns the backend's
-    // already-bound ID, but scheduler.sc.applicationId is still null because SparkContext
-    // sets _applicationId only after _taskScheduler.start() returns. Using
-    // scheduler.sc.applicationId would reject those legitimate executors; using
-    // scheduler.applicationId() accepts them.
+  test("SPARK-58322: accept RegisterExecutor when sc.applicationId is not yet set") {
+    // In YARN client mode, the backend binds its app ID via bindToYarn() during start(),
+    // before SparkContext publishes _applicationId. Using scheduler.applicationId()
+    // (backend-bound) instead of scheduler.sc.applicationId (not yet set) accepts
+    // legitimate executors launched during that window.
     val conf = new SparkConf()
       .setMaster("local-cluster[0, 3, 1024]")
       .setAppName("test")
@@ -724,19 +720,24 @@ class CoarseGrainedSchedulerBackendSuite extends SparkFunSuite with LocalSparkCo
     when(ts.sc).thenReturn(sc)
     when(ts.applicationId()).thenReturn("app-yarn-123")
     when(ts.excludedNodes()).thenReturn(Set.empty[String])
+    when(ts.resourceOffers(any(), any[Boolean])).thenReturn(Nil)
 
     val rpcEnv = RpcEnv.create("test-rpcenv", "localhost", 0, conf,
-      new SecurityManager(conf), clientMode = false)
+new SecurityManager(conf), clientMode = false)
     try {
       val backend = new CoarseGrainedSchedulerBackend(ts, rpcEnv)
-      backend.start()
+      try {
+        backend.start()
 
-      val mockEndpointRef = mock[RpcEndpointRef]
-      val mockAddress = mock[RpcAddress]
-      val result = backend.driverEndpoint.askSync[Boolean](
-        RegisterExecutor("1", mockEndpointRef, mockAddress.host, 1, Map.empty, Map.empty,
-          Map.empty, ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID, "app-yarn-123"))
-      assert(result)
+        val mockEndpointRef = mock[RpcEndpointRef]
+        val mockAddress = mock[RpcAddress]
+        val result = backend.driverEndpoint.askSync[Boolean](
+          RegisterExecutor("1", mockEndpointRef, mockAddress.host, 1, Map.empty, Map.empty,
+            Map.empty, ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID, "app-yarn-123"))
+        assert(result)
+      } finally {
+        backend.stop()
+      }
     } finally {
       rpcEnv.shutdown()
     }
