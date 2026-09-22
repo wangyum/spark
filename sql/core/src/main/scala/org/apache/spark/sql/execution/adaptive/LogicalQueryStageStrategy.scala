@@ -17,14 +17,16 @@
 
 package org.apache.spark.sql.execution.adaptive
 
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
-import org.apache.spark.sql.catalyst.planning.{ExtractEquiJoinKeys, ExtractSingleColumnNullAwareAntiJoin}
-import org.apache.spark.sql.catalyst.plans.LeftAnti
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
+import org.apache.spark.sql.catalyst.planning.{ExtractEquiJoinKeys, ExtractRangeJoinKeys, ExtractSingleColumnNullAwareAntiJoin}
+import org.apache.spark.sql.catalyst.plans.{JoinType, LeftAnti}
 import org.apache.spark.sql.catalyst.plans.logical.{Join, LogicalPlan}
 import org.apache.spark.sql.catalyst.plans.physical.{BroadcastPartitioning, IdentityBroadcastMode}
 import org.apache.spark.sql.classic.Strategy
 import org.apache.spark.sql.execution.{joins, SparkPlan}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashedRelationBroadcastMode}
+import org.apache.spark.sql.execution.joins.{
+  BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, BroadcastRangeJoinExec,
+  HashedRelationBroadcastMode, RangeBroadcastMode, RangeInfo}
 
 /**
  * Strategy for plans containing [[LogicalQueryStage]] nodes:
@@ -50,12 +52,53 @@ object LogicalQueryStageStrategy extends Strategy {
   }
 
   private def isBroadcastStageWithIdentityBroadcastMode(plan: LogicalPlan): Boolean = plan match {
+    // A range-join broadcast stage reports RangeBroadcastMode (not IdentityBroadcastMode), so
+    // it is naturally excluded here and routed to BroadcastRangeJoinExec by the
+    // `RangeBroadcastJoinStage` case below instead of BroadcastNestedLoopJoinExec.
     case LogicalQueryStage(_, bqs: BroadcastQueryStageExec) =>
       bqs.broadcast.outputPartitioning match {
         case BroadcastPartitioning(IdentityBroadcastMode) => true
         case _ => false
       }
     case _ => false
+  }
+
+  /**
+   * Extracts the [[RangeBroadcastMode]] carried by a broadcast query stage, if any. The mode
+   * holds the [[RangeInfo]] needed to construct `BroadcastRangeJoinExec` under AQE, when the
+   * broadcast range exchange has already been planned (or reused) by an earlier stage.
+   */
+  private def broadcastRangeMode(plan: LogicalPlan): Option[RangeBroadcastMode] = plan match {
+    case LogicalQueryStage(_, bqs: BroadcastQueryStageExec) =>
+      bqs.broadcast.outputPartitioning match {
+        case BroadcastPartitioning(m: RangeBroadcastMode) => Some(m)
+        case _ => None
+      }
+    case _ => None
+  }
+
+  /**
+   * A range-predicate join whose left or right child is already a range-broadcast
+   * query stage. `unapply` looks up the mode once so `apply` does not search
+   * for both a guard and the constructor.
+   */
+  private case class RangeBroadcastJoinStage(
+      left: LogicalPlan,
+      right: LogicalPlan,
+      joinType: JoinType,
+      buildSide: BuildSide,
+      rangeInfo: RangeInfo)
+
+  private object RangeBroadcastJoinStage {
+    def unapply(plan: LogicalPlan): Option[RangeBroadcastJoinStage] = plan match {
+      case ExtractRangeJoinKeys(left, right, _, _, _, joinType, _, _) =>
+        broadcastRangeMode(left).map { mode =>
+          RangeBroadcastJoinStage(left, right, joinType, BuildLeft, mode.rangeInfo)
+        }.orElse(broadcastRangeMode(right).map { mode =>
+          RangeBroadcastJoinStage(left, right, joinType, BuildRight, mode.rangeInfo)
+        })
+      case _ => None
+    }
   }
 
   def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
@@ -77,6 +120,11 @@ object LogicalQueryStageStrategy extends Strategy {
         if isBroadcastStageWithHashedBroadcastMode(j.right, isNullAware = true) =>
       Seq(joins.BroadcastHashJoinExec(leftKeys, rightKeys, LeftAnti, BuildRight,
         None, planLater(j.left), planLater(j.right), isNullAwareAntiJoin = true))
+
+    case RangeBroadcastJoinStage(stage) =>
+      BroadcastRangeJoinExec(
+        planLater(stage.left), planLater(stage.right), stage.buildSide, stage.joinType,
+        stage.rangeInfo) :: Nil
 
     case j @ Join(left, right, joinType, condition, _)
         if isBroadcastStageWithIdentityBroadcastMode(left) ||

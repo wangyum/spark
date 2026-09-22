@@ -29,6 +29,7 @@ import org.apache.spark.sql.connector.write.RowLevelOperation.Command.UPDATE
 import org.apache.spark.sql.errors.QueryCompilationErrors
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2ScanRelation, ExtractV2Table}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.DataType
 
 trait OperationHelper extends AliasHelper with PredicateHelper {
   import org.apache.spark.sql.catalyst.optimizer.CollapseProject.canCollapseExpressions
@@ -510,3 +511,230 @@ trait RowLevelOperationExtractor {
     }
   }
 }
+
+/**
+ * A pattern that finds joins with range conditions that can be evaluated using a range join.
+ *
+ * It recognizes two shapes (see [[RangePredicate]] for the canonical `(low, high, equality)`
+ * form each predicate is normalized into):
+ *  - Point-in-range: two predicates sharing one "point" expression, e.g.
+ *    `a.ip >= b.lo AND a.ip <= b.hi` (the point `a.ip` is checked against `[b.lo, b.hi]`).
+ *  - Partial range: a single inequality between one column on each side, e.g. `a.start < b.end`.
+ *
+ * Both shapes may carry extra conjuncts, which become the residual join condition. The
+ * returned keys are `(low, high)` pairs per side; the `RangeEquality` carries the inclusivity
+ * of each bound, and the `RangeJoin` tag records which shape was matched.
+ */
+object ExtractRangeJoinKeys extends PredicateHelper {
+  type ReturnType = (LogicalPlan, LogicalPlan, Seq[Expression], Seq[Expression],
+    RangeEquality, JoinType, Option[Expression], RangeJoin)
+
+  def unapply(plan: LogicalPlan): Option[ReturnType] = plan match {
+    // `d1 == d2` is structural `DataType` equality (case-class `equals`, not reference
+    // equality), so two predicates compare on the same domain even when their types are
+    // separately constructed -- e.g. two `DecimalType(10, 2)` from different literals match.
+    // `d` is taken from the `low` operand (see `RangePredicate`), so both sides must share
+    // that domain for a point-in-range pair to be recognized.
+    case Join(left, right, joinType, Some(And(RangePredicate(d1, l1, h1, equi1),
+      RangePredicate(d2, l2, h2, equi2))), _) if d1 == d2 && isPointInRange(l2, h1, l1, h2) =>
+      generateRangeJoin(left, right, joinType, l1, h1, equi1, l2, h2, equi2, None)
+    case Join(left, right, joinType, Some(RangePredicate(_, l, h, equi)), _)
+      if isPartialRange(l, h) =>
+      generatePartialRangeJoin(left, right, joinType, l, h, equi, None)
+    case Join(left, right, joinType, cond, _) =>
+      findRangeJoin(left, right, joinType, cond)
+    case _ => None
+  }
+
+  private def findRangeJoin(
+      left: LogicalPlan,
+      right: LogicalPlan,
+      joinType: JoinType,
+      cond: Option[Expression]): Option[ReturnType] = {
+    val conditions: Seq[Expression] = cond.toSeq.flatMap(splitConjunctivePredicates)
+    // This path handles joins whose condition is a conjunction of predicates that does not
+    // match the simple `And(RangePredicate, RangePredicate)` or single-`RangePredicate` arms
+    // of `unapply`. Two shapes are recognized here, each with the remaining conjuncts as the
+    // residual join condition:
+    //   1. Point-in-range: 2 of the conjuncts form a point-in-range pair (needs >= 3 conjuncts
+    //      so that the residual is non-empty; the no-residual case is handled by `unapply`).
+    //   2. Partial range: a single partial-range predicate plus at least one extra conjunct
+    //      (needs >= 2 conjuncts; the single-predicate case is handled by `unapply`).
+    // Point-in-range is tried first because it is the more selective shape; only if no such
+    // pair is found do we fall back to a partial-range predicate.
+    val pointInRange: Option[ReturnType] = if (conditions.size >= 3) {
+      conditions.combinations(2).collectFirst {
+        Function.unlift { expressions =>
+          expressions.reduceLeftOption(And) match {
+            case Some(And(RangePredicate(d1, l1, h1, equi1), RangePredicate(d2, l2, h2, equi2)))
+              if d1 == d2 && isPointInRange(l2, h1, l1, h2) =>
+              val rest = conditions.filterNot(expressions.contains).reduceLeftOption(And)
+              generateRangeJoin(left, right, joinType, l1, h1, equi1, l2, h2, equi2, rest)
+            case _ => None
+          }
+        }
+      }
+    } else {
+      None
+    }
+
+    // Partial-range fallback. Point-in-range is preferred above because it is the more
+    // selective shape (two bounds vs one). Here we pick the first partial-range
+    // predicate in conjunct order, without considering selectivity -- by design for v1,
+    // since any single partial predicate yields a correct plan. The remaining conjuncts
+    // (including any other partial predicates) become the residual join condition.
+    // Heavily overlapping build-side intervals can make the probe candidate set k
+    // approach m; that is accepted for v1 rather than aborting the operator.
+    pointInRange.orElse {
+      if (conditions.size >= 2) {
+        conditions.collectFirst {
+          Function.unlift {
+            case rp @ RangePredicate(_, l, h, equi) if isPartialRange(l, h) =>
+              val rest = conditions.filterNot(_ eq rp).reduceLeftOption(And)
+              generatePartialRangeJoin(left, right, joinType, l, h, equi, rest)
+            case _ => None
+          }
+        }
+      } else {
+        None
+      }
+    }
+  }
+
+  private def generateRangeJoin(
+      left: LogicalPlan,
+      right: LogicalPlan,
+      joinType: JoinType,
+      l1: Expression,
+      h1: Expression,
+      equi1: Boolean,
+      l2: Expression,
+      h2: Expression,
+      equi2: Boolean,
+      restCondition: Option[Expression]): Option[ReturnType] = {
+    // L.Low < R.High && R.Low < L.High
+    if (canEvaluatePointInRangeOrder(l1, h1, l2, h2, left, right)) {
+      Some(left, right, Seq(l1, h2), Seq(l2, h1), RangeEquality(equi1, equi2), joinType,
+        restCondition, PointInRangeJoin)
+    }
+    // R.Low < L.High && L.Low < R.High
+    else if (canEvaluatePointInRangeOrder(l1, h1, l2, h2, right, left)) {
+      // leftKeys=[l2, h1], rightKeys=[l1, h2]. The low bound is l1 (equi1)
+      // and the high bound is h2 (equi2), so equality = (equi1, equi2) regardless
+      // of which side is built.
+      Some(left, right, Seq(l2, h1), Seq(l1, h2), RangeEquality(equi1, equi2), joinType,
+        restCondition, PointInRangeJoin)
+    }
+    else None
+  }
+
+  private def generatePartialRangeJoin(
+      left: LogicalPlan,
+      right: LogicalPlan,
+      joinType: JoinType,
+      l: Expression,
+      h: Expression,
+      equi: Boolean,
+      restCondition: Option[Expression]): Option[ReturnType] = {
+    // L < R
+    if (canEvaluatePartialRangeOrder(l, h, left, right)) {
+      Some(left, right, Seq(l, l), Seq(h, h), RangeEquality(equi, equi), joinType,
+        restCondition, LessPartialRangeJoin)
+    }
+    // R < L
+    else if (canEvaluatePartialRangeOrder(l, h, right, left)) {
+      Some(left, right, Seq(h, h), Seq(l, l), RangeEquality(equi, equi), joinType,
+        restCondition, GreaterPartialRangeJoin)
+    }
+    else None
+  }
+
+  private def isPointInRange(
+      l2: Expression,
+      h1: Expression,
+      l1: Expression,
+      h2: Expression): Boolean = {
+    // One of (l2, h1) and (l1, h2) must be the same expression (the shared
+    // "point"), while the other pair must be distinct (the range bounds).
+    // semanticEquals is used so that aliases resolved to the same underlying
+    // attribute are recognized as the shared point.
+    (l2.semanticEquals(h1) && !l1.semanticEquals(h2) && l1.dataType == h2.dataType) ||
+      (!l2.semanticEquals(h1) && l2.dataType == h1.dataType && l1.semanticEquals(h2))
+  }
+
+  private def isPartialRange(l: Expression, h: Expression): Boolean = {
+    !l.semanticEquals(h) && l.dataType == h.dataType
+  }
+
+  private def canEvaluatePointInRangeOrder(
+      low1: Expression,
+      high1: Expression,
+      low2: Expression,
+      high2: Expression,
+      left: LogicalPlan,
+      right: LogicalPlan): Boolean = {
+    canEvaluate(low1, left) && canEvaluate(high1, right) &&
+      canEvaluate(low2, right) && canEvaluate(high2, left)
+  }
+
+  private def canEvaluatePartialRangeOrder(
+      low: Expression,
+      high: Expression,
+      left: LogicalPlan,
+      right: LogicalPlan): Boolean = {
+    canEvaluate(low, left) && canEvaluate(high, right)
+  }
+}
+
+/**
+ * A pattern that normalizes all range expressions into a canonical
+ * `(dataType, low, high, allowEqual)` form, where `low <[=] high` regardless of
+ * whether the original expression was `a < b`, `a <= b`, `b > a`, or `b >= a`.
+ * The returned `DataType` is always taken from the `low` operand so that two
+ * predicates sharing the same comparison domain compare equal under `d1 == d2`.
+ *
+ * @since 4.4.0
+ */
+object RangePredicate {
+  def unapply(expression: Expression): Option[(DataType, Expression, Expression, Boolean)] =
+    expression match {
+      case LessThan(low, high) => Some(low.dataType, low, high, false)
+      case LessThanOrEqual(low, high) => Some(low.dataType, low, high, true)
+      // GreaterThan/GreaterThanOrEqual swap the operands so that `high > low`
+      // is reported as `low < high` (and `high >= low` as `low <= high`).
+      case GreaterThan(high, low) => Some(low.dataType, low, high, false)
+      case GreaterThanOrEqual(high, low) => Some(low.dataType, low, high, true)
+      case _ => None
+    }
+}
+
+/**
+ * Tags the shape of a range-predicate join recognized by [[ExtractRangeJoinKeys]].
+ * Carried through [[org.apache.spark.sql.execution.joins.RangeInfo]] to drive the
+ * comparison direction in the range index probe.
+ *
+ * @since 4.4.0
+ */
+sealed abstract class RangeJoin
+
+/** A point-in-range join: a value from one side falls within a `[low, high]` range on the other. */
+case object PointInRangeJoin extends RangeJoin
+
+/** A partial-range join: a single inequality between one column on each side. */
+sealed abstract class PartialRangeJoin extends RangeJoin
+
+/** A `low <[=] high` partial-range join where the left side is the low bound. */
+case object LessPartialRangeJoin extends PartialRangeJoin
+
+/** A `low <[=] high` partial-range join where the left side is the high bound. */
+case object GreaterPartialRangeJoin extends PartialRangeJoin
+
+/**
+ * The inclusivity of the two bounds of a range-predicate join, in canonical
+ * `(low, high)` form. `lowInclusive`/`highInclusive` correspond to whether the
+ * `low <[=] high` comparison on the low/high bound is inclusive. This replaces
+ * a length-2 `Seq[Boolean]` so the two flags are named and type-checked.
+ *
+ * @since 4.4.0
+ */
+case class RangeEquality(lowInclusive: Boolean, highInclusive: Boolean)

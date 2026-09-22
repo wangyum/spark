@@ -1158,6 +1158,18 @@ object SQLConf {
     .bytesConf(ByteUnit.BYTE)
     .createWithDefaultString("10MB")
 
+  val RANGE_JOIN_ENABLED = buildConf("spark.sql.planner.rangeJoin.enabled")
+    .doc("When true the planner will use the broadcast range join operator (instead of " +
+      "BroadcastNestedLoopJoin) for range-predicate joins (point-in-range and single " +
+      "inequality) when the range-join pattern is detected. The operator builds a sorted " +
+      "event index from the broadcast side in O(m log m) and probes it in O(log m + k) " +
+      "per streamed row, where m is the build-side size and k is the number of candidate " +
+      "rows whose events overlap the probe key. Residual and exclusive-bound checks still " +
+      "run on those k rows; if build-side intervals overlap heavily, k can approach m.")
+    .version("4.4.0")
+    .booleanConf
+    .createWithDefault(false)
+
   val SHUFFLE_HASH_JOIN_FACTOR =
     buildConfFromConfigFile[Int]("spark.sql.shuffledHashJoinFactor")
       .checkValue(_ >= 1, "The shuffle hash join factor must be at least 1.")
@@ -9288,6 +9300,8 @@ class SQLConf extends Serializable with Logging with SqlApiConf {
     getConf(SUBEXPRESSION_ELIMINATION_FILTER_EXEC_ENABLED)
 
   def autoBroadcastJoinThreshold: Long = getConf(AUTO_BROADCASTJOIN_THRESHOLD)
+
+  def rangeJoinEnabled: Boolean = getConf(RANGE_JOIN_ENABLED)
 
   def limitInitialNumPartitions: Int = getConf(LIMIT_INITIAL_NUM_PARTITIONS)
 

@@ -294,6 +294,44 @@ private[sql] trait SQLTestData extends SparkSessionProvider { self =>
     df
   }
 
+  protected lazy val signin_ip: DataFrame = {
+    val df = spark.createDataFrame(
+      SigninIp("1", 1467630666L) ::
+        SigninIp("2", 1186929717L) ::
+        SigninIp("3", 3501544352L) ::
+        SigninIp("31", 3501544320L) :: // low1 bound
+        SigninIp("32", 3501544383L) :: // high1 bound of overlap
+        SigninIp("33", 3501544330L) :: // low2 bound of overlap
+        SigninIp("34", 3501544390L) :: // high2 bound
+        SigninIp("4", 1626243295L) ::
+        SigninIp("41", 1626243072L) :: // low bound
+        SigninIp("42", 1626243327L) :: // high bound
+        SigninIp("5", 1206355995L) ::
+        SigninIp("5", 1206355995L) :: // Same range
+        SigninIp("6", null) :: // Range with null
+        SigninIp("7", 0L) :: // Cannot joined Row
+        Nil).toDF()
+    df.createOrReplaceTempView("signin_ip")
+    df
+  }
+
+  protected lazy val ip_lookup: DataFrame = {
+    val df = spark.createDataFrame(
+      IpLookup(1467630592L, 1467630847L, "de", 2380520L) ::
+        IpLookup(1186929664L, 1186930175L, "us", 6723936L) ::
+        IpLookup(1186929664L, 1186930175L, "us", 6723936L) :: // Same range
+        IpLookup(3501544320L, 3501544383L, "ca", 12804631L) ::
+        IpLookup(3501544330L, 3501544390L, "ca", 12804631001L) :: // Overlap range
+        IpLookup(1626243072L, 1626243327L, "us", 8849753L) ::
+        IpLookup(1206355968L, 1206356223L, "us", 10138801L) ::
+        IpLookup(null, 1206356223L, "us", 10138801L) :: // Range with null
+        IpLookup(1206355968L, null, "us", 10138801L) :: // Range with null
+        IpLookup(null, null, "us", 10138801L) :: // Range with null
+        Nil)
+    df.createOrReplaceTempView("ip_lookup")
+    df
+  }
+
   protected lazy val intervalData: DataFrame = spark.createDataFrame(Seq(
     (1,
       Period.ofMonths(10),
@@ -425,6 +463,8 @@ private[sql] trait SQLTestData extends SparkSessionProvider { self =>
     salary
     complexData
     courseSales
+    signin_ip
+    ip_lookup
   }
 }
 
@@ -456,4 +496,8 @@ private[sql] object SQLTestData {
   case class StringWrapper(s: String) extends AnyVal
   case class ArrayStringWrapper(wrappers: Seq[StringWrapper])
   case class ContainerStringWrapper(wrapper: StringWrapper)
+
+  case class SigninIp(id: String, ip_add_int: java.lang.Long)
+  case class IpLookup(BEGIN_IP2LONG: java.lang.Long, END_IP2LONG: java.lang.Long,
+                      TWO_CHAR_CNTRY_CD: String, zip_id: Long)
 }

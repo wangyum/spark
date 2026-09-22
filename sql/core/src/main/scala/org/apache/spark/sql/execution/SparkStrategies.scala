@@ -41,6 +41,7 @@ import org.apache.spark.sql.execution.command._
 import org.apache.spark.sql.execution.datasources.{LogicalRelation, WriteFiles, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, StreamingDataSourceV2ScanRelation}
 import org.apache.spark.sql.execution.exchange.{REBALANCE_PARTITIONS_BY_COL, REBALANCE_PARTITIONS_BY_NONE, REPARTITION_BY_COL, REPARTITION_BY_NUM, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.joins.{BroadcastRangeJoinExec, RangeInfo}
 import org.apache.spark.sql.execution.python._
 import org.apache.spark.sql.execution.python.streaming.{FlatMapGroupsInPandasWithStateExec, TransformWithStateInPySparkExec}
 import org.apache.spark.sql.execution.streaming.operators.stateful.{EventTimeWatermarkExec, StreamingDeduplicateExec, StreamingDeduplicateWithinWatermarkExec, StreamingGlobalLimitExec, StreamingLocalLimitExec, UpdateEventTimeColumnExec}
@@ -410,8 +411,57 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
           }
         }
 
+        def createRangeJoin() = {
+          // Pick the broadcast build side from the two children: if both are small
+          // enough to broadcast, build the smaller one; otherwise build whichever
+          // side is broadcastable; if neither, range join does not apply.
+          def pickBuildSide(leftPlan: LogicalPlan, rightPlan: LogicalPlan): Option[BuildSide] = {
+            val leftBroadcastable = canBroadcastBySize(leftPlan, conf)
+            val rightBroadcastable = canBroadcastBySize(rightPlan, conf)
+            if (leftBroadcastable && rightBroadcastable) {
+              Some(getSmallerSide(leftPlan, rightPlan))
+            } else if (rightBroadcastable) {
+              Some(BuildRight)
+            } else if (leftBroadcastable) {
+              Some(BuildLeft)
+            } else {
+              None
+            }
+          }
+
+          def createBroadcastRangeJoinExec(
+              leftRangeKeys: Seq[Expression],
+              rightRangeKeys: Seq[Expression],
+              equality: RangeEquality,
+              buildSide: BuildSide,
+              restCondition: Option[Expression],
+              rangeJoin: RangeJoin): BroadcastRangeJoinExec = {
+            val rangeInfo = RangeInfo.build(
+              left, right, buildSide, leftRangeKeys, rightRangeKeys, equality,
+              restCondition, rangeJoin)
+            joins.BroadcastRangeJoinExec(
+              planLater(left), planLater(right), buildSide, joinType, rangeInfo)
+          }
+
+          if (!conf.rangeJoinEnabled || !joinType.isInstanceOf[InnerLike]) {
+            None
+          } else {
+            plan match {
+              case ExtractRangeJoinKeys(
+                  leftPlan, rightPlan, leftKeys, rightKeys, equality,
+                  _, restCondition, rangeJoin) =>
+                pickBuildSide(leftPlan, rightPlan).map { buildSide =>
+                  Seq(createBroadcastRangeJoinExec(leftKeys, rightKeys, equality,
+                    buildSide, restCondition, rangeJoin))
+                }
+              case _ => None
+            }
+          }
+        }
+
         def createJoinWithoutHint() = {
-          createBroadcastNLJoin(false)
+          createRangeJoin()
+            .orElse(createBroadcastNLJoin(false))
             .orElse(createCartesianProduct())
             .getOrElse {
               // This join could be very slow or OOM
