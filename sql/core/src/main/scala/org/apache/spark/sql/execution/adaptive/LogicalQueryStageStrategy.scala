@@ -17,14 +17,18 @@
 
 package org.apache.spark.sql.execution.adaptive
 
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
-import org.apache.spark.sql.catalyst.planning.{ExtractEquiJoinKeys, ExtractSingleColumnNullAwareAntiJoin}
-import org.apache.spark.sql.catalyst.plans.LeftAnti
+import org.apache.spark.sql.catalyst.expressions.{BindReferences, BoundReference, Expression}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
+import org.apache.spark.sql.catalyst.planning.{
+  ExtractEquiJoinKeys, ExtractRangeJoinKeys, ExtractSingleColumnNullAwareAntiJoin, RangeJoin}
+import org.apache.spark.sql.catalyst.plans.{JoinType, LeftAnti}
 import org.apache.spark.sql.catalyst.plans.logical.{Join, LogicalPlan}
 import org.apache.spark.sql.catalyst.plans.physical.{BroadcastPartitioning, IdentityBroadcastMode}
 import org.apache.spark.sql.classic.Strategy
 import org.apache.spark.sql.execution.{joins, SparkPlan}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashedRelationBroadcastMode}
+import org.apache.spark.sql.execution.joins.{
+  BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, BroadcastRangeJoinExec,
+  HashedRelationBroadcastMode, RangeBroadcastMode}
 
 /**
  * Strategy for plans containing [[LogicalQueryStage]] nodes:
@@ -50,12 +54,92 @@ object LogicalQueryStageStrategy extends Strategy {
   }
 
   private def isBroadcastStageWithIdentityBroadcastMode(plan: LogicalPlan): Boolean = plan match {
+    // A range-join broadcast stage reports RangeBroadcastMode (not IdentityBroadcastMode), so
+    // it is naturally excluded here and routed to BroadcastRangeJoinExec by the
+    // `RangeBroadcastJoinStage` case below instead of BroadcastNestedLoopJoinExec.
     case LogicalQueryStage(_, bqs: BroadcastQueryStageExec) =>
       bqs.broadcast.outputPartitioning match {
         case BroadcastPartitioning(IdentityBroadcastMode) => true
         case _ => false
       }
     case _ => false
+  }
+
+  /**
+   * Extracts the [[RangeBroadcastMode]] carried by a broadcast query stage, if any.
+   * Keys and the join condition come from the logical join. The mode identifies
+   * the already-built range index.
+   */
+  private def broadcastRangeMode(plan: LogicalPlan): Option[RangeBroadcastMode] = plan match {
+    case LogicalQueryStage(_, bqs: BroadcastQueryStageExec) =>
+      bqs.broadcast.outputPartitioning match {
+        case BroadcastPartitioning(m: RangeBroadcastMode) => Some(m)
+        case _ => None
+      }
+    case _ => None
+  }
+
+  /**
+   * A range-predicate join whose left or right child is already a range-broadcast
+   * query stage. `unapply` looks up the mode once so `apply` does not search
+   * for both a guard and the constructor.
+   */
+  private case class RangeBroadcastJoinStage(
+      left: LogicalPlan,
+      right: LogicalPlan,
+      joinType: JoinType,
+      buildSide: BuildSide,
+      leftKeys: Seq[Expression],
+      rightKeys: Seq[Expression],
+      condition: Expression,
+      rangeJoin: RangeJoin)
+
+  private object RangeBroadcastJoinStage {
+    def unapply(plan: LogicalPlan): Option[RangeBroadcastJoinStage] = plan match {
+      case j @ Join(_, _, joinType, Some(cond), _) =>
+        j match {
+          case ExtractRangeJoinKeys(left, right, leftKeys, rightKeys, _, rangeJoin) =>
+            def fromMode(
+                mode: RangeBroadcastMode,
+                buildSide: BuildSide): Option[RangeBroadcastJoinStage] = {
+              if (!mode.indexKind.matches(rangeJoin) ||
+                  !BroadcastRangeJoinExec.supports(joinType, buildSide)) {
+                None
+              } else {
+                val buildPlan = buildSide match {
+                  case BuildLeft => left
+                  case BuildRight => right
+                }
+                val buildKeys = buildSide match {
+                  case BuildLeft => leftKeys
+                  case BuildRight => rightKeys
+                }
+                // Same index kind is not enough: a point index of column y must not
+                // serve a join on column z. The mode stores keys bound at planning
+                // time. Nullability can change when AQE rewrites the stage, so it
+                // is not part of the comparison.
+                val bound = BindReferences.bindReferences(buildKeys, buildPlan.output)
+                if (sameBoundKeys(mode.buildKeys, bound)) {
+                  Some(RangeBroadcastJoinStage(
+                    left, right, joinType, buildSide, leftKeys, rightKeys, cond, rangeJoin))
+                } else {
+                  None
+                }
+              }
+            }
+            broadcastRangeMode(left).flatMap(fromMode(_, BuildLeft))
+              .orElse(broadcastRangeMode(right).flatMap(fromMode(_, BuildRight)))
+          case _ => None
+        }
+      case _ => None
+    }
+
+    private def sameBoundKeys(modeKeys: Seq[Expression], bound: Seq[Expression]): Boolean = {
+      def relax(expr: Expression): Expression = expr.transform {
+        case b: BoundReference => b.copy(nullable = true)
+      }
+      modeKeys.corresponds(bound)((left, right) => relax(left).semanticEquals(relax(right)))
+    }
   }
 
   def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
@@ -77,6 +161,12 @@ object LogicalQueryStageStrategy extends Strategy {
         if isBroadcastStageWithHashedBroadcastMode(j.right, isNullAware = true) =>
       Seq(joins.BroadcastHashJoinExec(leftKeys, rightKeys, LeftAnti, BuildRight,
         None, planLater(j.left), planLater(j.right), isNullAwareAntiJoin = true))
+
+    case RangeBroadcastJoinStage(stage) =>
+      BroadcastRangeJoinExec(
+        stage.leftKeys, stage.rightKeys, stage.joinType, stage.buildSide,
+        Some(stage.condition), stage.rangeJoin,
+        planLater(stage.left), planLater(stage.right)) :: Nil
 
     case j @ Join(left, right, joinType, condition, _)
         if isBroadcastStageWithIdentityBroadcastMode(left) ||
