@@ -52,6 +52,9 @@ private[spark] class AppStatusListener(
     appStatusSource: Option[AppStatusSource] = None,
     lastUpdateTime: Option[Long] = None) extends SparkListener with Logging {
 
+  /** Live applications recompute a running task's duration at read time. Replay does not. */
+  private[spark] def isLive: Boolean = live
+
   private var sparkVersion = SPARK_VERSION
   private var appInfo: v1.ApplicationInfo = null
   private var appSummary = new AppSummary(0, 0)
@@ -63,8 +66,8 @@ private[spark] class AppStatusListener(
   private val liveUpdatePeriodNs = if (live) conf.get(LIVE_ENTITY_UPDATE_PERIOD) else -1L
 
   /**
-   * Minimum time elapsed before stale UI data is flushed. This avoids UI staleness when incoming
-   * task events are not fired frequently.
+   * Minimum time elapsed before dirty live entities are flushed. This limits how long an
+   * in-memory status change waits to be written when task events arrive infrequently.
    */
   private val liveUpdateMinFlushPeriod = conf.get(LIVE_ENTITY_UPDATE_MIN_FLUSH_PERIOD)
 
@@ -350,10 +353,10 @@ private[spark] class AppStatusListener(
     executorIds.foreach { executorId =>
       val executorStageSummary = stage.executorSummary(executorId)
       executorStageSummary.isExcluded = true
-      maybeUpdate(executorStageSummary, now)
+      recordAndMaybeUpdate(executorStageSummary, now)
     }
     stage.excludedExecutors ++= executorIds
-    maybeUpdate(stage, now)
+    recordAndMaybeUpdate(stage, now)
   }
 
   override def onExecutorUnblacklisted(event: SparkListenerExecutorUnblacklisted): Unit = {
@@ -636,11 +639,11 @@ private[spark] class AppStatusListener(
       val count = stage.localitySummary.getOrElse(locality, 0L) + 1L
       stage.localitySummary = stage.localitySummary ++ Map(locality -> count)
       stage.activeTasksPerExecutor(event.taskInfo.executorId) += 1
-      maybeUpdate(stage, now)
+      recordAndMaybeUpdate(stage, now)
 
       stage.jobs.foreach { job =>
         job.activeTasks += 1
-        maybeUpdate(job, now)
+        recordAndMaybeUpdate(job, now)
       }
 
       if (stage.savedTasks.incrementAndGet() > maxTasksPerStage && !stage.cleaning) {
@@ -654,7 +657,7 @@ private[spark] class AppStatusListener(
     liveExecutors.get(event.taskInfo.executorId).foreach { exec =>
       exec.activeTasks += 1
       exec.totalTasks += 1
-      maybeUpdate(exec, now)
+      recordAndMaybeUpdate(exec, now)
     }
   }
 
@@ -662,7 +665,7 @@ private[spark] class AppStatusListener(
     // Call update on the task so that the "getting result" time is written to the store; the
     // value is part of the mutable TaskInfo state that the live entity already references.
     liveTasks.get(event.taskInfo.taskId).foreach { task =>
-      maybeUpdate(task, System.nanoTime())
+      recordAndMaybeUpdate(task, System.nanoTime())
     }
   }
 
@@ -742,7 +745,7 @@ private[spark] class AppStatusListener(
       if (removeStage) {
         update(stage, now, last = true)
       } else {
-        maybeUpdate(stage, now)
+        recordAndMaybeUpdate(stage, now)
       }
 
       // Store both stage ID and task index in a single long variable for tracking at job level.
@@ -761,7 +764,7 @@ private[spark] class AppStatusListener(
         if (removeStage) {
           update(job, now)
         } else {
-          maybeUpdate(job, now)
+          recordAndMaybeUpdate(job, now)
         }
       }
 
@@ -781,7 +784,7 @@ private[spark] class AppStatusListener(
       if (isLastTask) {
         update(esummary, now)
       } else {
-        maybeUpdate(esummary, now)
+        recordAndMaybeUpdate(esummary, now)
       }
 
       if (event.taskInfo.speculative) {
@@ -830,7 +833,7 @@ private[spark] class AppStatusListener(
       if (exec.activeTasks == 0) {
         update(exec, now)
       } else {
-        maybeUpdate(exec, now)
+        recordAndMaybeUpdate(exec, now)
       }
     }
   }
@@ -842,9 +845,15 @@ private[spark] class AppStatusListener(
       val now = System.nanoTime()
       stage.info = event.stageInfo
 
-      // We have to update the stage status AFTER we create all the executorSummaries
-      // because stage deletion deletes whatever summaries it finds when the status is completed.
-      stage.executorSummaries.values.foreach(update(_, now))
+      // Write summaries that are still dirty before updating stage status. Stage deletion
+      // removes whatever summaries it finds once the stage is completed. Summaries already
+      // flushed on an executor's last task are clean and must not be rebuilt here: that
+      // rewrite dominates driver CPU on stages with many executors.
+      stage.executorSummaries.values.foreach { summary =>
+        if (summary.isDirty) {
+          update(summary, now)
+        }
+      }
 
       // Because of SPARK-20205, old event logs may contain valid stages without a submission time
       // in their start event. In those cases, we can only detect whether a stage was skipped by
@@ -928,17 +937,19 @@ private[spark] class AppStatusListener(
   override def onUnpersistRDD(event: SparkListenerUnpersistRDD): Unit = {
     liveRDDs.remove(event.rddId).foreach { liveRDD =>
       val storageLevel = liveRDD.info.storageLevel
+      val now = System.nanoTime()
 
-      // Use RDD partition info to update executor block info.
+      // Mark the block-count change dirty, but do not write yet. Executors that also have a
+      // distribution entry get their memory and disk totals updated below, and one write has
+      // to include both. An executor listed only on a partition is written after that.
       liveRDD.getPartitions().foreach { case (_, part) =>
         part.executors.foreach { executorId =>
           liveExecutors.get(executorId).foreach { exec =>
             exec.rddBlocks = exec.rddBlocks - 1
+            exec.markDirty()
           }
         }
       }
-
-      val now = System.nanoTime()
 
       // Use RDD distribution to update executor memory and disk usage info.
       liveRDD.getDistributions().foreach { case (executorId, rddDist) =>
@@ -952,7 +963,17 @@ private[spark] class AppStatusListener(
           }
           exec.memoryUsed = addDeltaToValue(exec.memoryUsed, -rddDist.memoryUsed)
           exec.diskUsed = addDeltaToValue(exec.diskUsed, -rddDist.diskUsed)
-          maybeUpdate(exec, now)
+          recordAndMaybeUpdate(exec, now)
+        }
+      }
+
+      liveRDD.getPartitions().foreach { case (_, part) =>
+        part.executors.foreach { executorId =>
+          liveExecutors.get(executorId).foreach { exec =>
+            if (exec.isDirty) {
+              recordAndMaybeUpdate(exec, now)
+            }
+          }
         }
       }
     }
@@ -967,15 +988,15 @@ private[spark] class AppStatusListener(
       liveTasks.get(taskId).foreach { task =>
         val metrics = TaskMetrics.fromAccumulatorInfos(accumUpdates)
         val delta = task.updateMetrics(metrics)
-        maybeUpdate(task, now)
+        recordAndMaybeUpdate(task, now)
 
         Option(liveStages.get((sid, sAttempt))).foreach { stage =>
           stage.metrics = LiveEntityHelpers.addMetrics(stage.metrics, delta)
-          maybeUpdate(stage, now)
+          recordAndMaybeUpdate(stage, now)
 
           val esummary = stage.executorSummary(event.execId)
           esummary.metrics = LiveEntityHelpers.addMetrics(esummary.metrics, delta)
-          maybeUpdate(esummary, now)
+          recordAndMaybeUpdate(esummary, now)
         }
       }
     }
@@ -994,11 +1015,11 @@ private[spark] class AppStatusListener(
       updateStageLevelPeakExecutorMetrics(key._1, key._2, event.execId, peakUpdates, now)
     }
 
-    // Flush updates if necessary. Executor heartbeat is an event that happens periodically. Flush
-    // here to ensure the staleness of Spark UI doesn't last more than
-    // `max(heartbeat interval, liveUpdateMinFlushPeriod)`.
+    // Flush dirty entities. Clean ones already match the store, so rewriting them only
+    // reindexes an unchanged snapshot. A live store serves a running task's duration from
+    // its launch time, so this flush does not rewrite tasks just to advance the clock.
     if (now - lastFlushTimeNs > liveUpdateMinFlushPeriod) {
-      flush(maybeUpdate(_, now))
+      flush(this.maybeUpdate(_, now))
       // Re-get the current system time because `flush` may be slow and `now` is stale.
       lastFlushTimeNs = System.nanoTime()
     }
@@ -1162,7 +1183,7 @@ private[spark] class AppStatusListener(
     // Finish updating the executor now that we know the delta in the number of blocks.
     maybeExec.foreach { exec =>
       exec.rddBlocks += rddBlocksDelta
-      maybeUpdate(exec, now)
+      recordAndMaybeUpdate(exec, now)
     }
   }
 
@@ -1213,7 +1234,7 @@ private[spark] class AppStatusListener(
       val memoryDelta = event.blockUpdatedInfo.memSize * (if (storageLevel.useMemory) 1 else -1)
 
       updateExecutorMemoryDiskInfo(exec, storageLevel, memoryDelta, diskDelta)
-      maybeUpdate(exec, now)
+      recordAndMaybeUpdate(exec, now)
     }
   }
 
@@ -1258,9 +1279,19 @@ private[spark] class AppStatusListener(
     entity.write(kvstore, now, checkTriggers = last)
   }
 
-  /** Update a live entity only if it hasn't been updated in the last configured period. */
+  /**
+   * Record an in-memory change and write it if the live-update period has elapsed.
+   * Heartbeat flush calls [[maybeUpdate]] directly so unchanged entities are not rewritten.
+   */
+  private def recordAndMaybeUpdate(entity: LiveEntity, now: Long): Unit = {
+    entity.markDirty()
+    maybeUpdate(entity, now)
+  }
+
+  /** Write a changed live entity that has not been written in the last configured period. */
   private def maybeUpdate(entity: LiveEntity, now: Long): Unit = {
-    if (live && liveUpdatePeriodNs >= 0 && now - entity.lastWriteTime > liveUpdatePeriodNs) {
+    if (live && entity.isDirty && liveUpdatePeriodNs >= 0 &&
+        now - entity.lastWriteTime > liveUpdatePeriodNs) {
       update(entity, now)
     }
   }

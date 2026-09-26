@@ -1917,6 +1917,277 @@ abstract class AppStatusListenerSuite extends SparkFunSuite with BeforeAndAfter 
     checkInfoPopulated(listener, logUrlMap, processId)
   }
 
+  test("LiveExecutorStageSummary accumulates all exposed task metrics") {
+    // Remote and local shuffle bytes stay separate so shuffleRead is their sum, which makes
+    // 11 source values. The summary itself still exposes 10 fields.
+    // scalastyle:off argcount
+    case class Snapshot(
+        inputBytes: Long,
+        inputRecords: Long,
+        outputBytes: Long,
+        outputRecords: Long,
+        shuffleRemoteBytes: Long,
+        shuffleLocalBytes: Long,
+        shuffleReadRecords: Long,
+        shuffleWrite: Long,
+        shuffleWriteRecords: Long,
+        memoryBytesSpilled: Long,
+        diskBytesSpilled: Long) {
+
+      def shuffleRead: Long = shuffleRemoteBytes + shuffleLocalBytes
+    }
+    // scalastyle:on argcount
+
+    def toTaskMetrics(snapshot: Snapshot): TaskMetrics = {
+      val metrics = TaskMetrics.empty
+      metrics.inputMetrics.incBytesRead(snapshot.inputBytes)
+      metrics.inputMetrics.incRecordsRead(snapshot.inputRecords)
+      metrics.outputMetrics.setBytesWritten(snapshot.outputBytes)
+      metrics.outputMetrics.setRecordsWritten(snapshot.outputRecords)
+      metrics.shuffleReadMetrics.incRemoteBytesRead(snapshot.shuffleRemoteBytes)
+      metrics.shuffleReadMetrics.incLocalBytesRead(snapshot.shuffleLocalBytes)
+      metrics.shuffleReadMetrics.incRecordsRead(snapshot.shuffleReadRecords)
+      metrics.shuffleWriteMetrics.incBytesWritten(snapshot.shuffleWrite)
+      metrics.shuffleWriteMetrics.incRecordsWritten(snapshot.shuffleWriteRecords)
+      metrics.incMemoryBytesSpilled(snapshot.memoryBytesSpilled)
+      metrics.incDiskBytesSpilled(snapshot.diskBytesSpilled)
+      metrics
+    }
+
+    def accum(name: String, value: Long): AccumulableInfo = {
+      AccumulableInfo(1L, Some(name), Some(value), None, true, false, None)
+    }
+
+    def assertSummary(stage: StageInfo, snapshot: Snapshot): Unit = {
+      val execs = KVUtils.viewToSeq(store.view(classOf[ExecutorStageSummaryWrapper])
+        .index("stage").first(key(stage)).last(key(stage)))
+      assert(execs.size === 1)
+      val info = execs.head.info
+      assert(info.inputBytes === snapshot.inputBytes)
+      assert(info.inputRecords === snapshot.inputRecords)
+      assert(info.outputBytes === snapshot.outputBytes)
+      assert(info.outputRecords === snapshot.outputRecords)
+      assert(info.shuffleRead === snapshot.shuffleRead)
+      assert(info.shuffleReadRecords === snapshot.shuffleReadRecords)
+      assert(info.shuffleWrite === snapshot.shuffleWrite)
+      assert(info.shuffleWriteRecords === snapshot.shuffleWriteRecords)
+      assert(info.memoryBytesSpilled === snapshot.memoryBytesSpilled)
+      assert(info.diskBytesSpilled === snapshot.diskBytesSpilled)
+    }
+
+    val listener = new AppStatusListener(store, conf, true)
+    listener.onExecutorAdded(createExecutorAddedEvent(1))
+    val stage = new StageInfo(1, 0, "stage", 1, Nil, Nil, "details",
+      resourceProfileId = ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID)
+    listener.onJobStart(SparkListenerJobStart(1, time, Seq(stage), null))
+    time += 1
+    stage.submissionTime = Some(time)
+    listener.onStageSubmitted(SparkListenerStageSubmitted(stage, new Properties()))
+
+    val task = createTasks(1, Array("1")).head
+    listener.onTaskStart(SparkListenerTaskStart(stage.stageId, stage.attemptNumber(), task))
+
+    // Heartbeat values are cumulative. Each summary field is distinct, and both shuffle
+    // byte components are non-zero so a dropped remote or local term fails shuffleRead.
+    val heartbeat = Snapshot(
+      inputBytes = 101, inputRecords = 102, outputBytes = 103, outputRecords = 104,
+      shuffleRemoteBytes = 11, shuffleLocalBytes = 19, shuffleReadRecords = 105,
+      shuffleWrite = 106, shuffleWriteRecords = 107,
+      memoryBytesSpilled = 108, diskBytesSpilled = 109)
+    listener.onExecutorMetricsUpdate(SparkListenerExecutorMetricsUpdate(
+      task.executorId,
+      Seq((task.taskId, stage.stageId, stage.attemptNumber(), Seq(
+        accum(InternalAccumulator.input.BYTES_READ, heartbeat.inputBytes),
+        accum(InternalAccumulator.input.RECORDS_READ, heartbeat.inputRecords),
+        accum(InternalAccumulator.output.BYTES_WRITTEN, heartbeat.outputBytes),
+        accum(InternalAccumulator.output.RECORDS_WRITTEN, heartbeat.outputRecords),
+        accum(InternalAccumulator.shuffleRead.REMOTE_BYTES_READ, heartbeat.shuffleRemoteBytes),
+        accum(InternalAccumulator.shuffleRead.LOCAL_BYTES_READ, heartbeat.shuffleLocalBytes),
+        accum(InternalAccumulator.shuffleRead.RECORDS_READ, heartbeat.shuffleReadRecords),
+        accum(InternalAccumulator.shuffleWrite.BYTES_WRITTEN, heartbeat.shuffleWrite),
+        accum(InternalAccumulator.shuffleWrite.RECORDS_WRITTEN, heartbeat.shuffleWriteRecords),
+        accum(InternalAccumulator.MEMORY_BYTES_SPILLED, heartbeat.memoryBytesSpilled),
+        accum(InternalAccumulator.DISK_BYTES_SPILLED, heartbeat.diskBytesSpilled))))))
+    assertSummary(stage, heartbeat)
+
+    // Task end reports a higher cumulative snapshot. The summary must equal that snapshot,
+    // so both the heartbeat delta and the task-end delta were applied.
+    val taskEnd = Snapshot(
+      inputBytes = 201, inputRecords = 202, outputBytes = 203, outputRecords = 204,
+      shuffleRemoteBytes = 80, shuffleLocalBytes = 90, shuffleReadRecords = 205,
+      shuffleWrite = 206, shuffleWriteRecords = 207,
+      memoryBytesSpilled = 208, diskBytesSpilled = 209)
+    time += 1
+    task.markFinished(TaskState.FINISHED, time)
+    listener.onTaskEnd(SparkListenerTaskEnd(
+      stage.stageId, stage.attemptNumber(), "taskType", Success, task,
+      new ExecutorMetrics, toTaskMetrics(taskEnd)))
+    assertSummary(stage, taskEnd)
+
+    // The last task already flushed this summary. Stage completion must keep it.
+    if (store.usingInMemoryStore) {
+      val beforeComplete = store.read(
+        classOf[ExecutorStageSummaryWrapper],
+        Array[Any](stage.stageId, stage.attemptNumber(), task.executorId))
+      listener.onStageCompleted(SparkListenerStageCompleted(stage))
+      val afterComplete = store.read(
+        classOf[ExecutorStageSummaryWrapper],
+        Array[Any](stage.stageId, stage.attemptNumber(), task.executorId))
+      assert(afterComplete eq beforeComplete)
+    } else {
+      listener.onStageCompleted(SparkListenerStageCompleted(stage))
+    }
+    assertSummary(stage, taskEnd)
+  }
+
+  test("heartbeat flush does not rewrite clean live entities") {
+    val flushConf = conf.clone()
+      .set(LIVE_ENTITY_UPDATE_MIN_FLUSH_PERIOD, 0L)
+    val listener = new AppStatusListener(store, flushConf, true)
+    listener.onExecutorAdded(createExecutorAddedEvent(1))
+    val stage = new StageInfo(1, 0, "stage", 1, Nil, Nil, "details",
+      resourceProfileId = ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID)
+    listener.onJobStart(SparkListenerJobStart(1, time, Seq(stage), null))
+    time += 1
+    stage.submissionTime = Some(time)
+    listener.onStageSubmitted(SparkListenerStageSubmitted(stage, new Properties()))
+
+    val task = createTasks(1, Array("1")).head
+    listener.onTaskStart(SparkListenerTaskStart(stage.stageId, stage.attemptNumber(), task))
+
+    val accum = new AccumulableInfo(1L, Some(InternalAccumulator.MEMORY_BYTES_SPILLED),
+      Some(42L), None, true, false, None)
+    listener.onExecutorMetricsUpdate(SparkListenerExecutorMetricsUpdate(
+      task.executorId,
+      Seq((task.taskId, stage.stageId, stage.attemptNumber(), Seq(accum)))))
+
+    // A later heartbeat with no accumulator updates still flushes, and must not rebuild
+    // entities whose in-memory state has not changed.
+    Thread.sleep(5)
+    if (store.usingInMemoryStore) {
+      val before = store.read(classOf[StageDataWrapper], key(stage))
+      listener.onExecutorMetricsUpdate(
+        SparkListenerExecutorMetricsUpdate(task.executorId, Nil))
+      val after = store.read(classOf[StageDataWrapper], key(stage))
+      assert(after eq before)
+      assert(after.info.memoryBytesSpilled === 42L)
+    } else {
+      listener.onExecutorMetricsUpdate(
+        SparkListenerExecutorMetricsUpdate(task.executorId, Nil))
+      check[StageDataWrapper](key(stage)) { stageData =>
+        assert(stageData.info.memoryBytesSpilled === 42L)
+      }
+    }
+  }
+
+  test("live store serves a running task duration from its launch time") {
+    val flushConf = conf.clone().set(LIVE_ENTITY_UPDATE_MIN_FLUSH_PERIOD, 0L)
+    val listener = new AppStatusListener(store, flushConf, true)
+    listener.onExecutorAdded(createExecutorAddedEvent(1))
+    val stage = new StageInfo(1, 0, "stage", 1, Nil, Nil, "details",
+      resourceProfileId = ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID)
+    listener.onJobStart(SparkListenerJobStart(1, time, Seq(stage), null))
+    time += 1
+    stage.submissionTime = Some(time)
+    listener.onStageSubmitted(SparkListenerStageSubmitted(stage, new Properties()))
+
+    val launchTime = System.currentTimeMillis()
+    val task = new TaskInfo(nextTaskId(), 0, 0, 0, launchTime, "1", "1.example.com",
+      TaskLocality.PROCESS_LOCAL, speculative = false)
+    listener.onTaskStart(SparkListenerTaskStart(stage.stageId, stage.attemptNumber(), task))
+
+    val replayStore = new AppStatusStore(store)
+    val storedDuration = replayStore.taskList(stage.stageId, stage.attemptNumber(), 1)
+      .head.duration.getOrElse(0L)
+
+    Thread.sleep(40)
+    // A heartbeat that does not touch this task must not be what advances the duration.
+    if (store.usingInMemoryStore) {
+      val before = KVUtils.viewToSeq(store.view(classOf[TaskDataWrapper])).head
+      listener.onExecutorMetricsUpdate(SparkListenerExecutorMetricsUpdate("1", Nil))
+      val after = KVUtils.viewToSeq(store.view(classOf[TaskDataWrapper])).head
+      assert(after eq before)
+    } else {
+      listener.onExecutorMetricsUpdate(SparkListenerExecutorMetricsUpdate("1", Nil))
+    }
+
+    val replayed = replayStore.taskList(stage.stageId, stage.attemptNumber(), 1).head
+    assert(replayed.duration.getOrElse(0L) === storedDuration)
+
+    val served = new AppStatusStore(store, Some(listener))
+      .taskList(stage.stageId, stage.attemptNumber(), 1).head
+    assert(served.status === "RUNNING")
+    assert(served.duration.get >= storedDuration + 30L)
+    assert(served.duration.get <= System.currentTimeMillis() - launchTime)
+  }
+
+  test("stage completion writes a summary the live-update period has not flushed") {
+    val stalled = conf.clone()
+      .set(LIVE_ENTITY_UPDATE_PERIOD, Long.MaxValue)
+      .set(LIVE_ENTITY_UPDATE_MIN_FLUSH_PERIOD, Long.MaxValue)
+    val listener = new AppStatusListener(store, stalled, true)
+    listener.onExecutorAdded(createExecutorAddedEvent(1))
+    val stage = new StageInfo(1, 0, "stage", 1, Nil, Nil, "details",
+      resourceProfileId = ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID)
+    listener.onJobStart(SparkListenerJobStart(1, time, Seq(stage), null))
+    time += 1
+    stage.submissionTime = Some(time)
+    listener.onStageSubmitted(SparkListenerStageSubmitted(stage, new Properties()))
+
+    val task = createTasks(1, Array("1")).head
+    listener.onTaskStart(SparkListenerTaskStart(stage.stageId, stage.attemptNumber(), task))
+    val summaryKey = Array[Any](stage.stageId, stage.attemptNumber(), task.executorId)
+    listener.onExecutorMetricsUpdate(SparkListenerExecutorMetricsUpdate(
+      task.executorId,
+      Seq((task.taskId, stage.stageId, stage.attemptNumber(), Seq(
+        new AccumulableInfo(1L, Some(InternalAccumulator.MEMORY_BYTES_SPILLED),
+          Some(77L), None, true, false, None))))))
+
+    // The update period has not elapsed, so the summary exists only in memory.
+    intercept[NoSuchElementException] {
+      store.read(classOf[ExecutorStageSummaryWrapper], summaryKey)
+    }
+    listener.onStageCompleted(SparkListenerStageCompleted(stage))
+    check[ExecutorStageSummaryWrapper](summaryKey) { summary =>
+      assert(summary.info.memoryBytesSpilled === 77L)
+    }
+  }
+
+  test("unpersist updates the block count of an executor with no RDD distribution") {
+    val listener = new AppStatusListener(store, conf, true)
+    val maxMemory = 42L
+    val bm = BlockManagerId("1", "1.example.com", 42)
+    listener.onExecutorAdded(SparkListenerExecutorAdded(1L, bm.executorId,
+      new ExecutorInfo(bm.host, 1, Map.empty, Map.empty)))
+    listener.onBlockManagerAdded(SparkListenerBlockManagerAdded(1L, bm, maxMemory))
+
+    val block = RddBlock(1, 1, 1L, 2L)
+    val level = StorageLevel.MEMORY_AND_DISK
+    val rddInfo = new RDDInfo(block.rddId, "rdd1", 1, level, false, Nil)
+    val stage = new StageInfo(1, 0, "stage1", 1, Seq(rddInfo), Nil, "details1",
+      resourceProfileId = ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID)
+    listener.onStageSubmitted(SparkListenerStageSubmitted(stage, new Properties()))
+    listener.onBlockUpdated(SparkListenerBlockUpdated(
+      BlockUpdatedInfo(bm, block.blockId, level, block.memSize, block.diskSize)))
+    check[ExecutorSummaryWrapper](bm.executorId) { exec =>
+      assert(exec.info.rddBlocks === 1L)
+    }
+
+    // Drop the distribution entry so only the partition list still names this executor.
+    // The block-count decrement has to be recorded on its own; the distribution loop will
+    // not see the executor.
+    val liveRDDsField = classOf[AppStatusListener].getDeclaredField("liveRDDs")
+    liveRDDsField.setAccessible(true)
+    val liveRDDs = liveRDDsField.get(listener)
+      .asInstanceOf[scala.collection.mutable.Map[Int, LiveRDD]]
+    assert(liveRDDs(block.rddId).removeDistribution(listener.liveExecutors(bm.executorId)))
+
+    listener.onUnpersistRDD(SparkListenerUnpersistRDD(block.rddId))
+    check[ExecutorSummaryWrapper](bm.executorId) { exec =>
+      assert(exec.info.rddBlocks === 0L)
+    }
+  }
+
   test("SPARK-41187: Stage should be removed from liveStages to avoid deadExecutors accumulated") {
 
     val listener = new AppStatusListener(store, conf, true)

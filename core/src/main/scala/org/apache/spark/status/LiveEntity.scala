@@ -44,11 +44,25 @@ private[spark] abstract class LiveEntity {
 
   var lastWriteTime = -1L
 
+  /**
+   * In-memory state has changed since the last store write. Live flushes skip clean entities so
+   * the driver does not rebuild an immutable snapshot and reindex it on every heartbeat.
+   * Starts dirty so the first write still persists the entity.
+   */
+  private var dirty = true
+
+  def isDirty: Boolean = dirty
+
+  def markDirty(): Unit = {
+    dirty = true
+  }
+
   def write(store: ElementTrackingStore, now: Long, checkTriggers: Boolean = false): Unit = {
     // Always check triggers on the first write, since adding an element to the store may
     // cause the maximum count for the element type to be exceeded.
     store.write(doUpdate(), checkTriggers || lastWriteTime == -1L)
     lastWriteTime = now
+    dirty = false
   }
 
   /**

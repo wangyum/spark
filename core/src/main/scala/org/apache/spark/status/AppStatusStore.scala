@@ -823,6 +823,10 @@ private[spark] class AppStatusStore(
 
   def constructTaskDataList(taskDataWrapperIter: Iterable[TaskDataWrapper]): Seq[v1.TaskData] = {
     val executorIdToLogs = new HashMap[String, Map[String, String]]()
+    // History replay keeps the duration stored with the log's last update time. A live
+    // application derives a running task's duration from its launch time so the UI clock
+    // advances without rewriting the task on every heartbeat.
+    val liveNow = if (listener.exists(_.isLive)) System.currentTimeMillis() else -1L
     taskDataWrapperIter.map { taskDataWrapper =>
       val taskDataOld: v1.TaskData = taskDataWrapper.toApi
       val executorLogs = executorIdToLogs.getOrElseUpdate(taskDataOld.executorId, {
@@ -833,17 +837,32 @@ private[spark] class AppStatusStore(
             Map.empty
         }
       })
+      val duration = servedTaskDuration(taskDataOld, liveNow)
+      val fetchStart = taskDataOld.resultFetchStart.map(_.getTime).getOrElse(-1L)
 
       new v1.TaskData(taskDataOld.taskId, taskDataOld.index,
         taskDataOld.attempt, taskDataOld.partitionId,
         taskDataOld.launchTime, taskDataOld.resultFetchStart,
-        taskDataOld.duration, taskDataOld.executorId, taskDataOld.host, taskDataOld.status,
+        duration, taskDataOld.executorId, taskDataOld.host, taskDataOld.status,
         taskDataOld.taskLocality, taskDataOld.speculative, taskDataOld.accumulatorUpdates,
         taskDataOld.errorMessage, taskDataOld.taskMetrics,
         executorLogs,
         AppStatusUtils.schedulerDelay(taskDataOld),
-        AppStatusUtils.gettingResultTime(taskDataOld))
+        AppStatusUtils.gettingResultTime(
+          taskDataOld.launchTime.getTime, fetchStart, duration.getOrElse(-1L)))
     }.toSeq
+  }
+
+  /**
+   * Wall-clock duration to serve for a task. Finished tasks, and every task during replay,
+   * keep the stored snapshot. A running task in a live application is `now - launchTime`.
+   */
+  private def servedTaskDuration(task: v1.TaskData, liveNow: Long): Option[Long] = {
+    if (liveNow >= 0L && (task.status == "RUNNING" || task.status == "GET RESULT")) {
+      Some(math.max(0L, liveNow - task.launchTime.getTime))
+    } else {
+      task.duration
+    }
   }
 }
 

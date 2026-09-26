@@ -32,8 +32,10 @@ private[spark] object Status {
     .createWithDefaultString("100ms")
 
   val LIVE_ENTITY_UPDATE_MIN_FLUSH_PERIOD = ConfigBuilder("spark.ui.liveUpdate.minFlushPeriod")
-    .doc("Minimum time elapsed before stale UI data is flushed. This avoids UI staleness when " +
-      "incoming task events are not fired frequently.")
+    .doc("Minimum time elapsed before dirty live entities are flushed. This limits how long an " +
+      "in-memory status change waits to be written when task events arrive infrequently. " +
+      "A live application's running-task duration is computed from the task launch time when " +
+      "the status store serves the task, so it does not depend on this flush.")
     .version("2.4.2")
     .timeConf(TimeUnit.NANOSECONDS)
     .createWithDefaultString("1s")
