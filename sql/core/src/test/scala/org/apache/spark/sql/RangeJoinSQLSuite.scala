@@ -355,19 +355,24 @@ class RangeJoinSQLSuite extends QueryTest with SharedSparkSession with AdaptiveS
     }
   }
 
-  test("whole-stage codegen covers inner, outer, semi, decimal, and string") {
+  test("whole-stage codegen covers each range-join probe") {
     setupIpLookupViews()
     setupDecimalViews()
     setupCollatedStrings()
+    setupIntervalViews()
     val queries = Seq(
       s"SELECT s.id, l.zip_id FROM signin_ip s JOIN ip_lookup l ON $pointCond",
       s"SELECT s.id, l.zip_id FROM signin_ip s LEFT JOIN ip_lookup l ON $pointCond",
       s"SELECT s.id, l.zip_id FROM signin_ip s RIGHT JOIN ip_lookup l ON $pointCond",
       s"SELECT s.id FROM signin_ip s LEFT SEMI JOIN ip_lookup l ON $pointCond",
-      "SELECT p.p, r.lo, r.hi FROM dec_points p JOIN dec_ranges r " +
-        "ON p.p >= r.lo AND p.p <= r.hi",
+      s"SELECT s.id FROM signin_ip s LEFT ANTI JOIN ip_lookup l ON $pointCond",
+      "SELECT p.p, r.lo, r.hi FROM dec_points p JOIN dec_ranges r ON p.p >= r.lo AND p.p <= r.hi",
       "SELECT /*+ BROADCAST(r) */ p.s, r.lo, r.hi FROM str_points p JOIN str_ranges r " +
-        "ON p.s >= r.lo AND p.s <= r.hi")
+        "ON p.s >= r.lo AND p.s <= r.hi",
+      "SELECT a.lo, a.hi, b.lo, b.hi FROM intervals_a a JOIN intervals_b b " +
+        "ON a.lo < b.hi AND b.lo < a.hi",
+      "SELECT a.lo, a.hi, b.lo, b.hi FROM intervals_a a LEFT JOIN intervals_b b ON a.hi < b.lo",
+      "SELECT /*+ BROADCAST(a) */ a.lo, b.hi FROM intervals_a a JOIN intervals_b b ON a.lo < b.hi")
     queries.foreach { query =>
       val expected = sql(query).collect()
       withRangeJoin(

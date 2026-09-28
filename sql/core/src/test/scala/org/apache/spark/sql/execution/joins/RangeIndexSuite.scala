@@ -91,7 +91,7 @@ class RangeIndexSuite extends SparkFunSuite {
 
   test("an inverted build interval reaches the windows the condition accepts") {
     // (3, 1) is normalized to [1, 3]. A window with low < 1 and high > 3 accepts it,
-    // and dropping the row would lose the pair the join condition then rejects.
+    // and dropping the row would lose the pair the join condition accepts.
     val index = RangeBroadcastMode(
       Seq(BoundReference(0, IntegerType, nullable = true),
         BoundReference(1, IntegerType, nullable = true)),
@@ -142,8 +142,8 @@ class RangeIndexSuite extends SparkFunSuite {
     val withNull = buildIntervals(interval(0, 10, 0) ++ point(5, 1))
     assert(probeIds(withNull, null, 5).isEmpty)
     assert(probeIds(withNull, 5, null).isEmpty)
-    // Two indexed rows (8 bytes each) and three sweep events: start, end, point.
-    assert(withNull.sizeInBytes() == 2 * 8L + 3 * IntervalIndex.sweepEventBytes)
+    // 2 rows, 3 events: Start, End, Point. Only the Start and End touch the trie.
+    assert(withNull.sizeInBytes() == 2 * 8L + 3 * IntervalIndex.sweepEventBytes + 2 * 32)
 
     // At an interior endpoint, the range that ends and the one that starts
     // are each a candidate once.
@@ -187,6 +187,27 @@ class RangeIndexSuite extends SparkFunSuite {
     val probe = n
     assert(probeIds(restored, probe, probe).toSet == probeIds(index, probe, probe).toSet)
     assert(probeIds(restored, probe, probe).size == n)
+  }
+
+  test("sizeInBytes charges the active set after each event") {
+    val n = 200
+    val rowsAndSweep = n * 8L + (n * 2) * IntervalIndex.sweepEventBytes
+    // Nodes one Start or End copies: ceil(log2(max(open, 2))), at least one.
+    def nodesAfter(open: Int): Int =
+      Integer.SIZE - Integer.numberOfLeadingZeros(math.max(open, 2) - 1)
+
+    // Adjacent [2i, 2i + 1]: active set is 1 after the Start and 0 after the End.
+    val disjoint = buildIntervals((0 until n).flatMap(i => interval(2 * i, 2 * i + 1, i)))
+    val disjointNodes = n * (nodesAfter(1) + nodesAfter(0))
+    assert(disjoint.sizeInBytes() == rowsAndSweep + disjointNodes * 32L)
+
+    // [i, i + n]: after each event the active set is 1..n, then n - 1..0.
+    // That sum is below a charge of the peak for every event.
+    val overlap = buildIntervals((0 until n).flatMap(i => interval(i, i + n, i)))
+    val overlapAfter = (1 to n) ++ ((n - 1) to 0 by -1)
+    val overlapNodes = overlapAfter.map(nodesAfter).sum
+    assert(overlapNodes < overlapAfter.length * nodesAfter(n))
+    assert(overlap.sizeInBytes() == rowsAndSweep + overlapNodes * 32L)
   }
 
   test("interval sweep treats NaN as its own point and Infinity as an open bound") {

@@ -160,14 +160,16 @@ private[execution] object RangeIndex {
 
 /**
  * Sweep-line index of build-side intervals. `overlapping` returns every row whose
- * interval may overlap `[low, high]`. The window is a superset: the low search is
- * exclusive and the high search is inclusive, and the caller drops false positives.
+ * interval may overlap `[low, high]`. The window is a superset of that predicate,
+ * and the caller drops false positives. `first` is the last key strictly below
+ * `low`. When `first <= last`, rows still open at `first` are candidates.
+ * When `first < last`, a Start at `low` is also a candidate. `last` is the
+ * last key at or below `high`.
  *
  * What is broadcast is the sweep: sorted keys, rows in activation order, and one
- * event per bound. Active-set snapshots are built on the first probe. A
- * persistent map shares structure in one JVM, but its Java serializer writes every
- * entry of every snapshot, so n heavily-overlapping intervals would be O(n^2) on
- * the wire and again on each executor.
+ * event per bound. Snapshots are built on the first probe and are not serialized,
+ * because Java serialization would expand them to O(n^2). [[sizeInBytes]] also
+ * charges the paths those snapshots retain on the executor.
  */
 private[execution] object IntervalIndex {
 
@@ -235,9 +237,29 @@ private[execution] class IntervalIndex(
     private[this] val eventIds: Array[Int])
   extends RangeRelation {
 
-  // Rows once, plus the sweep. Rebuilt snapshots are not part of the broadcast.
-  override def sizeInBytes(): Long =
-    RangeIndex.rowsSize(activated) + eventIds.length * IntervalIndex.sweepEventBytes
+  /**
+   * Rows and the sweep that are broadcast, plus 32 bytes for each IntMap node
+   * rebuilt on the executor. After each Start or End, that event copies
+   * `ceil(log2(max(active set, 2)))` nodes, at least one, using the active-set
+   * size after the event. Flow is the change: Start 1, Point 0, End -1.
+   * A Point does not copy a node.
+   */
+  override def sizeInBytes(): Long = {
+    def pathNodes(open: Int): Int =
+      Integer.SIZE - Integer.numberOfLeadingZeros(math.max(open, 2) - 1)
+
+    var active = 0
+    var nodes = 0L
+    var i = 0
+    while (i < eventFlows.length) {
+      val flow = eventFlows(i)
+      active += flow
+      if (flow != RangeIndex.RangeEvent.Point) nodes += pathNodes(active)
+      i += 1
+    }
+    RangeIndex.rowsSize(activated) +
+      eventIds.length * IntervalIndex.sweepEventBytes + nodes * 32
+  }
 
   /** Built on first probe. Transient, so Java serialization does not flatten the maps. */
   @transient private lazy val snapshots = buildSnapshots()

@@ -181,11 +181,11 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
    *     Supported for all join types.
    *
    * - Broadcast range join (BRJ):
-   *     Supports a point-in-range predicate or one cross-side inequality.
+   *     Supports a point-in-range predicate, an interval overlap, or one cross-side inequality.
    *     Inner may broadcast either side. Left outer, left semi, and left anti
    *     broadcast the right side. Right outer broadcasts the left side.
    *     Full outer is not supported.
-
+   *
    * - Broadcast nested loop join (BNLJ):
    *     Supports both equi-joins and non-equi-joins.
    *     Supports all the join types, but the implementation is optimized for:
