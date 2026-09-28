@@ -35,14 +35,12 @@ import org.apache.spark.sql.execution.metric.SQLMetrics
  * emitted, because the broadcast is copied to every partition. See `ExtractRangeJoinKeys`
  * for the exact set of join-condition shapes that are recognized as a range join.
  *
- * The smaller side is broadcast as an index. Point-in-range builds an [[IntervalIndex]]
- * over `(low, high)` and probes it for overlap. A single inequality builds a
- * [[PointIndex]] over that one column and scans the side of the bound the build
- * side holds. Either probe returns a superset. A candidate is emitted only when
- * the original join condition evaluates to true, so inclusivity stays on the
- * predicate. When build-side intervals overlap heavily the candidate count can
- * approach the build size, and the index is larger than the table. Building
- * stops at spark.sql.maxBroadcastTableSize with the usual broadcast-size error.
+ * The build side is an index. Point-in-range and interval overlap both build an
+ * [[IntervalIndex]] and probe it with `overlapping`. A single inequality builds a
+ * [[PointIndex]] and scans the side of the bound the build side holds. Either probe
+ * returns a superset. A candidate is kept only when the original join condition is
+ * true, so inclusivity stays on the predicate. Heavy overlap can make one probe
+ * return almost every build row.
  */
 case class BroadcastRangeJoinExec(
     left: SparkPlan,
@@ -116,16 +114,16 @@ case class BroadcastRangeJoinExec(
   }
 
   // Stream side projects its keys once per row. The build side is already indexed.
-  // Point-in-range and overlap project (low, high). A partial range projects one column.
+  // Overlap streams `(low, high)`. Point-in-range streams `(point, point)` or
+  // `(low, high)`, whichever side is streamed. A partial range streams one column.
   private def keyProjection(
       keys: Seq[Expression],
       output: Seq[Attribute]): () => Projection =
     () => newProjection(keys, output)
 
-  // Type-specialized accessors for a projected key row. Unlike `keyProjection`
-  // (an `InterpretedProjection`, not serializable) these getters are plain
-  // `InternalRow => Any` closures capturing only the (serializable) `DataType`, so
-  // they are not marked `@transient` and can be captured by the per-partition closure.
+  // Accessors for one field of a projected key row. The projection is built inside
+  // the task (`streamSideKeyGenerator` is `@transient`). These getters capture only
+  // the `DataType`, so the task closure can ship them.
   private def keyValueGetters(keys: Seq[Expression]): Seq[InternalRow => Any] =
     keys.zipWithIndex.map { case (key, ordinal) =>
       RangeIndex.getValue(key.dataType, ordinal)
@@ -135,7 +133,7 @@ case class BroadcastRangeJoinExec(
   private[this] lazy val streamSideKeyGenerator: () => Projection =
     keyProjection(streamedKeys, streamedOutput)
 
-  private[this] lazy val streamSideKeyValueGetter: Seq[InternalRow => Any] =
+  private[this] lazy val streamSideKeyGetters: Seq[InternalRow => Any] =
     keyValueGetters(streamedKeys)
 
   // Original join condition, bound to the joined row. The range index returns a
@@ -199,9 +197,10 @@ case class BroadcastRangeJoinExec(
          * not run while `streamRow` is still being joined, so `streamRow != null`
          * is checked first and short-circuits the call.
          *
-         * Inner and outer emit each candidate the original condition accepts. Semi
-         * emits the stream row once. Anti emits it only when nothing was accepted.
-         * A null bound makes the comparison unknown, so it is not a match.
+         * Inner emits each candidate the condition accepts. Outer does too, then one
+         * null-padded stream row when none were. Semi emits the stream row once.
+         * Anti emits it only when nothing was accepted. A null bound is unknown,
+         * so it is not a match.
          */
         private def findNextMatch(): Boolean = {
           while (streamRow != null || stream.hasNext) {
@@ -209,7 +208,7 @@ case class BroadcastRangeJoinExec(
               streamRow = stream.next()
               foundMatch = false
               val projected = streamSideKeys(streamRow)
-              val keys = streamSideKeyValueGetter.map(_(projected))
+              val keys = streamSideKeyGetters.map(_(projected))
               matchIterator = if (keys.contains(null)) Iterator.empty else candidates(index, keys)
             }
 
@@ -362,9 +361,10 @@ case class BroadcastRangeJoinExec(
 
   /**
    * Probe the broadcast index. The index kind and scan direction are fixed when
-   * the plan is built, so generated code calls [[IntervalIndex.overlapping]] or
-   * [[PointIndex]] directly. A null key yields the empty iterator those methods
-   * already return. No per-row array or seq is allocated.
+   * the plan is built, so generated code calls [[IntervalIndex.overlapping]],
+   * [[PointIndex.upTo]], or [[PointIndex.from]] directly. A null key yields the
+   * empty iterator those methods already return. No per-row array or seq is
+   * allocated.
    */
   private def genCandidateIterator(
       ctx: CodegenContext,

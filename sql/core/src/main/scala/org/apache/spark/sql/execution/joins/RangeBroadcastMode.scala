@@ -92,7 +92,7 @@ private[execution] case class RangeBroadcastMode private(
     val valueGetters = List(
       RangeIndex.getValue(buildKeys.head.dataType, 0),
       RangeIndex.getValue(buildKeys(1).dataType, 1))
-    val eventifier = RangeIndex.toRangeEvent(valueGetters, keyProjection, ordering)
+    val eventifier = RangeIndex.toRangeEvents(valueGetters, keyProjection, ordering)
     val events = rows.zipWithIndex.flatMap { case (row, idx) =>
       eventifier(row, idx)
     }.toArray

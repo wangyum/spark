@@ -17,7 +17,7 @@
 
 package org.apache.spark.sql.execution.joins
 
-import scala.collection.immutable.HashMap
+import scala.collection.immutable.IntMap
 import scala.collection.mutable
 
 import org.apache.spark.sql.catalyst.InternalRow
@@ -44,13 +44,21 @@ private[execution] object RangeIndex {
     case _ => row.numFields * 8L
   }
 
+  /** Sum of [[rowSize]] over `rows`. */
+  def rowsSize(rows: Array[InternalRow]): Long = {
+    var bytes = 0L
+    var i = 0
+    while (i < rows.length) { bytes += rowSize(rows(i)); i += 1 }
+    bytes
+  }
+
   /**
    * One sweep-line event used to build an [[IntervalIndex]].
    *
    * @param key   the bound value this event occurs at
    * @param flow  [[RangeEvent.Start]], [[RangeEvent.Point]], or [[RangeEvent.End]]
    * @param row   the build-side row that produced this event
-   * @param index a unique id for `row` so deactivation is O(1)
+   * @param index id of `row`, the active-set key that removes it without a scan
    */
   case class RangeEvent(key: Any, flow: Int, row: InternalRow, index: Int)
 
@@ -74,21 +82,48 @@ private[execution] object RangeIndex {
   }
 
   /**
-   * First index in `keys` whose key compares greater than `value` under `cmp`, or, when
-   * `orEqual` is set, greater than or equal to `value`. Shared by the lowerBound/upperBound
-   * pair on both [[IntervalIndex]] and [[PointIndex]]; `cmp` is where they differ, since
-   * `IntervalIndex` treats a leading null key as sorting before every value.
+   * First index at or after `value`. `skipEquals` makes the bound strict, so
+   * equal keys are skipped. [[IntervalIndex]]'s comparator sorts the leading
+   * null key before every value, so this search also covers an empty index.
+   *
+   * `cmp` is a `java.util.Comparator` rather than a Scala function so the `Int` result
+   * of every comparison in this binary search stays unboxed.
    */
-  def searchBound(keys: Array[Any], value: Any, orEqual: Boolean, cmp: (Any, Any) => Int): Int = {
+  private def searchBound(
+      keys: Array[Any],
+      value: Any,
+      skipEquals: Boolean,
+      cmp: java.util.Comparator[Any]): Int = {
     var lo = 0
     var hi = keys.length
     while (lo < hi) {
       val mid = lo + ((hi - lo) >>> 1)
-      val c = cmp(keys(mid), value)
-      if (if (orEqual) c <= 0 else c < 0) lo = mid + 1 else hi = mid
+      val c = cmp.compare(keys(mid), value)
+      // Strict upper bound also steps past equals. Otherwise equals stay in the upper half.
+      if (c < 0 || (skipEquals && c == 0)) lo = mid + 1 else hi = mid
     }
     lo
   }
+
+  /** First index whose key is greater than or equal to `value`. Shared by both indexes. */
+  def lowerBound(keys: Array[Any], value: Any, cmp: java.util.Comparator[Any]): Int =
+    searchBound(keys, value, skipEquals = false, cmp)
+
+  /** First index whose key is greater than `value`. Walks a whole equal run. Shared. */
+  def upperBound(keys: Array[Any], value: Any, cmp: java.util.Comparator[Any]): Int =
+    searchBound(keys, value, skipEquals = true, cmp)
+
+  /** Iterator over `rows(from until until)` that does not copy the backing array. */
+  def sliceIterator(rows: Array[InternalRow], from: Int, until: Int): Iterator[InternalRow] =
+    new Iterator[InternalRow] {
+      private var i = from
+      override def hasNext: Boolean = i < until
+      override def next(): InternalRow = {
+        val row = rows(i)
+        i += 1
+        row
+      }
+    }
 
   /**
    * Turn a projected `(low, high)` row into sweep events. A null bound emits none.
@@ -99,14 +134,14 @@ private[execution] object RangeIndex {
    * has to be a candidate. Normalizing only widens the window. `start <= end` also keeps the
    * sweep's invariant, so `IntervalIndex` never sees a reversed pair.
    */
-  def toRangeEvent(
-      buildSideKeyValueGetter: List[InternalRow => Any],
+  def toRangeEvents(
+      buildSideKeyGetters: List[InternalRow => Any],
       lowHighExtr: Projection,
       cmp: Ordering[Any]): (InternalRow, Int) => Seq[RangeEvent] = {
     (row: InternalRow, index: Int) => {
       val lowHigh: InternalRow = lowHighExtr(row)
-      val low = buildSideKeyValueGetter(0)(lowHigh)
-      val high = buildSideKeyValueGetter(1)(lowHigh)
+      val low = buildSideKeyGetters(0)(lowHigh)
+      val high = buildSideKeyGetters(1)(lowHigh)
       if (low != null && high != null) {
         val result = cmp.compare(low, high)
         if (result == 0) {
@@ -127,18 +162,23 @@ private[execution] object RangeIndex {
  * Sweep-line index of build-side intervals. `overlapping` returns every row whose
  * interval may overlap `[low, high]`. The window is a superset: the low search is
  * exclusive and the high search is inclusive, and the caller drops false positives.
+ *
+ * What is broadcast is the sweep: sorted keys, rows in activation order, and one
+ * event per bound. Active-set snapshots are built on the first probe. A
+ * persistent map shares structure in one JVM, but its Java serializer writes every
+ * entry of every snapshot, so n heavily-overlapping intervals would be O(n^2) on
+ * the wire and again on each executor.
  */
 private[execution] object IntervalIndex {
 
+  /** Bytes charged per sweep event by [[IntervalIndex.sizeInBytes]]. */
+  private[joins] val sweepEventBytes = 8L
+
   /** Build an interval index from unsorted events. */
   def build(ordering: Ordering[Any], events: Array[RangeIndex.RangeEvent]): IntervalIndex = {
-    val eventComparator = new java.util.Comparator[RangeIndex.RangeEvent] {
-      override def compare(a: RangeIndex.RangeEvent, b: RangeIndex.RangeEvent): Int = {
-        val keyCmp = ordering.compare(a.key, b.key)
-        if (keyCmp != 0) keyCmp else Integer.compare(a.flow, b.flow)
-      }
-    }
-    java.util.Arrays.sort(events, eventComparator)
+    val eventOrdering =
+      Ordering.by[RangeIndex.RangeEvent, Any](_.key)(ordering).orElse(Ordering.by(_.flow))
+    java.util.Arrays.sort(events, eventOrdering)
     buildFromSorted(ordering, events)
   }
 
@@ -146,64 +186,42 @@ private[execution] object IntervalIndex {
       ordering: Ordering[Any],
       events: Array[RangeIndex.RangeEvent]): IntervalIndex = {
     // A leading null key makes the binary search uniform, including an empty index.
-    val keys = mutable.Buffer[Any](null)
-    val offsets = mutable.Buffer[Int](0)
-    val activatedRows = mutable.Buffer.empty[InternalRow]
-    val activeOld = mutable.Buffer.empty[HashMap[Int, InternalRow]]
-    val activeAll = mutable.Buffer.empty[HashMap[Int, InternalRow]]
+    // `offsets(i)` and `eventOffsets(i)` start key i; the last slot is one past
+    // the end, so key i owns `[a(i), a(i + 1))`. The null key's range is empty.
+    val n = events.length
+    val keys = mutable.ArrayBuffer[Any](null)
+    val offsets = mutable.ArrayBuffer[Int](0)
+    val eventOffsets = mutable.ArrayBuffer[Int](0)
+    val activatedRows = mutable.ArrayBuffer.empty[InternalRow]
+    val eventFlows = new Array[Byte](n)
+    val eventIds = new Array[Int](n)
 
-    // Keyed by the event id so a row leaves the active set in O(1). Two snapshots
-    // are recorded per distinct key: `activeOld` (before this key's own Start
-    // events) and `activeAll` (after them); `overlapping` below explains why both
-    // are needed. A build side of heavily-overlapping intervals (e.g. n intervals
-    // all spanning the same window) has O(n) distinct keys each with an O(n)
-    // active set, so a plain map copied at every key would make the snapshots
-    // alone O(n^2). `HashMap` is persistent: `updated`/`removed` share structure
-    // with the previous version instead of copying it, so recording a snapshot is
-    // O(log n) and the total cost across all keys stays O(n log n). It is also
-    // `Serializable` for the broadcast, unlike the order-preserving persistent
-    // maps in the same package (`TreeSeqMap`, `VectorMap`) -- iteration order
-    // does not matter here since old/all are tracked as separate snapshots.
     var currentKey: Any = null
-    var currentActiveRows = HashMap.empty[Int, InternalRow]
-    var currentOldActiveRows = currentActiveRows
-    var oldActiveRowsCaptured = false
-
-    def writeActiveRows(): Unit = {
-      activeOld += (if (oldActiveRowsCaptured) currentOldActiveRows else currentActiveRows)
-      activeAll += currentActiveRows
-    }
-
-    events.foreach { event =>
+    var i = 0
+    while (i < n) {
+      val event = events(i)
       // Group by the index ordering. Array equality is identity, and
       // UTF8String equality is binary, so `!=` would split one sweep key.
       if (currentKey == null || ordering.compare(currentKey, event.key) != 0) {
-        writeActiveRows()
         currentKey = event.key
-        oldActiveRowsCaptured = false
         keys += event.key
         offsets += activatedRows.size
+        eventOffsets += i
       }
-      // The active set before any row starts at this key. Ends at this key have
-      // already been removed by the time the first Point/Start event is seen.
-      if (event.flow >= RangeIndex.RangeEvent.Point && !oldActiveRowsCaptured) {
-        currentOldActiveRows = currentActiveRows
-        oldActiveRowsCaptured = true
+      eventFlows(i) = event.flow.toByte
+      eventIds(i) = event.index
+      // Start and Point join the activation list. End is applied later, when
+      // the snapshots remove that id.
+      if (event.flow >= RangeIndex.RangeEvent.Point) {
+        activatedRows += event.row
       }
-      event.flow match {
-        case RangeIndex.RangeEvent.Start =>
-          activatedRows += event.row
-          currentActiveRows = currentActiveRows.updated(event.index, event.row)
-        case RangeIndex.RangeEvent.Point =>
-          activatedRows += event.row
-        case RangeIndex.RangeEvent.End =>
-          currentActiveRows = currentActiveRows.removed(event.index)
-      }
+      i += 1
     }
-    writeActiveRows()
+    offsets += activatedRows.size
+    eventOffsets += n
 
-    new IntervalIndex(ordering, keys.toArray, offsets.toArray, activeOld.toArray,
-      activeAll.toArray, activatedRows.toArray)
+    new IntervalIndex(ordering, keys.toArray, offsets.toArray, activatedRows.toArray,
+      eventOffsets.toArray, eventFlows, eventIds)
   }
 }
 
@@ -211,81 +229,88 @@ private[execution] class IntervalIndex(
     private[this] val ordering: Ordering[Any],
     private[this] val keys: Array[Any],
     private[this] val offsets: Array[Int],
-    private[this] val activeOld: Array[HashMap[Int, InternalRow]],
-    private[this] val activeAll: Array[HashMap[Int, InternalRow]],
-    private[this] val activated: Array[InternalRow])
+    private[this] val activated: Array[InternalRow],
+    private[this] val eventOffsets: Array[Int],
+    private[this] val eventFlows: Array[Byte],
+    private[this] val eventIds: Array[Int])
   extends RangeRelation {
 
-  override def sizeInBytes(): Long = activated.map(RangeIndex.rowSize).sum
+  // Rows once, plus the sweep. Rebuilt snapshots are not part of the broadcast.
+  override def sizeInBytes(): Long =
+    RangeIndex.rowsSize(activated) + eventIds.length * IntervalIndex.sweepEventBytes
 
-  private[this] val maxKeyIndex = keys.length - 1
+  /** Built on first probe. Transient, so Java serialization does not flatten the maps. */
+  @transient private lazy val snapshots = buildSnapshots()
 
-  /** The leading null key sorts before every real key. */
-  private def keyCmp(key: Any, value: Any): Int =
-    if (key == null) -1 else ordering.compare(key, value)
+  /**
+   * Per key: the set after this key's Ends, then the set after its Starts.
+   * Ends sort before Point and Start. A point never enters the map.
+   */
+  private def buildSnapshots() = {
+    val n = keys.length
+    val beforeStarts = new Array[IntMap[InternalRow]](n)
+    val activeAll = new Array[IntMap[InternalRow]](n)
+    var active = IntMap.empty[InternalRow]
+    var activatedAt = 0
+    var key = 0
+    while (key < n) {
+      val until = eventOffsets(key + 1)
+      var e = eventOffsets(key)
+      while (e < until && eventFlows(e) == RangeIndex.RangeEvent.End) {
+        active = active.removed(eventIds(e))
+        e += 1
+      }
+      beforeStarts(key) = active
+      while (e < until) {
+        val flow = eventFlows(e).toInt
+        if (flow == RangeIndex.RangeEvent.Start) {
+          active = active.updated(eventIds(e), activated(activatedAt))
+        } else if (flow != RangeIndex.RangeEvent.Point) {
+          throw new IllegalStateException(s"Unknown range event flow $flow")
+        }
+        activatedAt += 1
+        e += 1
+      }
+      activeAll(key) = active
+      key += 1
+    }
+    (beforeStarts, activeAll)
+  }
 
-  /** First index whose key is greater than or equal to `value`. */
-  private def lowerBound(value: Any): Int =
-    RangeIndex.searchBound(keys, value, orEqual = false, keyCmp)
-
-  /** First index whose key is greater than `value`. Walks a whole equal run. */
-  private def upperBound(value: Any): Int =
-    RangeIndex.searchBound(keys, value, orEqual = true, keyCmp)
+  /**
+   * The leading null key sorts before every real key. Initialized on the first
+   * probe, like [[snapshots]]: this lambda is not `Serializable`, and one instance
+   * means [[overlapping]] does not allocate a comparator per probe.
+   */
+  @transient private lazy val keyComparator: java.util.Comparator[Any] =
+    (key: Any, value: Any) => if (key == null) -1 else ordering.compare(key, value)
 
   /**
    * Rows whose interval may overlap `[low, high]`.
    *
-   * `first` is the last key strictly below `low`, so active rows there include
-   * intervals that end at `low`. `last` is the last key at or below `high`.
-   * Both bounds walk a whole run of equal keys. Three layouts fall out:
-   *  - `first < last`: active rows at `first` (including its own Starts, since
-   *    those rows are still active going into `(first, last]`), then rows
-   *    activated on `(first, last]`. This is `activeAll(first)`.
-   *  - `first == last`: only those active rows, same set. The probe did not
-   *    land on a key.
-   *  - `first > last`: `low > high` and a key lies strictly between them. Only
-   *    rows already active before `keys(first)` can match, excluding rows that
-   *    start there. This is `activeOld(first)`.
+   * `first` is the last key strictly below `low`, so rows active there still
+   * include intervals that end at `low`. `last` is the last key at or below
+   * `high`. `upperBound` steps past a whole equal run; `lowerBound` stops at
+   * its first key, and the slice covers the rest of that run. Three layouts:
+   *  - `first < last`: `activeAll(first)` (its Starts are still open going into
+   *    `(first, last]`), then rows activated on `(first, last]`.
+   *  - `first == last`: only `activeAll(first)`. No sweep key lies in the window.
+   *  - `first > last`: `low > high` and a key lies strictly between them.
+   *    `beforeStarts(first)` is the set after Ends at that key and before its
+   *    Starts, so a row that ends or starts there is excluded.
    */
   def overlapping(low: Any, high: Any): Iterator[InternalRow] = {
     if (keys.length == 1 || low == null || high == null) return Iterator.empty
 
-    val first = lowerBound(low) - 1
-    val last = upperBound(high) - 1
-
-    new Iterator[InternalRow] {
-      // Active rows are a persistent snapshot, walked with an iterator instead of
-      // `active(first)(rowIndex)`; `activated` is a plain array, so it stays indexed.
-      var usingActive = true
-      val activeIter: Iterator[InternalRow] =
-        (if (first <= last) activeAll(first) else activeOld(first)).valuesIterator
-      var activatedAvailable = first < last
-      var rowIndex = 0
-      var rowLength = 0
-
-      override final def hasNext: Boolean = {
-        if (usingActive && activeIter.hasNext) return true
-        usingActive = false
-        var result = rowIndex < rowLength
-        if (!result && activatedAvailable) {
-          activatedAvailable = false
-          rowIndex = offsets(first + 1)
-          rowLength = if (last == maxKeyIndex) activated.length else offsets(last + 1)
-          result = rowIndex < rowLength
-        }
-        result
-      }
-
-      override final def next(): InternalRow = {
-        if (usingActive) {
-          activeIter.next()
-        } else {
-          val row = activated(rowIndex)
-          rowIndex += 1
-          row
-        }
-      }
-    }
+    val first = RangeIndex.lowerBound(keys, low, keyComparator) - 1
+    val last = RangeIndex.upperBound(keys, high, keyComparator) - 1
+    val (beforeStarts, activeAll) = snapshots
+    val carried = (if (first <= last) activeAll(first) else beforeStarts(first)).valuesIterator
+    // Activations on (first, last]. A start at `first` is returned only from
+    // `activeAll`, which `carried` uses when `first <= last`.
+    val from = if (first < last) offsets(first + 1) else 0
+    val until = if (first < last) offsets(last + 1) else from
+    carried ++ RangeIndex.sliceIterator(activated, from, until)
   }
 }
 
@@ -297,11 +322,8 @@ private[execution] class IntervalIndex(
 private[execution] object PointIndex {
   def build(ordering: Ordering[Any], keyedRows: Array[(Any, InternalRow)]): PointIndex = {
     val present = keyedRows.filter(_._1 != null)
-    val comparator = new java.util.Comparator[(Any, InternalRow)] {
-      override def compare(a: (Any, InternalRow), b: (Any, InternalRow)): Int =
-        ordering.compare(a._1, b._1)
-    }
-    java.util.Arrays.sort(present, comparator)
+    val keyOrdering = Ordering.by[(Any, InternalRow), Any](_._1)(ordering)
+    java.util.Arrays.sort(present, keyOrdering)
     val keys = new Array[Any](present.length)
     val rows = new Array[InternalRow](present.length)
     var i = 0
@@ -320,31 +342,21 @@ private[execution] class PointIndex(
     private[this] val rows: Array[InternalRow])
   extends RangeRelation {
 
-  override def sizeInBytes(): Long = rows.map(RangeIndex.rowSize).sum
+  override def sizeInBytes(): Long = RangeIndex.rowsSize(rows)
 
   /** Points whose key is less than or equal to `value`. */
   def upTo(value: Any): Iterator[InternalRow] =
-    if (value == null) Iterator.empty else slice(0, upperBound(value))
+    if (value == null) {
+      Iterator.empty
+    } else {
+      RangeIndex.sliceIterator(rows, 0, RangeIndex.upperBound(keys, value, ordering))
+    }
 
   /** Points whose key is greater than or equal to `value`. */
   def from(value: Any): Iterator[InternalRow] =
-    if (value == null) Iterator.empty else slice(lowerBound(value), keys.length)
-
-  private def slice(from: Int, until: Int): Iterator[InternalRow] = new Iterator[InternalRow] {
-    private var i = from
-    override def hasNext: Boolean = i < until
-    override def next(): InternalRow = {
-      val row = rows(i)
-      i += 1
-      row
+    if (value == null) {
+      Iterator.empty
+    } else {
+      RangeIndex.sliceIterator(rows, RangeIndex.lowerBound(keys, value, ordering), keys.length)
     }
-  }
-
-  /** First index whose key is greater than or equal to `value`. */
-  private def lowerBound(value: Any): Int =
-    RangeIndex.searchBound(keys, value, orEqual = false, ordering.compare)
-
-  /** First index whose key is greater than `value`. */
-  private def upperBound(value: Any): Int =
-    RangeIndex.searchBound(keys, value, orEqual = true, ordering.compare)
 }

@@ -17,7 +17,7 @@
 
 package org.apache.spark.sql.execution.joins
 
-import scala.collection.immutable.HashMap
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 
 import org.apache.spark.SparkFunSuite
 import org.apache.spark.sql.catalyst.InternalRow
@@ -55,10 +55,24 @@ class RangeIndexSuite extends SparkFunSuite {
   private def probeIds(index: IntervalIndex, low: Any, high: Any): List[Int] =
     ids(index.overlapping(low, high))
 
-  test("toRangeEvent: point, interval, reversed, and null") {
+  private def javaRoundTrip(index: IntervalIndex): (Array[Byte], IntervalIndex) = {
+    val bytes = new ByteArrayOutputStream()
+    val out = new ObjectOutputStream(bytes)
+    out.writeObject(index)
+    out.close()
+    val raw = bytes.toByteArray
+    val in = new ObjectInputStream(new ByteArrayInputStream(raw))
+    try {
+      (raw, in.readObject().asInstanceOf[IntervalIndex])
+    } finally {
+      in.close()
+    }
+  }
+
+  test("toRangeEvents: point, interval, reversed, and null") {
     val getters = List(RangeIndex.getValue(IntegerType, 0), RangeIndex.getValue(IntegerType, 1))
     val identity = new Projection { override def apply(input: InternalRow): InternalRow = input }
-    val eventifier = RangeIndex.toRangeEvent(getters, identity, intOrdering)
+    val eventifier = RangeIndex.toRangeEvents(getters, identity, intOrdering)
 
     assert(eventifier(InternalRow(5, 5), 0) ==
       Seq(RangeIndex.RangeEvent(5, RangeIndex.RangeEvent.Point, InternalRow(5, 5), 0)))
@@ -128,7 +142,8 @@ class RangeIndexSuite extends SparkFunSuite {
     val withNull = buildIntervals(interval(0, 10, 0) ++ point(5, 1))
     assert(probeIds(withNull, null, 5).isEmpty)
     assert(probeIds(withNull, 5, null).isEmpty)
-    assert(withNull.sizeInBytes() == 16L)
+    // Two indexed rows (8 bytes each) and three sweep events: start, end, point.
+    assert(withNull.sizeInBytes() == 2 * 8L + 3 * IntervalIndex.sweepEventBytes)
 
     // At an interior endpoint, the range that ends and the one that starts
     // are each a candidate once.
@@ -158,6 +173,20 @@ class RangeIndexSuite extends SparkFunSuite {
     Seq(0, 1, n / 2, n, 2 * n - 1, 2 * n).foreach { probe =>
       assert(probeIds(nested, probe, probe).toSet == expected(probe), s"probe $probe")
     }
+  }
+
+  test("broadcast of heavily overlapping intervals stays linear in the sweep") {
+    // [i, i + n] for i in 0 until n. Every interval contains n, and the 2n
+    // endpoints are distinct, so a snapshot per key holds O(n) rows. Serializing
+    // those maps is O(n^2). The sweep is one row and two events per interval.
+    val n = 200
+    val events = (0 until n).flatMap(i => interval(i, i + n, i))
+    val index = buildIntervals(events)
+    val (raw, restored) = javaRoundTrip(index)
+    assert(raw.length < n * 1024, s"serialized ${raw.length} bytes")
+    val probe = n
+    assert(probeIds(restored, probe, probe).toSet == probeIds(index, probe, probe).toSet)
+    assert(probeIds(restored, probe, probe).size == n)
   }
 
   test("interval sweep treats NaN as its own point and Infinity as an open bound") {
@@ -239,14 +268,17 @@ class RangeIndexSuite extends SparkFunSuite {
     // Build groups equal keys, so the bound is exercised on an index whose
     // key array still has two slots for 5. Stopping at the first equal slot
     // returns only row 0.
-    val empty = HashMap.empty[Int, InternalRow]
+    // Two point events, one on each equal key slot. Points stay out of the
+    // active set, so the probe result comes from the activation slice.
+    // `offsets` and `eventOffsets` each end with a sentinel one past the last key.
     val index = new IntervalIndex(
       intOrdering,
       Array[Any](null, 5, 5),
-      Array(0, 0, 1),
-      Array(empty, empty, empty),
-      Array(empty, empty, empty),
-      Array(row(0), row(1)))
+      Array(0, 0, 1, 2),
+      Array(row(0), row(1)),
+      Array(0, 0, 1, 2),
+      Array[Byte](RangeIndex.RangeEvent.Point.toByte, RangeIndex.RangeEvent.Point.toByte),
+      Array(0, 1))
     assert(ids(index.overlapping(5, 5)).sorted == List(0, 1))
     assert(ids(index.overlapping(4, 4)).isEmpty)
     assert(ids(index.overlapping(6, 6)).isEmpty)
