@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql.execution.joins
 
+import scala.collection.mutable.ArrayBuffer
+
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.planning.{IntervalOverlapJoin, PartialRangeJoin, PointInRangeJoin, RangeJoin}
@@ -77,7 +79,8 @@ private[execution] case class RangeBroadcastMode private(
       rows: Iterator[InternalRow],
       sizeHint: Option[Long]): RangeRelation = indexKind match {
     case IntervalIndexKind =>
-      require(buildKeys.length == 2, "An interval index expects (low, high).")
+      require(buildKeys.nonEmpty && buildKeys.length <= 2,
+        "An interval index expects (low, high), or one point used as both ends.")
       buildIntervalIndex(rows)
     case PointIndexKind =>
       require(buildKeys.length == 1, "A point index expects one build key.")
@@ -89,14 +92,20 @@ private[execution] case class RangeBroadcastMode private(
   private def buildIntervalIndex(rows: Iterator[InternalRow]): IntervalIndex = {
     val ordering = keyOrdering(buildKeys.head)
     val keyProjection = new InterpretedProjection(buildKeys)
-    val valueGetters = List(
-      RangeIndex.getValue(buildKeys.head.dataType, 0),
-      RangeIndex.getValue(buildKeys(1).dataType, 1))
-    val eventifier = RangeIndex.toRangeEvents(valueGetters, keyProjection, ordering)
-    val events = rows.zipWithIndex.flatMap { case (row, idx) =>
-      eventifier(row, idx)
-    }.toArray
-    IntervalIndex.build(ordering, events)
+    val lowOf = RangeIndex.getValue(buildKeys.head.dataType, 0)
+    // One build key is a point. Both interval ends read that projected field.
+    val highOf = if (buildKeys.length == 1) {
+      lowOf
+    } else {
+      RangeIndex.getValue(buildKeys(1).dataType, 1)
+    }
+    val intervals = ArrayBuffer.empty[(Any, Any, InternalRow)]
+    rows.foreach { row =>
+      val lowHigh = keyProjection(row)
+      // Null bounds are dropped in IntervalIndex.build.
+      intervals += ((lowOf(lowHigh), highOf(lowHigh), row))
+    }
+    IntervalIndex.build(ordering, intervals.toArray)
   }
 
   private def buildPointIndex(rows: Iterator[InternalRow]): PointIndex = {

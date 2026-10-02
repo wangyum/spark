@@ -104,7 +104,7 @@ class RangeJoinSuite extends QueryTest with SharedSparkSession {
       val boundPlan = if (pointOnLeft) rightPlan else leftPlan
       val point = pointPlan.output.head
       val bounds = boundPlan.output
-      val pointKeys = point :: point :: Nil
+      val pointKeys = point :: Nil
       val buildIsPoint = buildSide match {
         case BuildRight => !pointOnLeft
         case BuildLeft => pointOnLeft
@@ -230,7 +230,7 @@ class RangeJoinSuite extends QueryTest with SharedSparkSession {
       lowInclusive = true, highInclusive = false)
     val exec = rangeJoinExec(
       leftPlan, rightPlan, BuildRight, Inner,
-      buildKeys = rightPlan.output.head :: rightPlan.output.head :: Nil,
+      buildKeys = rightPlan.output.head :: Nil,
       streamedKeys = leftPlan.output,
       condition = cond)
     assert(exec.expressions.exists(_.semanticEquals(cond)))

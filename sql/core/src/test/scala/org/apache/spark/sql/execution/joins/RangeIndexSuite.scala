@@ -21,15 +21,15 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, 
 
 import org.apache.spark.SparkFunSuite
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Projection}
+import org.apache.spark.sql.catalyst.expressions.BoundReference
 import org.apache.spark.sql.catalyst.types.PhysicalDataType
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 /**
- * Unit tests for the two range-join indexes. [[IntervalIndex]] is the sweep used by
- * point-in-range. [[PointIndex]] is the sorted array used by a single inequality.
- * Operator-level behavior is covered by `RangeJoinSuite`.
+ * Unit tests for the two range-join indexes. [[IntervalIndex]] is the interval tree
+ * used by point-in-range and interval overlap. [[PointIndex]] is the sorted array
+ * used by a single inequality. Operator-level behavior is covered by `RangeJoinSuite`.
  */
 class RangeIndexSuite extends SparkFunSuite {
 
@@ -38,17 +38,10 @@ class RangeIndexSuite extends SparkFunSuite {
 
   private def row(id: Int): InternalRow = InternalRow(id)
 
-  private def interval(lo: Int, hi: Int, id: Int): Seq[RangeIndex.RangeEvent] = {
-    val stored = row(id)
-    RangeIndex.RangeEvent(lo, RangeIndex.RangeEvent.Start, stored, id) ::
-      RangeIndex.RangeEvent(hi, RangeIndex.RangeEvent.End, stored, id) :: Nil
-  }
+  private def span(lo: Any, hi: Any, id: Int): (Any, Any, InternalRow) = (lo, hi, row(id))
 
-  private def point(v: Int, id: Int): Seq[RangeIndex.RangeEvent] =
-    RangeIndex.RangeEvent(v, RangeIndex.RangeEvent.Point, row(id), id) :: Nil
-
-  private def buildIntervals(events: Seq[RangeIndex.RangeEvent]): IntervalIndex =
-    IntervalIndex.build(intOrdering, events.toArray)
+  private def buildIntervals(spans: Seq[(Any, Any, InternalRow)]): IntervalIndex =
+    IntervalIndex.build(intOrdering, spans.toArray)
 
   private def ids(rows: Iterator[InternalRow]): List[Int] = rows.map(_.getInt(0)).toList
 
@@ -69,24 +62,16 @@ class RangeIndexSuite extends SparkFunSuite {
     }
   }
 
-  test("toRangeEvents: point, interval, reversed, and null") {
-    val getters = List(RangeIndex.getValue(IntegerType, 0), RangeIndex.getValue(IntegerType, 1))
-    val identity = new Projection { override def apply(input: InternalRow): InternalRow = input }
-    val eventifier = RangeIndex.toRangeEvents(getters, identity, intOrdering)
-
-    assert(eventifier(InternalRow(5, 5), 0) ==
-      Seq(RangeIndex.RangeEvent(5, RangeIndex.RangeEvent.Point, InternalRow(5, 5), 0)))
-    assert(eventifier(InternalRow(1, 3), 1) ==
-      Seq(
-        RangeIndex.RangeEvent(1, RangeIndex.RangeEvent.Start, InternalRow(1, 3), 1),
-        RangeIndex.RangeEvent(3, RangeIndex.RangeEvent.End, InternalRow(1, 3), 1)))
-    // Normalized, not dropped: the join condition still accepts a pair whose sweep
-    // events would otherwise never exist.
-    assert(eventifier(InternalRow(3, 1), 2) ==
-      Seq(
-        RangeIndex.RangeEvent(1, RangeIndex.RangeEvent.Start, InternalRow(3, 1), 2),
-        RangeIndex.RangeEvent(3, RangeIndex.RangeEvent.End, InternalRow(3, 1), 2)))
-    assert(eventifier(InternalRow(null, 1), 3).isEmpty)
+  test("build keeps a point, orders an inverted interval, and drops a null bound") {
+    val index = IntervalIndex.build(intOrdering, Array(
+      (5, 5, InternalRow(5, 5)),
+      (1, 3, InternalRow(1, 3)),
+      (3, 1, InternalRow(3, 1)),
+      (null, 1, InternalRow(null, 1))))
+    // (3, 1) is stored as [1, 3]. The null bound is absent.
+    assert(ids(index.overlapping(2, 2)).sorted == List(1, 3))
+    assert(ids(index.overlapping(5, 5)) == List(5))
+    assert(ids(index.overlapping(4, 4)).isEmpty)
   }
 
   test("an inverted build interval reaches the windows the condition accepts") {
@@ -98,32 +83,27 @@ class RangeIndexSuite extends SparkFunSuite {
       IntervalIndexKind)
       .transform(Array(InternalRow(3, 1), InternalRow(0, 5)))
       .asInstanceOf[IntervalIndex]
-    assert(index.overlapping(0, 4).map(_.getInt(0)).toSet == Set(3, 0))
-    assert(index.overlapping(4, 9).map(_.getInt(0)).toList == List(0))
+    assert(ids(index.overlapping(0, 4)).toSet == Set(3, 0))
+    assert(ids(index.overlapping(4, 9)) == List(0))
   }
 
-  test("interval sweep returns each overlapping row once") {
-    // Events arrive out of order: [10, 20] then [0, 5].
-    val unsorted = buildIntervals(Seq(
-      RangeIndex.RangeEvent(10, RangeIndex.RangeEvent.Start, row(0), 0),
-      RangeIndex.RangeEvent(0, RangeIndex.RangeEvent.Start, row(1), 1),
-      RangeIndex.RangeEvent(5, RangeIndex.RangeEvent.End, row(1), 1),
-      RangeIndex.RangeEvent(20, RangeIndex.RangeEvent.End, row(0), 0)))
+  test("interval tree returns each overlapping row once") {
+    // Spans arrive out of low order: [10, 20] then [0, 5].
+    val unsorted = buildIntervals(Seq(span(10, 20, 0), span(0, 5, 1)))
     assert(probeIds(unsorted, 3, 3) == List(1))
     assert(probeIds(unsorted, 15, 15) == List(0))
 
     // Probe 50 is a build key. Row 0 spans it; row 1 starts there.
-    val spanning = buildIntervals(interval(0, 100, 0) ++ interval(50, 200, 1))
+    val spanning = buildIntervals(Seq(span(0, 100, 0), span(50, 200, 1)))
     assert(probeIds(spanning, 50, 50).toSet == Set(0, 1))
     assert(probeIds(spanning, 25, 25) == List(0))
     assert(probeIds(spanning, 150, 150) == List(1))
 
-    val duplicated = buildIntervals(interval(0, 100, 0) ++ interval(0, 100, 1))
+    val duplicated = buildIntervals(Seq(span(0, 100, 0), span(0, 100, 1)))
     assert(probeIds(duplicated, 50, 50).sorted == List(0, 1))
 
-    val nested = buildIntervals(
-      interval(0, 100, 0) ++ interval(10, 20, 1) ++
-        interval(10, 50, 2) ++ interval(90, 110, 3))
+    val nested = buildIntervals(Seq(
+      span(0, 100, 0), span(10, 20, 1), span(10, 50, 2), span(90, 110, 3)))
     def assertOnce(low: Int, expected: Set[Int]): Unit = {
       val actual = probeIds(nested, low, low)
       assert(actual.toSet == expected, s"probe $low -> $actual")
@@ -139,33 +119,33 @@ class RangeIndexSuite extends SparkFunSuite {
 
     assert(probeIds(buildIntervals(Seq.empty), 1, 1).isEmpty)
 
-    val withNull = buildIntervals(interval(0, 10, 0) ++ point(5, 1))
+    val withNull = buildIntervals(Seq(span(0, 10, 0), span(5, 5, 1), (null, 4, row(9))))
     assert(probeIds(withNull, null, 5).isEmpty)
     assert(probeIds(withNull, 5, null).isEmpty)
-    // 2 rows, 3 events: Start, End, Point. Only the Start and End touch the trie.
-    assert(withNull.sizeInBytes() == 2 * 8L + 3 * IntervalIndex.sweepEventBytes + 2 * 32)
+    // The null bound is dropped, so two intervals remain and the estimate covers both.
+    val one = buildIntervals(Seq(span(0, 10, 0)))
+    assert(withNull.estimatedSize() > one.estimatedSize())
 
     // At an interior endpoint, the range that ends and the one that starts
     // are each a candidate once.
-    val chained = buildIntervals(interval(0, 1, 0) ++ interval(1, 2, 1) ++ interval(2, 3, 2))
+    val chained = buildIntervals(Seq(span(0, 1, 0), span(1, 2, 1), span(2, 3, 2)))
     assert(probeIds(chained, 0, 0) == List(0))
     assert(probeIds(chained, 1, 1).sorted == List(0, 1))
     assert(probeIds(chained, 2, 2).sorted == List(1, 2))
     assert(probeIds(chained, 3, 3) == List(2))
 
-    // [25, 10] matches [0, 30], not a row that starts strictly between the keys.
-    val inverted = buildIntervals(interval(0, 30, 0) ++ interval(15, 40, 1) ++ point(15, 2))
-    assert(probeIds(inverted, 25, 10) == List(0))
+    // A probe whose endpoints are reversed is the closed window between them.
+    // [10, 25] meets [0, 30], [15, 40], and the point at 15.
+    val inverted = buildIntervals(Seq(span(0, 30, 0), span(15, 40, 1), span(15, 15, 2)))
+    assert(probeIds(inverted, 25, 10).sorted == List(0, 1, 2))
     assert(probeIds(inverted, 10, 20).sorted == List(0, 1, 2))
   }
 
-  test("interval sweep is correct under heavy build-side overlap") {
-    // Every interval nests inside the one before it, so at the middle keys roughly
-    // half of all rows are active at once: the shape that forced an O(n^2) memory
-    // blowup when each of the n distinct keys copied its own active-rows array.
+  test("interval tree is correct under heavy build-side overlap") {
+    // Every interval nests inside the one before it, so a point in the middle
+    // hits about half of the rows. The tree still stores one node per row.
     val n = 300
-    val events = (0 until n).flatMap(i => interval(i, 2 * n - i, i))
-    val nested = buildIntervals(events)
+    val nested = buildIntervals((0 until n).map(i => span(i, 2 * n - i, i)))
 
     def expected(probe: Int): Set[Int] =
       (0 until n).filter(i => i <= probe && probe <= 2 * n - i).toSet
@@ -175,13 +155,11 @@ class RangeIndexSuite extends SparkFunSuite {
     }
   }
 
-  test("broadcast of heavily overlapping intervals stays linear in the sweep") {
-    // [i, i + n] for i in 0 until n. Every interval contains n, and the 2n
-    // endpoints are distinct, so a snapshot per key holds O(n) rows. Serializing
-    // those maps is O(n^2). The sweep is one row and two events per interval.
+  test("broadcast of heavily overlapping intervals stays linear") {
+    // [i, i + n] for i in 0 until n. Every interval contains n. The broadcast
+    // is the flat arrays, one slot per interval, so serialization stays linear.
     val n = 200
-    val events = (0 until n).flatMap(i => interval(i, i + n, i))
-    val index = buildIntervals(events)
+    val index = buildIntervals((0 until n).map(i => span(i, i + n, i)))
     val (raw, restored) = javaRoundTrip(index)
     assert(raw.length < n * 1024, s"serialized ${raw.length} bytes")
     val probe = n
@@ -189,39 +167,38 @@ class RangeIndexSuite extends SparkFunSuite {
     assert(probeIds(restored, probe, probe).size == n)
   }
 
-  test("sizeInBytes charges the active set after each event") {
+  test("estimatedSize depends on the interval count, not the overlap depth") {
     val n = 200
-    val rowsAndSweep = n * 8L + (n * 2) * IntervalIndex.sweepEventBytes
-    // Nodes one Start or End copies: ceil(log2(max(open, 2))), at least one.
-    def nodesAfter(open: Int): Int =
-      Integer.SIZE - Integer.numberOfLeadingZeros(math.max(open, 2) - 1)
-
-    // Adjacent [2i, 2i + 1]: active set is 1 after the Start and 0 after the End.
-    val disjoint = buildIntervals((0 until n).flatMap(i => interval(2 * i, 2 * i + 1, i)))
-    val disjointNodes = n * (nodesAfter(1) + nodesAfter(0))
-    assert(disjoint.sizeInBytes() == rowsAndSweep + disjointNodes * 32L)
-
-    // [i, i + n]: after each event the active set is 1..n, then n - 1..0.
-    // That sum is below a charge of the peak for every event.
-    val overlap = buildIntervals((0 until n).flatMap(i => interval(i, i + n, i)))
-    val overlapAfter = (1 to n) ++ ((n - 1) to 0 by -1)
-    val overlapNodes = overlapAfter.map(nodesAfter).sum
-    assert(overlapNodes < overlapAfter.length * nodesAfter(n))
-    assert(overlap.sizeInBytes() == rowsAndSweep + overlapNodes * 32L)
+    val one = buildIntervals(Seq(span(0, 1, 0)))
+    val disjoint = buildIntervals((0 until n).map(i => span(2 * i, 2 * i + 1, i)))
+    val overlap = buildIntervals((0 until n).map(i => span(i, i + n, i)))
+    val again = buildIntervals((0 until n).map(i => span(2 * i, 2 * i + 1, i)))
+    assert(disjoint.estimatedSize() > one.estimatedSize())
+    assert(overlap.estimatedSize() > one.estimatedSize())
+    assert(disjoint.estimatedSize() == again.estimatedSize())
+    // Nesting stores no extra copy of the rows. Key objects differ, so the two
+    // indexes need not be equal, but overlap stays the same order of magnitude.
+    assert(overlap.estimatedSize() < disjoint.estimatedSize() * 3)
   }
 
-  test("interval sweep treats NaN as its own point and Infinity as an open bound") {
+  test("estimatedSize includes distinct key objects") {
+    val ints = buildIntervals(Seq(span(0, 1, 0)))
+    val wide = UTF8String.fromString("x" * 64)
+    val strings = IntervalIndex.build(
+      PhysicalDataType.ordering(StringType),
+      Array((wide, wide, row(0))))
+    assert(strings.estimatedSize() > ints.estimatedSize())
+  }
+
+  test("interval tree treats NaN as its own point and Infinity as an open bound") {
     // PhysicalDoubleType's ordering (SQLOrderingUtil.compareDoubles) totally orders
     // -Inf < ... < +Inf < NaN, with NaN comparing equal only to itself. So [1.0, +Inf)
     // behaves like "at or above 1.0" with no finite ceiling, and a NaN key overlaps
     // only a probe that also lands exactly on NaN.
-    val events =
-      RangeIndex.RangeEvent(1.0, RangeIndex.RangeEvent.Start, row(1), 1) ::
-      RangeIndex.RangeEvent(Double.PositiveInfinity, RangeIndex.RangeEvent.End, row(1), 1) ::
-      RangeIndex.RangeEvent(Double.NegativeInfinity, RangeIndex.RangeEvent.Start, row(2), 2) ::
-      RangeIndex.RangeEvent(-1.0, RangeIndex.RangeEvent.End, row(2), 2) ::
-      RangeIndex.RangeEvent(Double.NaN, RangeIndex.RangeEvent.Point, row(3), 3) :: Nil
-    val index = IntervalIndex.build(doubleOrdering, events.toArray)
+    val index = IntervalIndex.build(doubleOrdering, Array(
+      (1.0, Double.PositiveInfinity, row(1)),
+      (Double.NegativeInfinity, -1.0, row(2)),
+      (Double.NaN, Double.NaN, row(3))))
 
     assert(ids(index.overlapping(5.0, 5.0)) == List(1))
     assert(ids(index.overlapping(Double.PositiveInfinity, Double.PositiveInfinity)) == List(1))
@@ -233,9 +210,9 @@ class RangeIndexSuite extends SparkFunSuite {
 
   test("interval index merges keys that compare equal but are not equal") {
     // Array equals is identity, and UTF8String equals is binary, so these keys
-    // compare equal under the index ordering without being equal. Splitting
-    // them into two sweep keys drops a row the probe should return. Signed
-    // zero is already one key: Scala equality treats -0.0 and 0.0 as equal.
+    // compare equal under the index ordering without being equal. The tree
+    // orders them with that comparator, so a probe on either key returns both.
+    // Signed zero is already one key: Scala equality treats -0.0 and 0.0 as equal.
     def assertMerged(
         ordering: Ordering[Any],
         low: Any,
@@ -246,20 +223,18 @@ class RangeIndexSuite extends SparkFunSuite {
       assert(leftKey != rightKey)
       assert(ordering.compare(leftKey, rightKey) == 0)
       val points = Array(
-        RangeIndex.RangeEvent(leftKey, RangeIndex.RangeEvent.Point, row(0), 0),
-        RangeIndex.RangeEvent(rightKey, RangeIndex.RangeEvent.Point, row(1), 1))
+        (leftKey, leftKey, row(0)),
+        (rightKey, rightKey, row(1)))
       val pointIdx = IntervalIndex.build(ordering, points)
       assert(ids(pointIdx.overlapping(leftKey, leftKey)).toSet == Set(0, 1))
       assert(ids(pointIdx.overlapping(rightKey, rightKey)).toSet == Set(0, 1))
 
-      val events = earlier.zipWithIndex.map { case (key, i) =>
-        RangeIndex.RangeEvent(key, RangeIndex.RangeEvent.Point, row(10 + i), 10 + i)
-      } ++ Seq(
-        RangeIndex.RangeEvent(low, RangeIndex.RangeEvent.Start, row(0), 0),
-        RangeIndex.RangeEvent(leftKey, RangeIndex.RangeEvent.End, row(0), 0),
-        RangeIndex.RangeEvent(rightKey, RangeIndex.RangeEvent.Start, row(1), 1),
-        RangeIndex.RangeEvent(high, RangeIndex.RangeEvent.End, row(1), 1))
-      val index = IntervalIndex.build(ordering, events.toArray)
+      val intervals = earlier.zipWithIndex.map { case (key, i) =>
+        (key, key, row(10 + i))
+      }.toArray ++ Array(
+        (low, leftKey, row(0)),
+        (rightKey, high, row(1)))
+      val index = IntervalIndex.build(ordering, intervals)
       assert(ids(index.overlapping(leftKey, leftKey)).sorted == List(0, 1))
       assert(ids(index.overlapping(rightKey, rightKey)).sorted == List(0, 1))
     }
@@ -285,24 +260,27 @@ class RangeIndexSuite extends SparkFunSuite {
       Seq(UTF8String.fromString("a"), UTF8String.fromString("b")))
   }
 
-  test("interval search uses the last key that compares equal") {
-    // Build groups equal keys, so the bound is exercised on an index whose
-    // key array still has two slots for 5. Stopping at the first equal slot
-    // returns only row 0.
-    // Two point events, one on each equal key slot. Points stay out of the
-    // active set, so the probe result comes from the activation slice.
-    // `offsets` and `eventOffsets` each end with a sentinel one past the last key.
-    val index = new IntervalIndex(
-      intOrdering,
-      Array[Any](null, 5, 5),
-      Array(0, 0, 1, 2),
-      Array(row(0), row(1)),
-      Array(0, 0, 1, 2),
-      Array[Byte](RangeIndex.RangeEvent.Point.toByte, RangeIndex.RangeEvent.Point.toByte),
-      Array(0, 1))
-    assert(ids(index.overlapping(5, 5)).sorted == List(0, 1))
-    assert(ids(index.overlapping(4, 4)).isEmpty)
-    assert(ids(index.overlapping(6, 6)).isEmpty)
+  test("a nested probe does not drop rows from the outer iterator") {
+    val index = buildIntervals((0 until 32).map(i => span(i, i + 10, i)))
+    val outer = index.overlapping(0, 100)
+    val seen = scala.collection.mutable.ArrayBuffer.empty[Int]
+    // The inner probe runs while the outer iterator still has rows, the same
+    // shape as two interval joins fused in one whole-stage.
+    while (outer.hasNext) {
+      seen += outer.next().getInt(0)
+      assert(ids(index.overlapping(0, 5)).sorted == (0 to 5).toList)
+    }
+    assert(seen.sorted == (0 until 32).toList)
+  }
+
+  test("a point probe of disjoint intervals returns only the containing row") {
+    val n = 1000
+    val index = buildIntervals((0 until n).map(i => span(i * 2, i * 2 + 1, i)))
+    assert(probeIds(index, 2, 2) == List(1))
+    assert(probeIds(index, 3, 3) == List(1))
+    assert(probeIds(index, 4, 4) == List(2))
+    assert(probeIds(index, -1, -1).isEmpty)
+    assert(probeIds(index, 100000, 100000).isEmpty)
   }
 
   test("point index answers both sides of a bound, including equals") {
@@ -325,12 +303,13 @@ class RangeIndexSuite extends SparkFunSuite {
     assert(ids(index.from(1)) == List(1, 3, 5, 50, 8))
     assert(index.upTo(null).isEmpty)
     assert(index.from(null).isEmpty)
-    assert(index.sizeInBytes() == 40L)
 
     val empty = PointIndex.build(intOrdering, Array.empty)
     assert(empty.upTo(1).isEmpty)
     assert(empty.from(1).isEmpty)
-    assert(empty.sizeInBytes() == 0L)
+    // SizeEstimator charges the empty array shell, and the five kept points on top of it.
+    assert(empty.estimatedSize() > 0)
+    assert(index.estimatedSize() > empty.estimatedSize())
   }
 
   test("point index orders NaN above +Infinity and -Infinity below every finite value") {

@@ -427,8 +427,9 @@ object ExtractSingleColumnNullAwareAntiJoin extends JoinSelectionHelper with Pre
  *
  * Recognizes point-in-range (`a.ip` against `[b.lo, b.hi]`), interval overlap
  * (`a.lo < b.hi AND b.lo < a.hi`), and a cross-side inequality (`a.start < b.end`).
- * Point-in-range keys are `(point, point)` and `(low, high)`. Overlap keys are
- * `(low, high)` on each side. A partial range carries the one column from each side.
+ * Point-in-range keys are the point once and `(low, high)`. The index probes
+ * that one value as both ends of the window. Overlap keys are `(low, high)`
+ * on each side. A partial range carries the one column from each side.
  * Extra conjuncts stay on the original condition and are evaluated per candidate.
  * A point-in-range pair wins over overlap, and overlap wins over a partial range.
  * [[RangePredicate]] supplies the canonical `low <= high` form; inclusivity stays
@@ -498,7 +499,8 @@ object ExtractRangeJoinKeys extends PredicateHelper {
   /**
    * `(l1 <= h1) AND (l2 <= h2)` is a point-in-range when the two predicates share
    * one expression and the other two are the bounds, on the opposite side.
-   * Returned keys are `(point, point)` and `(low, high)`.
+   * The point is returned once. Probing repeats that value as both window ends,
+   * so a `BETWEEN` expression is not evaluated twice.
    */
   private def pointInRangeKeys(
       l1: Expression,
@@ -509,18 +511,18 @@ object ExtractRangeJoinKeys extends PredicateHelper {
       right: LogicalPlan): Option[(Seq[Expression], Seq[Expression])] = {
     if (h1.semanticEquals(l2) && !l1.semanticEquals(h2) && l1.dataType == h2.dataType) {
       // l1 <= point <= h2
-      assignPoint(Seq(l2, h1), l1, h2, left, right)
+      assignPoint(l2, l1, h2, left, right)
     } else if (l1.semanticEquals(h2) && !h1.semanticEquals(l2) &&
         l2.dataType == h1.dataType) {
       // l2 <= point <= h1
-      assignPoint(Seq(l1, h2), l2, h1, left, right)
+      assignPoint(l1, l2, h1, left, right)
     } else {
       None
     }
   }
 
   private def assignPoint(
-      pointKeys: Seq[Expression],
+      point: Expression,
       low: Expression,
       high: Expression,
       left: LogicalPlan,
@@ -528,10 +530,9 @@ object ExtractRangeJoinKeys extends PredicateHelper {
     def keys(pointOnLeft: Boolean): Option[(Seq[Expression], Seq[Expression])] = {
       val pointSide = if (pointOnLeft) left else right
       val boundSide = if (pointOnLeft) right else left
-      if (pointKeys.forall(canEvaluate(_, pointSide)) &&
-          canEvaluate(low, boundSide) && canEvaluate(high, boundSide)) {
-        if (pointOnLeft) Some((pointKeys, Seq(low, high)))
-        else Some((Seq(low, high), pointKeys))
+      if (canEvaluate(point, pointSide) &&
+        canEvaluate(low, boundSide) && canEvaluate(high, boundSide)) {
+        if (pointOnLeft) Some((Seq(point), Seq(low, high))) else Some((Seq(low, high), Seq(point)))
       } else {
         None
       }

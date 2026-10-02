@@ -114,8 +114,8 @@ case class BroadcastRangeJoinExec(
   }
 
   // Stream side projects its keys once per row. The build side is already indexed.
-  // Overlap streams `(low, high)`. Point-in-range streams `(point, point)` or
-  // `(low, high)`, whichever side is streamed. A partial range streams one column.
+  // Overlap streams `(low, high)`. Point-in-range streams the point once, or
+  // `(low, high)` when the range is streamed. A partial range streams one column.
   private def keyProjection(
       keys: Seq[Expression],
       output: Seq[Attribute]): () => Projection =
@@ -153,7 +153,9 @@ case class BroadcastRangeJoinExec(
   private def candidates(relation: RangeRelation, keys: Seq[Any]): Iterator[InternalRow] =
     relation match {
       case intervals: IntervalIndex =>
-        intervals.overlapping(keys(0), keys(1))
+        // A point probe stores one key. Both window ends are that value.
+        val high = if (keys.length == 1) keys.head else keys(1)
+        intervals.overlapping(keys.head, high)
       case points: PointIndex =>
         val bound = keys.head
         rangeJoin match {
@@ -363,8 +365,8 @@ case class BroadcastRangeJoinExec(
    * Probe the broadcast index. The index kind and scan direction are fixed when
    * the plan is built, so generated code calls [[IntervalIndex.overlapping]],
    * [[PointIndex.upTo]], or [[PointIndex.from]] directly. A null key yields the
-   * empty iterator those methods already return. No per-row array or seq is
-   * allocated.
+   * empty iterator those methods already return. Generated code does not
+   * allocate a key array. An interval probe owns its walk stack.
    */
   private def genCandidateIterator(
       ctx: CodegenContext,
@@ -379,7 +381,9 @@ case class BroadcastRangeJoinExec(
         s"(($points) $relationTerm).$scan(${keyVars.head})"
       case _ =>
         val intervals = classOf[IntervalIndex].getName
-        s"(($intervals) $relationTerm).overlapping(${keyVars(0)}, ${keyVars(1)})"
+        // A point probe has one key. Reuse it as both ends so it is evaluated once.
+        val high = if (keyVars.length == 1) keyVars.head else keyVars(1)
+        s"(($intervals) $relationTerm).overlapping(${keyVars.head}, $high)"
     }
     val code = s"$iterCls $matches = $call;"
     (matches, code)

@@ -77,11 +77,11 @@ class ExtractRangeJoinKeysSuite extends PlanTest {
       And(GreaterThanOrEqual(ref, rLo), LessThanOrEqual(ref, rHi))
     }
     Seq(inclusive, exclusive, highFirst, lowFirst, between).foreach { cond =>
-      assertKeys(points, ranges, cond, PointInRangeJoin, Seq(p, p), Seq(rLo, rHi))
+      assertKeys(points, ranges, cond, PointInRangeJoin, Seq(p), Seq(rLo, rHi))
     }
     assertKeys(
       points, ranges, And(inclusive, Not(EqualTo(p, rLo))),
-      PointInRangeJoin, Seq(p, p), Seq(rLo, rHi))
+      PointInRangeJoin, Seq(p), Seq(rLo, rHi))
   }
 
   test("point-in-range tie-break: the earliest candidate pair wins") {
@@ -98,7 +98,7 @@ class ExtractRangeJoinKeysSuite extends PlanTest {
     val cond = And(
       And(GreaterThanOrEqual(p, rLo3), LessThanOrEqual(p, rHi3)),
       LessThanOrEqual(p, rHi2))
-    assertKeys(points, ranges3, cond, PointInRangeJoin, Seq(p, p), Seq(rLo3, rHi3))
+    assertKeys(points, ranges3, cond, PointInRangeJoin, Seq(p), Seq(rLo3, rHi3))
   }
 
   test("non-deterministic expressions are not range keys") {

@@ -20,7 +20,7 @@ package org.apache.spark.sql
 import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.catalyst.planning.{IntervalOverlapJoin, LessPartialRangeJoin}
-import org.apache.spark.sql.catalyst.plans.LeftOuter
+import org.apache.spark.sql.catalyst.plans.{Inner, LeftAnti, LeftOuter, LeftSemi}
 import org.apache.spark.sql.execution.{
   InputAdapter, ReusedSubqueryExec, ScalarSubquery, SparkPlan, SubqueryExec,
   WholeStageCodegenExec}
@@ -46,6 +46,20 @@ class RangeJoinSQLSuite extends QueryTest with SharedSparkSession with AdaptiveS
 
   private def findRangeJoin(plan: SparkPlan): Seq[BroadcastRangeJoinExec] = {
     collect(plan) { case j: BroadcastRangeJoinExec => j }
+  }
+
+  /** `n` range joins sit in one whole-stage, not in nested stages or input adapters. */
+  private def oneCodegenStageOwns(plan: SparkPlan, n: Int): Boolean = {
+    exists(plan) {
+      case w: WholeStageCodegenExec =>
+        def count(p: SparkPlan): Int = p match {
+          case _: InputAdapter | _: WholeStageCodegenExec => 0
+          case j: BroadcastRangeJoinExec => 1 + j.children.map(count).sum
+          case other => other.children.map(count).sum
+        }
+        count(w.child) == n
+      case _ => false
+    }
   }
 
   /** The range join is compiled into a whole-stage, not hidden under an input adapter. */
@@ -183,7 +197,11 @@ class RangeJoinSQLSuite extends QueryTest with SharedSparkSession with AdaptiveS
     val expected = sql(query).collect()
     withRangeJoin(SQLConf.ALWAYS_INLINE_COMMON_EXPR.key -> "false") {
       val df = sql(query)
-      assert(findRangeJoin(df.queryExecution.executedPlan).size == 1)
+      val planned = findRangeJoin(df.queryExecution.executedPlan)
+      assert(planned.size == 1)
+      // BETWEEN lowers to one point expression. The other side keeps (low, high).
+      val keyCounts = Set(planned.head.leftKeys.length, planned.head.rightKeys.length)
+      assert(keyCounts == Set(1, 2))
       checkAnswer(df, expected)
     }
   }
@@ -381,6 +399,84 @@ class RangeJoinSQLSuite extends QueryTest with SharedSparkSession with AdaptiveS
         val df = sql(query)
         checkAnswer(df, expected)
         assert(rangeJoinIsCodegen(df.queryExecution.executedPlan), query)
+      }
+    }
+  }
+
+  test("two interval range joins in one whole-stage match nested loop") {
+    sql("CREATE OR REPLACE TEMP VIEW chain_a(id, lo, hi) AS VALUES (1, 0, 10), (2, 20, 21)")
+    sql(
+      "CREATE OR REPLACE TEMP VIEW chain_b(id, lo, hi) AS VALUES " +
+        "(10, 1, 4), (11, 2, 8), (12, 30, 40)")
+    sql(
+      "CREATE OR REPLACE TEMP VIEW chain_c(id, lo, hi) AS VALUES " +
+        "(20, 0, 5), (21, 3, 9), (22, 100, 110)")
+    val query =
+      """
+        |SELECT /*+ BROADCAST(b), BROADCAST(c) */ a.id, b.id, c.id
+        |FROM chain_a a
+        |JOIN chain_b b ON a.lo < b.hi AND b.lo < a.hi
+        |JOIN chain_c c ON b.lo < c.hi AND c.lo < b.hi
+      """.stripMargin
+    val expected = sql(query).collect()
+    // Row 1 of a overlaps two rows of b, so the outer probe is still live when
+    // the inner probe runs.
+    assert(expected.length > 2)
+    withRangeJoin(
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.CODEGEN_FALLBACK.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val df = sql(query)
+      checkAnswer(df, expected)
+      val plan = df.queryExecution.executedPlan
+      val joins = findRangeJoin(plan)
+      assert(joins.size == 2 && joins.forall(_.rangeJoin == IntervalOverlapJoin))
+      assert(oneCodegenStageOwns(plan, 2))
+    }
+  }
+
+  test("semi and anti range joins fused outside an interval join match nested loop") {
+    sql("CREATE OR REPLACE TEMP VIEW exist_a(id, lo, hi) AS VALUES (1, 0, 100)")
+    sql(
+      "CREATE OR REPLACE TEMP VIEW exist_b(id, lo, hi) AS VALUES " +
+        "(10, 1, 4), (11, 2, 8), (12, 50, 60)")
+    sql(
+      "CREATE OR REPLACE TEMP VIEW exist_c(id, lo, hi) AS VALUES " +
+        "(20, 0, 5), (21, 3, 9), (22, 100, 110)")
+    // b10 and b11 each overlap two rows of c, so semi and anti stop before that
+    // probe is drained. b12 is still waiting on the outer probe.
+    // a.lo < c.hi references both legs of (a join b), so the semi/anti stays
+    // above that join and both probes share one stage.
+    val overlap = "b.lo < c.hi AND c.lo < b.hi AND a.lo < c.hi"
+    val semi =
+      s"""
+         |SELECT /*+ BROADCAST(b), BROADCAST(c) */ a.id, b.id
+         |FROM exist_a a
+         |JOIN exist_b b ON a.lo < b.hi AND b.lo < a.hi
+         |LEFT SEMI JOIN exist_c c ON $overlap
+       """.stripMargin
+    val anti =
+      s"""
+         |SELECT /*+ BROADCAST(b), BROADCAST(c) */ a.id, b.id
+         |FROM exist_a a
+         |JOIN exist_b b ON a.lo < b.hi AND b.lo < a.hi
+         |LEFT ANTI JOIN exist_c c ON $overlap
+       """.stripMargin
+    Seq((semi, LeftSemi), (anti, LeftAnti)).foreach { case (query, existence) =>
+      val expected = sql(query).collect()
+      assert(expected.nonEmpty, query)
+      withRangeJoin(
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+        SQLConf.CODEGEN_FALLBACK.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        val df = sql(query)
+        checkAnswer(df, expected)
+        val plan = df.queryExecution.executedPlan
+        val joins = findRangeJoin(plan)
+        assert(joins.size == 2, query)
+        assert(joins.forall(_.rangeJoin == IntervalOverlapJoin), query)
+        assert(joins.map(_.joinType).toSet == Set(Inner, existence), query)
+        assert(oneCodegenStageOwns(plan, 2), query + "\n" + plan.treeString)
       }
     }
   }
