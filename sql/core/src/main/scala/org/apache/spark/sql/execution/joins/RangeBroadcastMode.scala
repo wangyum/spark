@@ -85,11 +85,8 @@ private[execution] case class RangeBroadcastMode private(
 
     indexKind match {
       case IntervalIndexKind =>
-        val highOf = if (buildKeys.length == 1) {
-          lowOf
-        } else {
-          RangeIndex.getValue(buildKeys(1).dataType, 1)
-        }
+        val highOf =
+          if (buildKeys.length == 1) lowOf else RangeIndex.getValue(buildKeys(1).dataType, 1)
         val intervals = rows.map { r =>
           val p = projection(r)
           (lowOf(p), highOf(p), r)

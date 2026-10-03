@@ -56,15 +56,15 @@ private[execution] object IntervalIndex {
   def build(
       ordering: Ordering[Any],
       intervals: Array[(Any, Any, InternalRow)]): IntervalIndex = {
-    val valid = intervals.iterator
+    val valid = intervals
       .filter(t => t._1 != null && t._2 != null)
       .map { case (lo, hi, r) =>
         if (ordering.lteq(lo, hi)) (lo, hi, r) else (hi, lo, r)
-      }.toArray
+      }
     java.util.Arrays.sort(valid, Ordering.by[(Any, Any, InternalRow), Any](_._1)(ordering))
 
-    val n = valid.length
-    val maxHighs = new Array[Any](n)
+    val length = valid.length
+    val maxHighs = new Array[Any](length)
 
     def fillMaxHigh(start: Int, end: Int): Any = {
       if (start >= end) return null
@@ -78,7 +78,7 @@ private[execution] object IntervalIndex {
       max
     }
 
-    fillMaxHigh(0, n)
+    fillMaxHigh(0, length)
     new IntervalIndex(ordering, valid, maxHighs)
   }
 }
@@ -94,8 +94,7 @@ private[execution] class IntervalIndex private[joins] (
 
   def overlapping(low: Any, high: Any): Iterator[InternalRow] = {
     if (intervals.isEmpty || low == null || high == null) return Iterator.empty
-    val (probeLow, probeHigh) =
-      if (ordering.lteq(low, high)) (low, high) else (high, low)
+    val (probeLow, probeHigh) = if (ordering.lteq(low, high)) (low, high) else (high, low)
 
     val buffer = ArrayBuffer.empty[InternalRow]
     def search(start: Int, end: Int): Unit = {
@@ -135,7 +134,7 @@ private[execution] class PointIndex private[joins] (
     private[this] val points: Array[(Any, InternalRow)])
   extends RangeRelation {
 
-  private[this] val n = points.length
+  private[this] val length = points.length
 
   override def estimatedSize(): Long = SizeEstimator.estimate(points)
 
@@ -145,11 +144,11 @@ private[execution] class PointIndex private[joins] (
 
   /** Points whose key is greater than or equal to `value`. */
   def from(value: Any): Iterator[InternalRow] =
-    if (value == null) Iterator.empty else slice(searchBound(value, skipEquals = false), n)
+    if (value == null) Iterator.empty else slice(searchBound(value, skipEquals = false), length)
 
   private def searchBound(value: Any, skipEquals: Boolean): Int = {
     var lo = 0
-    var hi = n
+    var hi = length
     while (lo < hi) {
       val mid = (lo + hi) >>> 1
       val c = ordering.compare(points(mid)._1, value)
