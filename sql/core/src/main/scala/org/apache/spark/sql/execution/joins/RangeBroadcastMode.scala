@@ -17,8 +17,6 @@
 
 package org.apache.spark.sql.execution.joins
 
-import scala.collection.mutable.ArrayBuffer
-
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.planning.{IntervalOverlapJoin, PartialRangeJoin, PointInRangeJoin, RangeJoin}
@@ -67,73 +65,55 @@ private[execution] case class RangeBroadcastMode private(
     indexKind: RangeIndexKind)
   extends BroadcastMode with Serializable {
 
-  def copy(
-      buildKeys: Seq[Expression] = this.buildKeys,
-      indexKind: RangeIndexKind = this.indexKind): RangeBroadcastMode =
-    RangeBroadcastMode(buildKeys, indexKind)
-
   override def transform(rows: Array[InternalRow]): RangeRelation =
     transform(rows.iterator, Some(rows.length))
 
   override def transform(
       rows: Iterator[InternalRow],
-      sizeHint: Option[Long]): RangeRelation = indexKind match {
-    case IntervalIndexKind =>
-      require(buildKeys.nonEmpty && buildKeys.length <= 2,
-        "An interval index expects (low, high), or one point used as both ends.")
-      buildIntervalIndex(rows)
-    case PointIndexKind =>
-      require(buildKeys.length == 1, "A point index expects one build key.")
-      buildPointIndex(rows)
-  }
-
-  private def keyOrdering(key: Expression) = PhysicalDataType.ordering(key.dataType)
-
-  private def buildIntervalIndex(rows: Iterator[InternalRow]): IntervalIndex = {
-    val ordering = keyOrdering(buildKeys.head)
-    val keyProjection = new InterpretedProjection(buildKeys)
-    val lowOf = RangeIndex.getValue(buildKeys.head.dataType, 0)
-    // One build key is a point. Both interval ends read that projected field.
-    val highOf = if (buildKeys.length == 1) {
-      lowOf
-    } else {
-      RangeIndex.getValue(buildKeys(1).dataType, 1)
+      sizeHint: Option[Long]): RangeRelation = {
+    indexKind match {
+      case IntervalIndexKind =>
+        require(buildKeys.nonEmpty && buildKeys.length <= 2,
+          "An interval index expects (low, high), or one point used as both ends.")
+      case PointIndexKind =>
+        require(buildKeys.length == 1, "A point index expects one build key.")
     }
-    val intervals = ArrayBuffer.empty[(Any, Any, InternalRow)]
-    rows.foreach { row =>
-      val lowHigh = keyProjection(row)
-      // Null bounds are dropped in IntervalIndex.build.
-      intervals += ((lowOf(lowHigh), highOf(lowHigh), row))
-    }
-    IntervalIndex.build(ordering, intervals.toArray)
-  }
 
-  private def buildPointIndex(rows: Iterator[InternalRow]): PointIndex = {
-    val ordering = keyOrdering(buildKeys.head)
+    val ordering = PhysicalDataType.ordering(buildKeys.head.dataType)
     val projection = new InterpretedProjection(buildKeys)
-    val getter = RangeIndex.getValue(buildKeys.head.dataType, 0)
-    val keyed = rows.flatMap { row =>
-      Option(getter(projection(row))).map((_, row))
-    }.toArray
-    PointIndex.build(ordering, keyed)
+    val lowOf = RangeIndex.getValue(buildKeys.head.dataType, 0)
+
+    indexKind match {
+      case IntervalIndexKind =>
+        val highOf = if (buildKeys.length == 1) {
+          lowOf
+        } else {
+          RangeIndex.getValue(buildKeys(1).dataType, 1)
+        }
+        val intervals = rows.map { r =>
+          val p = projection(r)
+          (lowOf(p), highOf(p), r)
+        }.toArray
+        IntervalIndex.build(ordering, intervals)
+
+      case PointIndexKind =>
+        val points = rows.map(r => (lowOf(projection(r)), r)).toArray
+        PointIndex.build(ordering, points)
+    }
   }
 
   override lazy val canonicalized: RangeBroadcastMode =
-    this.copy(buildKeys = buildKeys.map(_.canonicalized), indexKind = indexKind)
+    RangeBroadcastMode(buildKeys.map(_.canonicalized), indexKind)
 }
 
 private[execution] object RangeBroadcastMode {
 
-  def apply(buildKeys: Seq[Expression], indexKind: RangeIndexKind): RangeBroadcastMode =
-    new RangeBroadcastMode(normalizeKeys(buildKeys), indexKind)
-
-  /**
-   * Nullability is not part of key identity. A [[BoundReference]] is rewritten
-   * nullable so two modes of the same ordinals and types compare equal.
-   */
-  private def normalizeKeys(keys: Seq[Expression]): Seq[Expression] = keys.map { key =>
-    key.transform {
-      case b: BoundReference => b.copy(nullable = true)
+  def apply(buildKeys: Seq[Expression], indexKind: RangeIndexKind): RangeBroadcastMode = {
+    val normalizedKeys = buildKeys.map { key =>
+      key.transform {
+        case b: BoundReference => b.copy(nullable = true)
+      }
     }
+    new RangeBroadcastMode(normalizedKeys, indexKind)
   }
 }

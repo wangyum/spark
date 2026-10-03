@@ -98,76 +98,41 @@ case class BroadcastRangeJoinExec(
     s"$nodeName $joinType $buildSide ($opId)".trim
   }
 
-  private[this] lazy val (buildPlan, streamedPlan) = buildSide match {
-    case BuildLeft => (left, right)
-    case BuildRight => (right, left)
-  }
+  private[this] lazy val buildPlan = if (buildSide == BuildLeft) left else right
+  private[this] lazy val streamedPlan = if (buildSide == BuildLeft) right else left
 
-  private[this] lazy val (buildKeys, streamedKeys) = buildSide match {
-    case BuildLeft => (leftKeys, rightKeys)
-    case BuildRight => (rightKeys, leftKeys)
-  }
+  private[this] lazy val buildKeys = if (buildSide == BuildLeft) leftKeys else rightKeys
+  private[this] lazy val streamedKeys = if (buildSide == BuildLeft) rightKeys else leftKeys
 
-  @transient private lazy val (buildOutput, streamedOutput) = buildSide match {
-    case BuildLeft => (left.output, right.output)
-    case BuildRight => (right.output, left.output)
-  }
-
-  // Stream side projects its keys once per row. The build side is already indexed.
-  // Overlap streams `(low, high)`. Point-in-range streams the point once, or
-  // `(low, high)` when the range is streamed. A partial range streams one column.
-  private def keyProjection(
-      keys: Seq[Expression],
-      output: Seq[Attribute]): () => Projection =
-    () => newProjection(keys, output)
-
-  // Accessors for one field of a projected key row. The projection is built inside
-  // the task (`streamSideKeyGenerator` is `@transient`). These getters capture only
-  // the `DataType`, so the task closure can ship them.
-  private def keyValueGetters(keys: Seq[Expression]): Seq[InternalRow => Any] =
-    keys.zipWithIndex.map { case (key, ordinal) =>
-      RangeIndex.getValue(key.dataType, ordinal)
-    }
-
-  @transient
-  private[this] lazy val streamSideKeyGenerator: () => Projection =
-    keyProjection(streamedKeys, streamedOutput)
-
-  private[this] lazy val streamSideKeyGetters: Seq[InternalRow => Any] =
-    keyValueGetters(streamedKeys)
-
-  // Original join condition, bound to the joined row. The range index returns a
-  // superset; this predicate is the only accept/reject check (inclusivity included).
-  @transient private lazy val boundCondition: InternalRow => Boolean =
-    Predicate.create(condition.get, left.output ++ right.output).eval _
-
-  protected def newProjection(expressions: Seq[Expression],
-      inputSchema: Seq[Attribute]): Projection = {
-    new InterpretedProjection(expressions, inputSchema)
-  }
+  @transient private[this] lazy val buildOutput = buildPlan.output
+  @transient private[this] lazy val streamedOutput = streamedPlan.output
 
   /** Build side holds the lower bound, so points at or below the stream key match. */
   private def buildHoldsLowerBound(partial: PartialRangeJoin): Boolean =
     partial.leftIsLower == (buildSide == BuildLeft)
 
-  private def candidates(relation: RangeRelation, keys: Seq[Any]): Iterator[InternalRow] =
+  private def candidates(
+      relation: RangeRelation,
+      boundStreamKeys: Seq[Expression],
+      streamRow: InternalRow): Iterator[InternalRow] = {
+    val low = boundStreamKeys.head.eval(streamRow)
+    if (low == null) return Iterator.empty
     relation match {
       case intervals: IntervalIndex =>
-        // A point probe stores one key. Both window ends are that value.
-        val high = if (keys.length == 1) keys.head else keys(1)
-        intervals.overlapping(keys.head, high)
+        val high = if (boundStreamKeys.length == 1) low else boundStreamKeys(1).eval(streamRow)
+        if (high == null) Iterator.empty else intervals.overlapping(low, high)
       case points: PointIndex =>
-        val bound = keys.head
         rangeJoin match {
           case partial: PartialRangeJoin if buildHoldsLowerBound(partial) =>
-            points.upTo(bound)
+            points.upTo(low)
           case _: PartialRangeJoin =>
-            points.from(bound)
+            points.from(low)
           case _ =>
             throw new IllegalStateException(
               s"Point index is only built for a partial range, got $rangeJoin.")
         }
     }
+  }
 
   override def doExecute(): RDD[InternalRow] = {
     require(BroadcastRangeJoinExec.supports(joinType, buildSide),
@@ -177,12 +142,15 @@ case class BroadcastRangeJoinExec(
   }
 
   private def streamPreservingJoin(relation: Broadcast[RangeRelation]): RDD[InternalRow] = {
+    val boundStreamKeys = BindReferences.bindReferences(streamedKeys, streamedOutput)
+    val numBuildFields = buildPlan.output.length
+
     val resultRdd = streamedPlan.execute().mapPartitions { stream =>
+      val boundCondition = Predicate.create(condition.get, left.output ++ right.output).eval _
       new Iterator[InternalRow] {
         private[this] val index = relation.value
-        private[this] val streamSideKeys: Projection = streamSideKeyGenerator()
         private[this] val joinedRow = new JoinedRow
-        private[this] val buildNulls = new GenericInternalRow(buildPlan.output.length)
+        private[this] val buildNulls = new GenericInternalRow(numBuildFields)
         private[this] var matchIterator: Iterator[InternalRow] = Iterator.empty
 
         // current row from stream side
@@ -209,9 +177,7 @@ case class BroadcastRangeJoinExec(
             if (streamRow == null) {
               streamRow = stream.next()
               foundMatch = false
-              val projected = streamSideKeys(streamRow)
-              val keys = streamSideKeyGetters.map(_(projected))
-              matchIterator = if (keys.contains(null)) Iterator.empty else candidates(index, keys)
+              matchIterator = candidates(index, boundStreamKeys, streamRow)
             }
 
             var matched = false

@@ -449,9 +449,17 @@ object ExtractRangeJoinKeys extends PredicateHelper {
   def unapply(plan: LogicalPlan): Option[ReturnType] = plan match {
     case Join(left, right, joinType, Some(condition), _) =>
       val predicates = splitConjunctivePredicates(inlineCommonExpressions(condition))
-      pointInRange(predicates, left, right, joinType)
-        .orElse(intervalOverlap(predicates, left, right, joinType))
-        .orElse(partialRange(predicates, left, right, joinType))
+      val rangePreds = predicates.collect {
+        case RangePredicate(dt, low, high) if RangePredicate.supportedType(dt) =>
+          (dt, low, high)
+      }
+      if (rangePreds.isEmpty) {
+        None
+      } else {
+        pointInRange(rangePreds, left, right, joinType)
+          .orElse(intervalOverlap(rangePreds, left, right, joinType))
+          .orElse(partialRange(rangePreds, left, right, joinType))
+      }
     case _ => None
   }
 
@@ -481,44 +489,27 @@ object ExtractRangeJoinKeys extends PredicateHelper {
   }
 
   private def pointInRange(
-      predicates: Seq[Expression],
+      rangePreds: Seq[(DataType, Expression, Expression)],
       left: LogicalPlan,
       right: LogicalPlan,
       joinType: JoinType): Option[ReturnType] = {
-    predicates.combinations(2).flatMap {
-      case Seq(RangePredicate(d1, l1, h1), RangePredicate(d2, l2, h2))
-          if d1 == d2 && RangePredicate.supportedType(d1) =>
-        pointInRangeKeys(l1, h1, l2, h2, left, right).iterator.collect {
+    rangePreds.combinations(2).flatMap {
+      case Seq((d1, l1, h1), (d2, l2, h2)) if d1 == d2 =>
+        val pointCandidate =
+          if (h1.semanticEquals(l2) && !l1.semanticEquals(h2) && l1.dataType == h2.dataType) {
+            assignPoint(l2, l1, h2, left, right)
+          } else if (l1.semanticEquals(h2) && !h1.semanticEquals(l2) &&
+              l2.dataType == h1.dataType) {
+            assignPoint(l1, l2, h1, left, right)
+          } else {
+            None
+          }
+        pointCandidate.collect {
           case (leftKeys, rightKeys) if supportedKeys(leftKeys, rightKeys) =>
             (left, right, leftKeys, rightKeys, joinType, PointInRangeJoin)
         }
-      case _ => Iterator.empty
+      case _ => None
     }.nextOption()
-  }
-
-  /**
-   * `(l1 <= h1) AND (l2 <= h2)` is a point-in-range when the two predicates share
-   * one expression and the other two are the bounds, on the opposite side.
-   * The point is returned once. Probing repeats that value as both window ends,
-   * so a `BETWEEN` expression is not evaluated twice.
-   */
-  private def pointInRangeKeys(
-      l1: Expression,
-      h1: Expression,
-      l2: Expression,
-      h2: Expression,
-      left: LogicalPlan,
-      right: LogicalPlan): Option[(Seq[Expression], Seq[Expression])] = {
-    if (h1.semanticEquals(l2) && !l1.semanticEquals(h2) && l1.dataType == h2.dataType) {
-      // l1 <= point <= h2
-      assignPoint(l2, l1, h2, left, right)
-    } else if (l1.semanticEquals(h2) && !h1.semanticEquals(l2) &&
-        l2.dataType == h1.dataType) {
-      // l2 <= point <= h1
-      assignPoint(l1, l2, h1, left, right)
-    } else {
-      None
-    }
   }
 
   private def assignPoint(
@@ -527,69 +518,43 @@ object ExtractRangeJoinKeys extends PredicateHelper {
       high: Expression,
       left: LogicalPlan,
       right: LogicalPlan): Option[(Seq[Expression], Seq[Expression])] = {
-    def keys(pointOnLeft: Boolean): Option[(Seq[Expression], Seq[Expression])] = {
-      val pointSide = if (pointOnLeft) left else right
-      val boundSide = if (pointOnLeft) right else left
-      if (canEvaluate(point, pointSide) &&
-        canEvaluate(low, boundSide) && canEvaluate(high, boundSide)) {
-        if (pointOnLeft) Some((Seq(point), Seq(low, high))) else Some((Seq(low, high), Seq(point)))
-      } else {
-        None
-      }
+    if (canEvaluate(point, left) && canEvaluate(low, right) && canEvaluate(high, right)) {
+      Some((Seq(point), Seq(low, high)))
+    } else if (canEvaluate(point, right) && canEvaluate(low, left) && canEvaluate(high, left)) {
+      Some((Seq(low, high), Seq(point)))
+    } else {
+      None
     }
-    keys(pointOnLeft = true).orElse(keys(pointOnLeft = false))
   }
 
-  /**
-   * `(l1 <= h1) AND (l2 <= h2)` is an interval overlap when each side holds one
-   * low and one high, and the two ends on a side are different expressions.
-   * Keys are `(low, high)` on each side and are probed as a window. A degenerate
-   * side (`low` equals `high`) is a point-in-range and is left to [[pointInRange]].
-   */
   private def intervalOverlap(
-      predicates: Seq[Expression],
+      rangePreds: Seq[(DataType, Expression, Expression)],
       left: LogicalPlan,
       right: LogicalPlan,
       joinType: JoinType): Option[ReturnType] = {
-    predicates.combinations(2).flatMap {
-      case Seq(RangePredicate(d1, l1, h1), RangePredicate(d2, l2, h2))
-          if d1 == d2 && RangePredicate.supportedType(d1) =>
-        overlapKeys(l1, h1, l2, h2, left, right, joinType).iterator
-      case _ => Iterator.empty
+    rangePreds.combinations(2).flatMap {
+      case Seq((d1, l1, h1), (d2, l2, h2)) if d1 == d2 =>
+        val overlapCandidate =
+          if (canEvaluate(l1, left) && canEvaluate(h2, left) &&
+              canEvaluate(l2, right) && canEvaluate(h1, right)) {
+            Some((Seq(l1, h2), Seq(l2, h1)))
+          } else if (canEvaluate(l2, left) && canEvaluate(h1, left) &&
+              canEvaluate(l1, right) && canEvaluate(h2, right)) {
+            Some((Seq(l2, h1), Seq(l1, h2)))
+          } else {
+            None
+          }
+        overlapCandidate.collect {
+          case (leftKeys, rightKeys)
+              if !leftKeys.head.semanticEquals(leftKeys(1)) &&
+                !rightKeys.head.semanticEquals(rightKeys(1)) &&
+                leftKeys.head.dataType == leftKeys(1).dataType &&
+                rightKeys.head.dataType == rightKeys(1).dataType &&
+                supportedKeys(leftKeys, rightKeys) =>
+            (left, right, leftKeys, rightKeys, joinType, IntervalOverlapJoin)
+        }
+      case _ => None
     }.nextOption()
-  }
-
-  private def overlapKeys(
-      l1: Expression,
-      h1: Expression,
-      l2: Expression,
-      h2: Expression,
-      left: LogicalPlan,
-      right: LogicalPlan,
-      joinType: JoinType): Option[ReturnType] = {
-    def assign(
-        leftLow: Expression,
-        leftHigh: Expression,
-        rightLow: Expression,
-        rightHigh: Expression): Option[ReturnType] = {
-      val leftKeys = Seq(leftLow, leftHigh)
-      val rightKeys = Seq(rightLow, rightHigh)
-      if (leftLow.semanticEquals(leftHigh) || rightLow.semanticEquals(rightHigh)) {
-        None
-      } else if (leftLow.dataType != leftHigh.dataType ||
-          rightLow.dataType != rightHigh.dataType ||
-          !supportedKeys(leftKeys, rightKeys)) {
-        None
-      } else if (canEvaluate(leftLow, left) && canEvaluate(leftHigh, left) &&
-          canEvaluate(rightLow, right) && canEvaluate(rightHigh, right)) {
-        Some((left, right, leftKeys, rightKeys, joinType, IntervalOverlapJoin))
-      } else {
-        None
-      }
-    }
-    // l1 <= h1 and l2 <= h2, with the low of each interval on the opposite side
-    // from its high.
-    assign(l1, h2, l2, h1).orElse(assign(l2, h1, l1, h2))
   }
 
   private def supportedKeys(keys: Seq[Expression]*): Boolean = {
@@ -599,22 +564,23 @@ object ExtractRangeJoinKeys extends PredicateHelper {
   }
 
   private def partialRange(
-      predicates: Seq[Expression],
+      rangePreds: Seq[(DataType, Expression, Expression)],
       left: LogicalPlan,
       right: LogicalPlan,
       joinType: JoinType): Option[ReturnType] = {
-    predicates.iterator.flatMap {
-      case RangePredicate(_, low, high)
-          if !low.semanticEquals(high) && low.dataType == high.dataType &&
-            supportedKeys(Seq(low, high)) =>
+    rangePreds.iterator.flatMap { case (_, low, high) =>
+      if (!low.semanticEquals(high) && low.dataType == high.dataType &&
+          supportedKeys(Seq(low, high))) {
         if (canEvaluate(low, left) && canEvaluate(high, right)) {
-          Iterator((left, right, low :: Nil, high :: Nil, joinType, LessPartialRangeJoin))
+          Some((left, right, Seq(low), Seq(high), joinType, LessPartialRangeJoin))
         } else if (canEvaluate(low, right) && canEvaluate(high, left)) {
-          Iterator((left, right, high :: Nil, low :: Nil, joinType, GreaterPartialRangeJoin))
+          Some((left, right, Seq(high), Seq(low), joinType, GreaterPartialRangeJoin))
         } else {
-          Iterator.empty
+          None
         }
-      case _ => Iterator.empty
+      } else {
+        None
+      }
     }.nextOption()
   }
 }
