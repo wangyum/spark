@@ -316,21 +316,58 @@ trait UnaryNode extends LogicalPlan with UnaryLike[LogicalPlan] {
    * original constraint expressions with the corresponding alias
    */
   protected def getAllValidConstraints(projectList: Seq[NamedExpression]): ExpressionSet = {
-    var allConstraints = child.constraints
+    val originalConstraints = child.constraints
+    val newConstraints = mutable.ArrayBuffer.empty[Expression]
+
+    // A single source expression can be given more than one alias, e.g. `SELECT a AS x, a AS z`.
+    // Group by the canonical source so all of its aliases can be related to one another below,
+    // instead of relying on repeated substitution into an ever-growing constraint set.
+    val aliasesBySource: Map[Expression, Seq[Attribute]] = projectList.collect {
+      case a: Alias if !a.child.foldable && a.child.deterministic => a
+    }.groupMap(_.child.canonicalized)(_.toAttribute)
+
     projectList.foreach {
       case a @ Alias(l: Literal, _) =>
-        allConstraints += EqualNullSafe(a.toAttribute, l)
+        newConstraints += EqualNullSafe(a.toAttribute, l)
       case a @ Alias(e, _) if e.deterministic =>
-        // For every alias in `projectList`, replace the reference in constraints by its attribute.
-        allConstraints ++= allConstraints.map(_ transform {
-          case expr: Expression if expr.semanticEquals(e) =>
-            a.toAttribute
-        })
-        allConstraints += EqualNullSafe(e, a.toAttribute)
+        newConstraints += EqualNullSafe(e, a.toAttribute)
       case _ => // Don't change.
     }
 
-    allConstraints
+    if (aliasesBySource.nonEmpty && originalConstraints.nonEmpty) {
+      // Substitute every source for its primary alias attribute in a single simultaneous pass over
+      // the original constraints, instead of cascading one alias substitution at a time into the
+      // (already-substituted) output of the previous one. The latter is exponential in the number
+      // of aliases whenever several different aliased attributes co-occur in the same constraint,
+      // e.g. a filter over the sum of many columns that are all later aliased (SPARK-29606).
+      val primaryDestination = aliasesBySource.transform((_, destinations) => destinations.head)
+      val primarySubstituted = originalConstraints.map(_ transform {
+        case expr: Expression if expr.deterministic =>
+          primaryDestination.getOrElse(expr.canonicalized, expr)
+      })
+      newConstraints ++= primarySubstituted
+
+      aliasesBySource.values.foreach { destinations =>
+        if (destinations.length > 1) {
+          // Aliases of the same source expression are equal to one another as well.
+          destinations.combinations(2).foreach {
+            case Seq(d1, d2) => newConstraints += EqualNullSafe(d1, d2)
+          }
+          // Any alias beyond the primary one: rename the primary attribute to it within the
+          // already-substituted constraints referencing the primary attribute. This is a plain
+          // leaf-to-leaf rename, staying linear regardless of how many aliases this source has.
+          val primary = destinations.head
+          val relevantConstraints = primarySubstituted.filter(_.references.contains(primary))
+          destinations.tail.foreach { extraDestination =>
+            newConstraints ++= relevantConstraints.map(_ transform {
+              case attr: Attribute if attr == primary => extraDestination
+            })
+          }
+        }
+      }
+    }
+
+    originalConstraints ++ newConstraints
   }
 
   override protected lazy val validConstraints: ExpressionSet = child.constraints

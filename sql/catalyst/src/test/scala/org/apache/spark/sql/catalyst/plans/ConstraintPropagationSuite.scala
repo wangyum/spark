@@ -19,6 +19,8 @@ package org.apache.spark.sql.catalyst.plans
 
 import java.util.TimeZone
 
+import org.scalatest.time.{Seconds, Span}
+
 import org.apache.spark.sql.catalyst.analysis._
 import org.apache.spark.sql.catalyst.dsl.expressions._
 import org.apache.spark.sql.catalyst.dsl.plans._
@@ -163,6 +165,25 @@ class ConstraintPropagationSuite extends PlanTest {
         IsNotNull(resolveColumn(multiAlias.analyze, "y")),
         resolveColumn(multiAlias.analyze, "x") === resolveColumn(multiAlias.analyze, "y") + 10))
     )
+  }
+
+  test("SPARK-29606, SPARK-33152: aliasing many columns referenced by one wide predicate " +
+      "does not blow up") {
+    // Each alias used to be substituted into the (already substituted) output of the previous
+    // alias, so when many different attributes co-occur in one constraint (e.g. a filter over
+    // the sum of many columns that are all later aliased), the constraint set size doubled with
+    // every additional alias. With 30 columns that is 2^30 intermediate constraints -- this test
+    // would not complete within the timeout before the fix.
+    val columnCount = 30
+    val columns = (0 until columnCount).map(i => Symbol(s"c$i").int)
+    val tr = LocalRelation(columns: _*)
+    val sumExpr = columns.map(c => c: Expression).reduce(_ + _)
+    val aliasedProjectList = columns.map(c => Alias(c, s"${c.name}_1")())
+    val plan = Project(aliasedProjectList, tr.where(sumExpr > 100)).analyze
+
+    failAfter(Span(30, Seconds)) {
+      assert(plan.constraints.size == columnCount + 1)
+    }
   }
 
   test("propagating constraints in union") {
