@@ -2737,6 +2737,63 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
     }
   }
 
+  test("SPARK-38230: dynamic partition overwrite with custom partition path") {
+    withSQLConf(SQLConf.PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.DYNAMIC.toString) {
+      withTempPath { customPath =>
+        withTable("t") {
+          sql(
+            """
+              |create table t(i int, part1 int, part2 int) using parquet
+              |partitioned by (part1, part2)
+            """.stripMargin)
+
+          sql("insert into t partition(part1=1, part2=1) select 1")
+          checkAnswer(spark.table("t"), Row(1, 1, 1) :: Nil)
+
+          sql(s"alter table t add partition(part1=1, part2=2) " +
+            s"location '${customPath.getAbsolutePath}'")
+
+          // Dynamic partition overwrite to empty custom partition
+          sql("insert overwrite table t partition(part1=1, part2) select 2, 2")
+          checkAnswer(spark.table("t"), Row(1, 1, 1) :: Row(2, 1, 2) :: Nil)
+
+          // Dynamic partition overwrite to non-empty custom partition
+          sql("insert overwrite table t partition(part1=1, part2) select 3, 2")
+          checkAnswer(spark.table("t"), Row(1, 1, 1) :: Row(3, 1, 2) :: Nil)
+
+          val filesInCustom = customPath.listFiles().filter(_.getName.endsWith(".parquet"))
+          assert(filesInCustom.length == 1)
+        }
+      }
+    }
+  }
+
+  test("SPARK-38230: static partition overwrite with custom partition path") {
+    withTempPath { customPath =>
+      withTable("t") {
+        sql(
+          """
+            |create table t(i int, part1 int, part2 int) using parquet
+            |partitioned by (part1, part2)
+          """.stripMargin)
+
+        sql(s"alter table t add partition(part1=1, part2=2) " +
+          s"location '${customPath.getAbsolutePath}'")
+
+        // Static partition overwrite into custom partition
+        sql("insert overwrite table t partition(part1=1, part2=2) select 1")
+        checkAnswer(spark.table("t"), Row(1, 1, 2) :: Nil)
+
+        // Repeat static partition overwrite to ensure data is updated properly
+        sql("insert overwrite table t partition(part1=1, part2=2) select 2")
+        checkAnswer(spark.table("t"), Row(2, 1, 2) :: Nil)
+
+        val filesInCustom = customPath.listFiles().filter(_.getName.endsWith(".parquet"))
+        assert(filesInCustom.length == 1)
+      }
+    }
+  }
+
   test("SPARK-35106: Throw exception when rename custom partition paths returns false") {
     withSQLConf(
       "fs.file.impl" -> classOf[RenameFromSparkStagingToFinalDirAlwaysTurnsFalseFilesystem].getName,
@@ -3134,19 +3191,22 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
           .getPartition(TableIdentifier("t"), Map("p1" -> "legacy_value")).location)
         assert(legacyLocation.getName === "p1=legacy_value")
 
-        // A dynamic partition insert lists all the partitions of the table to collect the custom
-        // partition locations, which computes the default path of every existing partition.
-        intercept[NumberFormatException] {
-          sql("INSERT INTO t VALUES (1, 1)")
-        }
-
-        withSQLConf(SQLConf.VALIDATE_PARTITION_COLUMNS.key -> "false") {
-          sql("INSERT INTO t VALUES (1, 1)")
-        }
+        // SPARK-38230: a dynamic partition insert only looks up the catalog partitions it
+        // actually wrote to (by name, after the write), instead of listing and validating the
+        // path fragment of every existing partition in the table upfront. So writing to a new,
+        // unrelated partition succeeds even though the table also has a pre-existing partition
+        // whose value cannot be validated against the schema, and without needing to disable
+        // SQLConf.VALIDATE_PARTITION_COLUMNS for it.
+        sql("INSERT INTO t VALUES (1, 1)")
         val newLocation = new File(spark.sessionState.catalog
           .getPartition(TableIdentifier("t"), Map("p1" -> "1")).location)
         assert(newLocation.getParentFile === legacyLocation.getParentFile)
         checkAnswer(spark.read.parquet(newLocation.getCanonicalPath), Row(1))
+
+        // The pre-existing legacy partition is left untouched by the unrelated insert.
+        val legacyLocationAfterInsert = new File(spark.sessionState.catalog
+          .getPartition(TableIdentifier("t"), Map("p1" -> "legacy_value")).location)
+        assert(legacyLocationAfterInsert === legacyLocation)
       }
     }
   }

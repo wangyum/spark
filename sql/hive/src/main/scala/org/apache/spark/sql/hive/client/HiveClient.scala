@@ -255,6 +255,14 @@ private[hive] trait HiveClient {
       table: String,
       partialSpec: Option[TablePartitionSpec]): Seq[CatalogTablePartition]
 
+  /**
+   * Returns the partitions for the given table that match the supplied partition names.
+   */
+  def getPartitionsByNames(
+      db: String,
+      table: String,
+      partNames: Seq[String]): Seq[CatalogTablePartition]
+
   /** Returns partitions filtered by predicates for the given table. */
   def getPartitionsByFilter(
       catalogTable: RawHiveTable,

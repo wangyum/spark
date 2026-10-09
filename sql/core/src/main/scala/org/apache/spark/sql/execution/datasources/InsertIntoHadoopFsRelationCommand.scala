@@ -17,7 +17,10 @@
 
 package org.apache.spark.sql.execution.datasources
 
-import org.apache.hadoop.fs.{FileSystem, Path}
+import java.io.IOException
+
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{FileSystem, FileUtil, Path}
 
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.{Row, SaveMode}
@@ -102,22 +105,40 @@ case class InsertIntoHadoopFsRelationCommand(
     var customPartitionLocations: Map[TablePartitionSpec, String] = Map.empty
     var matchingPartitions: Seq[CatalogTablePartition] = Seq.empty
 
-    // When partitions are tracked by the catalog, compute all custom partition locations that
-    // may be relevant to the insertion job.
-    if (partitionsTrackedByCatalog) {
-      matchingPartitions = sparkSession.sessionState.catalog.listPartitions(
-        catalogTable.get.identifier, Some(staticPartitions))
-      initialMatchingPartitions = matchingPartitions.map(_.spec)
-      customPartitionLocations = getCustomPartitionLocations(
-        fs, catalogTable.get, qualifiedOutputPath, matchingPartitions)
-    }
-
     val jobId = java.util.UUID.randomUUID().toString
     val committer = FileCommitProtocol.instantiate(
       sparkSession.sessionState.conf.fileCommitProtocolClass,
       jobId = jobId,
       outputPath = outputPath.toString,
       dynamicPartitionOverwrite = dynamicPartitionOverwrite)
+    // For dynamic partition overwrite, FileOutputCommitter's output path is staging path, files
+    // will be renamed from staging path to final output path during commit job
+    val committerOutputPath = if (dynamicPartitionOverwrite) {
+      FileCommitProtocol.getStagingDir(outputPath.toString, jobId)
+        .makeQualified(fs.getUri, fs.getWorkingDirectory)
+    } else {
+      qualifiedOutputPath
+    }
+    var updatedPartitionPaths: Set[String] = Set.empty
+
+    val isDynamicPartition = partitionColumns.length > staticPartitions.size
+    val skipListPartitionsUpfront =
+      partitionsTrackedByCatalog && isDynamicPartition && dynamicPartitionOverwrite
+
+    // When partitions are tracked by the catalog, compute all custom partition locations that
+    // may be relevant to the insertion job.
+    if (partitionsTrackedByCatalog) {
+      if (!skipListPartitionsUpfront) {
+        matchingPartitions = sparkSession.sessionState.catalog
+          .listPartitions(catalogTable.get.identifier, Some(staticPartitions))
+        initialMatchingPartitions = matchingPartitions.map(_.spec)
+        customPartitionLocations =
+          getCustomPartitionLocations(fs, catalogTable.get, qualifiedOutputPath, matchingPartitions)
+      } else if (ifPartitionNotExists && staticPartitions.nonEmpty) {
+        matchingPartitions = sparkSession.sessionState.catalog
+          .listPartitions(catalogTable.get.identifier, Some(staticPartitions))
+      }
+    }
 
     val doInsertion = if (mode == SaveMode.Append) {
       true
@@ -167,33 +188,65 @@ case class InsertIntoHadoopFsRelationCommand(
                 retainData = true /* already deleted */).run(sparkSession)
             }
           }
+          // The `customPartitionLocations` is getting from writing paths. Hence, it need to move
+          // files from `qualifiedOutputPath` to custom location.
+          if (skipListPartitionsUpfront && updatedPartitions.nonEmpty &&
+              customPartitionLocations.nonEmpty) {
+            overwriteCustomPartitions(
+              fs,
+              catalogTable.get,
+              qualifiedOutputPath,
+              committer,
+              customPartitionLocations,
+              hadoopConf)
+          }
         }
       }
 
-      // For dynamic partition overwrite, FileOutputCommitter's output path is staging path, files
-      // will be renamed from staging path to final output path during commit job
-      val committerOutputPath = if (dynamicPartitionOverwrite) {
-        FileCommitProtocol.getStagingDir(outputPath.toString, jobId)
-          .makeQualified(fs.getUri, fs.getWorkingDirectory)
-      } else {
-        qualifiedOutputPath
-      }
-
-      val updatedPartitionPaths =
-        FileFormatWriter.write(
+      if (skipListPartitionsUpfront) {
+        // Dynamic partition overwrite
+        updatedPartitionPaths = FileFormatWriter.write(
           sparkSession = sparkSession,
           plan = child,
           fileFormat = fileFormat,
           committer = committer,
           outputSpec = FileFormatWriter.OutputSpec(
-            committerOutputPath.toString, customPartitionLocations, outputColumns),
+            committerOutputPath.toString,
+            Map.empty,
+            outputColumns),
           hadoopConf = hadoopConf,
           partitionColumns = partitionColumns,
           bucketSpec = bucketSpec,
           statsTrackers = Seq(basicWriteJobStatsTracker(hadoopConf)),
           options = options,
           numStaticPartitionCols = staticPartitions.size)
+        logDebug(s"Updated partition paths: ${updatedPartitionPaths.mkString(",")}")
 
+        if (updatedPartitionPaths.nonEmpty) {
+          matchingPartitions = sparkSession.sessionState.catalog
+            .listPartitionsByNames(catalogTable.get.identifier, updatedPartitionPaths.toSeq)
+          initialMatchingPartitions = matchingPartitions.map(_.spec)
+          customPartitionLocations =
+            getCustomPartitionLocations(
+              fs, catalogTable.get, qualifiedOutputPath, matchingPartitions)
+        }
+      } else {
+        updatedPartitionPaths = FileFormatWriter.write(
+          sparkSession = sparkSession,
+          plan = child,
+          fileFormat = fileFormat,
+          committer = committer,
+          outputSpec = FileFormatWriter.OutputSpec(
+            committerOutputPath.toString,
+            customPartitionLocations,
+            outputColumns),
+          hadoopConf = hadoopConf,
+          partitionColumns = partitionColumns,
+          bucketSpec = bucketSpec,
+          statsTrackers = Seq(basicWriteJobStatsTracker(hadoopConf)),
+          options = options,
+          numStaticPartitionCols = staticPartitions.size)
+      }
 
       // update metastore partition metadata
       if (updatedPartitionPaths.isEmpty && staticPartitions.nonEmpty
@@ -285,6 +338,55 @@ case class InsertIntoHadoopFsRelationCommand(
         None
       }
     }.toMap
+  }
+
+  /**
+   * Deletes all partition files that match the custom locations and copy files from the dynamic
+   * writing paths
+   */
+  private def overwriteCustomPartitions(
+      fs: FileSystem,
+      table: CatalogTable,
+      qualifiedOutputPath: Path,
+      committer: FileCommitProtocol,
+      customPartitions: Map[TablePartitionSpec, String],
+      hadoopConf: Configuration): Unit = {
+    val validatePartitionColumns = conf.validatePartitionColumns
+    customPartitions.foreach { case (spec, customLoc) =>
+      val defaultLocation = qualifiedOutputPath.suffix(
+        "/" + PartitioningUtils.getPathFragment(
+          spec, table.partitionSchema, validatePartitionColumns))
+
+      val catalogPath = new Path(customLoc)
+      val catalogFs = catalogPath.getFileSystem(hadoopConf)
+      val catalogLocation = catalogPath.makeQualified(
+        catalogFs.getUri, catalogFs.getWorkingDirectory)
+      logInfo(s"Overwriting custom partition $spec from $defaultLocation to $catalogLocation")
+      if (catalogFs.exists(catalogLocation) &&
+          !committer.deleteWithJob(catalogFs, catalogLocation, true)) {
+        throw QueryExecutionErrors.cannotClearPartitionDirectoryError(catalogLocation)
+      }
+
+      if (!catalogFs.exists(catalogLocation.getParent)) {
+        catalogFs.mkdirs(catalogLocation.getParent)
+      }
+
+      val sameFs = catalogFs.getUri.getScheme == fs.getUri.getScheme &&
+        catalogFs.getUri.getAuthority == fs.getUri.getAuthority
+
+      if (sameFs) {
+        if (!fs.rename(defaultLocation, catalogLocation)) {
+          throw new IOException(
+            s"Failed to rename $defaultLocation to $catalogLocation")
+        }
+      } else {
+        if (!FileUtil.copy(
+            fs, defaultLocation, catalogFs, catalogLocation, true, true, hadoopConf)) {
+          throw new IOException(
+            s"Failed to copy $defaultLocation to $catalogLocation")
+        }
+      }
+    }
   }
 
   override protected def withNewChildInternal(

@@ -823,6 +823,26 @@ private[hive] class HiveClientImpl(
     getPartitions(hiveTable, spec)
   }
 
+  override def getPartitionsByNames(
+      db: String,
+      table: String,
+      partNames: Seq[String]): Seq[CatalogTablePartition] = withHiveState {
+    if (partNames.isEmpty) {
+      Seq.empty
+    } else {
+      val hiveTable =
+        getRawTableOption(db, table).getOrElse(throw new NoSuchTableException(db, table))
+      // Reused here only to bound the number of partition names sent to the metastore in a
+      // single Thrift call, not for its documented InSet-predicate-rewriting purpose.
+      val batchSize = SQLConf.get.metastorePartitionPruningInSetThreshold
+      val parts = partNames.grouped(batchSize).flatMap { batch =>
+        shim.getPartitionsByNames(client, hiveTable, batch.asJava)
+      }.map(fromHivePartition).toSeq
+      HiveCatalogMetrics.incrementFetchedPartitions(parts.length)
+      parts
+    }
+  }
+
   private def getPartitions(
       hiveTable: HiveTable,
       spec: Option[TablePartitionSpec]): Seq[CatalogTablePartition] = withHiveState {

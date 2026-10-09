@@ -18,6 +18,7 @@
 package org.apache.spark.sql.catalyst.catalog
 
 import java.net.URI
+import java.util.Locale
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
@@ -232,6 +233,40 @@ object ExternalCatalogUtils {
 
   def convertNullPartitionValues(spec: TablePartitionSpec): TablePartitionSpec = {
     spec.transform((_, v) => if (v == null) DEFAULT_PARTITION_NAME else v).map(identity)
+  }
+
+  /**
+   * Normalizes partition path strings by lowercasing column names while preserving
+   * partition values, e.g. 'A=1/B=2' -> 'a=1/b=2'.
+   */
+  def normalizePartitionPath(partPath: String): String = {
+    partPath.split("/").map { partStr =>
+      val idx = partStr.indexOf('=')
+      if (idx > 0) {
+        val colName = partStr.substring(0, idx).toLowerCase(Locale.ROOT)
+        val value = partStr.substring(idx + 1)
+        s"$colName=$value"
+      } else {
+        partStr
+      }
+    }.mkString("/")
+  }
+
+  /**
+   * Parses a partition path string like 'a=1/b=2' into a TablePartitionSpec,
+   * with column names normalized to lower case and path components unescaped.
+   */
+  def parsePartitionPath(partPath: String): TablePartitionSpec = {
+    partPath.split("/").flatMap { partStr =>
+      val idx = partStr.indexOf('=')
+      if (idx > 0) {
+        val k = unescapePathName(partStr.substring(0, idx)).toLowerCase(Locale.ROOT)
+        val v = unescapePathName(partStr.substring(idx + 1))
+        Some(k -> v)
+      } else {
+        None
+      }
+    }.toMap
   }
 }
 

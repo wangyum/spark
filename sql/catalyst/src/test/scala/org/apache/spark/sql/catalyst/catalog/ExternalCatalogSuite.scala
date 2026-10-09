@@ -478,6 +478,37 @@ abstract class ExternalCatalogSuite extends SparkFunSuite {
     assert(catalog.listPartitions("db2", "tbl2", Some(Map("a" -> "unknown"))).isEmpty)
   }
 
+  test("list partitions by partNames") {
+    val catalog = newBasicCatalog()
+
+    val parts = catalog.listPartitionsByNames("db2", "tbl2", List("a=1/b=2", "a=3/b=4"))
+    assert(parts.length == 2)
+
+    // Empty partNames should return empty
+    assert(catalog.listPartitionsByNames("db2", "tbl2", Nil).isEmpty)
+
+    // Case-insensitive column name matching
+    assert(catalog.listPartitionsByNames("db2", "tbl2", List("A=1/B=2")).length == 1)
+
+    // Case-preserving partition values
+    val partWithCase = CatalogTablePartition(Map("a" -> "1", "b" -> "Two"), storageFormat)
+    catalog.createPartitions("db2", "tbl2", Seq(partWithCase), ignoreIfExists = false)
+    assert(catalog.listPartitionsByNames("db2", "tbl2", List("a=1/b=Two")).length == 1)
+
+    // if no partition is matched for the given partition spec, an empty list should be returned.
+    assert(catalog.listPartitionsByNames("db2", "tbl2", List("a=unknown/b=1")).isEmpty)
+    assert(catalog.listPartitionsByNames("db2", "tbl2", List("a=unknown")).isEmpty)
+
+    // Special characters in partition values (spaces, colons, URL escaped chars)
+    val partSpecial = CatalogTablePartition(
+      Map("a" -> "val with space", "b" -> "val:with:colon"), storageFormat)
+    catalog.createPartitions("db2", "tbl2", Seq(partSpecial), ignoreIfExists = false)
+    val fetchedSpecial = catalog.listPartitionsByNames(
+      "db2", "tbl2", List("a=val%20with%20space/b=val%3Awith%3Acolon"))
+    assert(fetchedSpecial.length == 1)
+    assert(fetchedSpecial.head.spec == Map("a" -> "val with space", "b" -> "val:with:colon"))
+  }
+
   test("SPARK-45054: list partitions should restore stats") {
     val catalog = newBasicCatalog()
     val stats = Some(CatalogStatistics(sizeInBytes = 1))

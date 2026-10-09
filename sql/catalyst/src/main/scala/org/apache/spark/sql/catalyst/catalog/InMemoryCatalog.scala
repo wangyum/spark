@@ -18,6 +18,7 @@
 package org.apache.spark.sql.catalyst.catalog
 
 import java.io.IOException
+import java.util.Locale
 
 import scala.collection.mutable
 
@@ -622,6 +623,24 @@ class InMemoryCatalog(
         catalog(db).tables(table).partitions.toSeq.collect {
           case (spec, partition) if isPartialPartitionSpec(partial, spec) => partition
         }
+    }
+  }
+
+  override def listPartitionsByNames(
+      db: String,
+      table: String,
+      parts: Seq[String]): Seq[CatalogTablePartition] = synchronized {
+    requireTableExists(db, table)
+
+    if (parts.isEmpty) {
+      Seq.empty
+    } else {
+      val parsedSpecs = parts.map(ExternalCatalogUtils.parsePartitionPath).toSet
+
+      catalog(db).tables(table).partitions.values.filter { part =>
+        val lowerCaseSpec = part.spec.map { case (k, v) => k.toLowerCase(Locale.ROOT) -> v }
+        parsedSpecs.contains(lowerCaseSpec)
+      }.toSeq
     }
   }
 

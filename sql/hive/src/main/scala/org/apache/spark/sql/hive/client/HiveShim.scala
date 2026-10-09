@@ -148,6 +148,11 @@ private[client] sealed abstract class Shim {
       table: Table,
       partSpec: JMap[String, String]): Seq[Partition]
 
+  def getPartitionsByNames(
+      hive: Hive,
+      table: Table,
+      partNames: JList[String]): Seq[Partition]
+
   def getPartitionNames(
       hive: Hive,
       dbName: String,
@@ -991,6 +996,14 @@ private[client] class Shim_v2_0 extends Shim with Logging {
       partSpec: JMap[String, String]): Seq[Partition] = {
     recordHiveCall()
     hive.getPartitions(table, partSpec).asScala.toSeq
+  }
+
+  override def getPartitionsByNames(
+      hive: Hive,
+      table: Table,
+      partNames: JList[String]): Seq[Partition] = {
+    recordHiveCall()
+    hive.getPartitionsByNames(table, partNames).asScala.toSeq
   }
 
   override def getPartitionNames(

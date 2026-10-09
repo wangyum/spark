@@ -286,6 +286,20 @@ trait ExternalCatalog {
       partialSpec: Option[TablePartitionSpec] = None): Seq[CatalogTablePartition]
 
   /**
+   * List the metadata of all partitions that belong to the specified table
+   * and the given partition names, assuming it exists.
+   *
+   * @param db database name
+   * @param table table name
+   * @param parts partition names e.g. ('a=1/b=1', 'a=1/b=2')
+   * @return the metadata of partitions
+   */
+  def listPartitionsByNames(
+      db: String,
+      table: String,
+      parts: Seq[String]): Seq[CatalogTablePartition]
+
+  /**
    * List the metadata of partitions that belong to the specified table, assuming it exists, that
    * satisfy the given partition-pruning predicate expressions.
    *
