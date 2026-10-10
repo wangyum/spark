@@ -71,6 +71,14 @@ class HadoopMapReduceCommitProtocol(
     dynamicPartitionOverwrite: Boolean = false)
   extends FileCommitProtocol with Serializable with Logging {
 
+  override def supportsPreCommitPartitionValidation: Boolean = {
+    // Subclasses do not inherit this, regardless of what they override. A subclass that keeps
+    // commitJob and really stages partitions before promotion must opt in itself. Inheriting
+    // true would let a custom protocol skip the catalog listing without running the pre-commit
+    // check. Since this method is private[spark], only code inside Spark can ever re-declare it
+    // to opt a subclass back in -- no downstream subclass, however safe, can enable it.
+    dynamicPartitionOverwrite && getClass == classOf[HadoopMapReduceCommitProtocol]
+  }
   import FileCommitProtocol._
 
   /** OutputCommitter from Hadoop is not serializable so marking it transient. */
@@ -206,6 +214,7 @@ class HadoopMapReduceCommitProtocol(
 
       if (dynamicPartitionOverwrite) {
         val partitionPaths = allPartitionPaths.foldLeft(Set[String]())(_ ++ _)
+        validatePartitionsReadyToCommit(partitionPaths)
         logDebug(s"Clean up default partition directories for overwriting: $partitionPaths")
         for (part <- partitionPaths) {
           val finalPartPath = new Path(path, part)

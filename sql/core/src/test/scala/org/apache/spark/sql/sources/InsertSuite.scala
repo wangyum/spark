@@ -22,14 +22,15 @@ import java.sql.Date
 import java.time.{Duration, Period}
 
 import org.apache.hadoop.fs.{FileAlreadyExistsException, FSDataOutputStream, Path, RawLocalFileSystem}
+import org.apache.logging.log4j.Level
 
 import org.apache.spark.{SparkArithmeticException, SparkException, SparkRuntimeException}
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTableType}
+import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTableType, CreatePartitionsEvent, ExternalCatalogEvent, ExternalCatalogEventListener}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.connector.{FakeV2Provider, FakeV2ProviderWithCustomSchema}
-import org.apache.spark.sql.execution.datasources.DataSourceUtils
+import org.apache.spark.sql.execution.datasources.{DataSourceUtils, InsertIntoHadoopFsRelationCommand, SQLHadoopMapReduceCommitProtocol}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.{PartitionOverwriteMode, StoreAssignmentPolicy}
 import org.apache.spark.sql.test.SharedSparkSession
@@ -2737,6 +2738,322 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
     }
   }
 
+  test("SPARK-38230: fast path with assumeDefaultPartitionLocations for dynamic writes") {
+    withSQLConf(
+      SQLConf.PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.DYNAMIC.toString,
+      SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key -> "true") {
+      withTable("t") {
+        sql(
+          """
+            |create table t(i int, part1 int, part2 int) using parquet
+            |partitioned by (part1, part2)
+          """.stripMargin)
+
+        // Dynamic partition overwrite via fast path
+        sql("insert overwrite table t partition(part1=1, part2) select 1, 1")
+        checkAnswer(spark.table("t"), Row(1, 1, 1) :: Nil)
+
+        // Dynamic partition append is unaffected by the fast path -- it always lists partitions.
+        sql("insert into t partition(part1=1, part2) select 2, 1")
+        sql("insert into t partition(part1=1, part2) select 3, 2")
+        checkAnswer(spark.table("t"), Row(1, 1, 1) :: Row(2, 1, 1) :: Row(3, 1, 2) :: Nil)
+
+        val parts = spark.sessionState.catalog.listPartitions(TableIdentifier("t"))
+        assert(parts.length == 2)
+      }
+    }
+  }
+
+  test("SPARK-38230: fail fast when writing to custom partition with " +
+    "assumeDefaultPartitionLocations") {
+    withSQLConf(
+      SQLConf.PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.DYNAMIC.toString,
+      SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key -> "true") {
+      withTempPath { customPath =>
+        withTable("t") {
+          sql(
+            """
+              |create table t(i int, part1 int, part2 int) using parquet
+              |partitioned by (part1, part2)
+            """.stripMargin)
+
+          sql("insert into t partition(part1=1, part2=1) select 1")
+          checkAnswer(spark.table("t"), Row(1, 1, 1) :: Nil)
+
+          sql(s"alter table t add partition(part1=1, part2=2) " +
+            s"location '${customPath.getAbsolutePath}'")
+
+          // Writing to untouched standard partition succeeds
+          sql("insert into t partition(part1=1, part2) select 2, 1")
+          sql("insert into t partition(part1=1, part2) select 3, 3")
+          checkAnswer(spark.table("t"),
+            Row(1, 1, 1) :: Row(2, 1, 1) :: Row(3, 1, 3) :: Nil)
+
+          // Dynamic partition overwrite touching the custom partition fails fast, before any
+          // output becomes visible at the partition's default location.
+          checkError(
+            exception = intercept[SparkException] {
+              sql("insert overwrite table t partition(part1=1, part2) select 4, 2")
+            },
+            condition = "CUSTOM_PARTITION_LOCATION_DETECTED",
+            parameters = Map(
+              "tableName" -> "spark_catalog.default.t",
+              "config" -> SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key,
+              "partitionList" -> "part1=1, part2=2")
+          )
+
+          val tableLocation = spark.sessionState.catalog
+            .getTableMetadata(TableIdentifier("t")).location
+          val defaultPartDir = new File(new File(tableLocation), "part1=1/part2=2")
+          assert(
+            !defaultPartDir.exists() ||
+              defaultPartDir.listFiles().forall(!_.getName.endsWith(".parquet")),
+            "dynamic partition overwrite must not leave data at the partition's default " +
+              "location when a conflicting custom location is detected")
+          assert(customPath.listFiles().forall(!_.getName.endsWith(".parquet")),
+            "the custom location itself must remain untouched by the failed overwrite")
+          checkAnswer(spark.table("t"),
+            Row(1, 1, 1) :: Row(2, 1, 1) :: Row(3, 1, 3) :: Nil)
+
+          // Dynamic partition append is unaffected by the fast path: it always lists partitions
+          // upfront, so it already knows about the custom location and writes there directly --
+          // no conflict is possible and the insert succeeds.
+          sql("insert into t partition(part1=1, part2) select 5, 2")
+          checkAnswer(spark.table("t"),
+            Row(1, 1, 1) :: Row(2, 1, 1) :: Row(3, 1, 3) :: Row(5, 1, 2) :: Nil)
+          assert(customPath.listFiles().count(_.getName.endsWith(".parquet")) == 1,
+            "the appended row must land in the partition's custom location")
+        }
+      }
+    }
+  }
+
+  test("SPARK-38230: dynamic partition overwrite rejects the whole batch when only one of " +
+    "several touched partitions has a custom location") {
+    withSQLConf(
+      SQLConf.PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.DYNAMIC.toString,
+      SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key -> "true") {
+      withTempPath { customPath =>
+        withTable("t") {
+          sql(
+            """
+              |create table t(i int, part1 int, part2 int) using parquet
+              |partitioned by (part1, part2)
+            """.stripMargin)
+
+          sql("insert into t partition(part1=1, part2=1) select 1")
+          sql(s"alter table t add partition(part1=1, part2=2) " +
+            s"location '${customPath.getAbsolutePath}'")
+          sql("insert into t partition(part1=1, part2=2) select 2")
+          checkAnswer(spark.table("t"), Row(1, 1, 1) :: Row(2, 1, 2) :: Nil)
+
+          // part2=1 has the standard location and no conflict; part2=2 has a custom location.
+          // A single dynamic overwrite touches both -- the conflict on part2=2 must abort the
+          // whole commit, including the otherwise-unconflicted write to part2=1, since the
+          // commit is all-or-nothing (the hook fires once for the full set of touched
+          // partitions, before any of them are promoted).
+          checkError(
+            exception = intercept[SparkException] {
+              sql("insert overwrite table t partition(part1=1, part2) " +
+                "select * from values (10, 1), (20, 2) as data(i, part2)")
+            },
+            condition = "CUSTOM_PARTITION_LOCATION_DETECTED",
+            parameters = Map(
+              "tableName" -> "spark_catalog.default.t",
+              "config" -> SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key,
+              "partitionList" -> "part1=1, part2=2")
+          )
+
+          val tableLocation = spark.sessionState.catalog
+            .getTableMetadata(TableIdentifier("t")).location
+          val defaultPart1Dir = new File(new File(tableLocation), "part1=1/part2=1")
+          assert(
+            defaultPart1Dir.listFiles().count(_.getName.endsWith(".parquet")) == 1,
+            "the non-conflicting partition must not be promoted either -- the commit is " +
+              "all-or-nothing, so its pre-existing single file must be the only one present")
+          assert(customPath.listFiles().count(_.getName.endsWith(".parquet")) == 1,
+            "the custom location itself must remain untouched by the failed overwrite")
+          checkAnswer(spark.table("t"), Row(1, 1, 1) :: Row(2, 1, 2) :: Nil)
+        }
+      }
+    }
+  }
+
+  test("SPARK-38230: custom partition error lists only a bounded prefix") {
+    withSQLConf(
+      SQLConf.PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.DYNAMIC.toString,
+      SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key -> "true") {
+      withTempDir { customRoot =>
+        withTable("t") {
+          sql(
+            """
+              |create table t(i int, part1 int, part2 int) using parquet
+              |partitioned by (part1, part2)
+            """.stripMargin)
+          (1 to 6).foreach { part =>
+            val location = new File(customRoot, s"p$part")
+            assert(location.mkdirs())
+            sql(s"alter table t add partition(part1=1, part2=$part) " +
+              s"location '${location.getAbsolutePath}'")
+          }
+          val shown = (1 to 5).map(part => s"part1=1, part2=$part").mkString("; ")
+          checkError(
+            exception = intercept[SparkException] {
+              sql("insert overwrite table t partition(part1=1, part2) " +
+                "select * from values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6) " +
+                "as data(i, part2)")
+            },
+            condition = "CUSTOM_PARTITION_LOCATION_DETECTED",
+            parameters = Map(
+              "tableName" -> "spark_catalog.default.t",
+              "config" -> SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key,
+              "partitionList" -> s"$shown; ... (1 more)")
+          )
+        }
+      }
+    }
+  }
+
+  test("SPARK-38230: static partition writes with custom location unaffected by " +
+    "assumeDefaultPartitionLocations") {
+    withSQLConf(SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key -> "true") {
+      withTempPath { customPath =>
+        withTable("t") {
+          sql(
+            """
+              |create table t(i int, part1 int, part2 int) using parquet
+              |partitioned by (part1, part2)
+            """.stripMargin)
+
+          sql(s"alter table t add partition(part1=1, part2=2) " +
+            s"location '${customPath.getAbsolutePath}'")
+
+          // Static partition insert into custom location succeeds without error
+          sql("insert into t partition(part1=1, part2=2) select 1")
+          checkAnswer(spark.table("t"), Row(1, 1, 2) :: Nil)
+
+          val filesInCustom = customPath.listFiles().filter(_.getName.endsWith(".parquet"))
+          assert(filesInCustom.length == 1)
+        }
+      }
+    }
+  }
+
+  test("SPARK-38230: a commit protocol that does not support pre-commit partition " +
+    "validation falls back to the upfront catalog listing") {
+    withSQLConf(
+      SQLConf.PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.DYNAMIC.toString,
+      SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key -> "true",
+      SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key -> classOf[NonSupportingCommitProtocol].getName) {
+      withTempPath { customPath =>
+        withTable("t") {
+          sql(
+            """
+              |create table t(i int, part1 int, part2 int) using parquet
+              |partitioned by (part1, part2)
+            """.stripMargin)
+
+          sql("insert into t partition(part1=1, part2=1) select 1")
+          sql(s"alter table t add partition(part1=1, part2=2) " +
+            s"location '${customPath.getAbsolutePath}'")
+
+          // With a commit protocol that does not support pre-commit partition validation, the
+          // fast path is unavailable regardless of assumeDefaultPartitionLocations, so the
+          // upfront listPartitions call already knows about the custom location before writing --
+          // the overwrite succeeds and lands directly in the custom location, instead of throwing
+          // CUSTOM_PARTITION_LOCATION_DETECTED the way the default committer would (compare with
+          // the "fail fast" test above).
+          sql("insert overwrite table t partition(part1=1, part2) select 4, 2")
+          checkAnswer(spark.table("t"), Row(1, 1, 1) :: Row(4, 1, 2) :: Nil)
+          assert(customPath.listFiles().count(_.getName.endsWith(".parquet")) == 1,
+            "the overwritten row must land in the partition's custom location")
+        }
+      }
+    }
+  }
+
+  test("SPARK-38230: fast path skips the upfront listPartitions call") {
+    withSQLConf(
+      SQLConf.PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.DYNAMIC.toString,
+      SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key -> "true") {
+      withTable("t") {
+        sql(
+          """
+            |create table t(i int, part1 int, part2 int) using parquet
+            |partitioned by (part1, part2)
+          """.stripMargin)
+
+        val skipMsg = "Skipping upfront listPartitions"
+        val listMsg = "Listing partitions"
+        val loggerName = classOf[InsertIntoHadoopFsRelationCommand].getName
+
+        val fastPathAppender = new LogAppender("fast path skips listPartitions")
+        fastPathAppender.setThreshold(Level.DEBUG)
+        withLogAppender(fastPathAppender, Seq(loggerName), level = Some(Level.DEBUG)) {
+          sql("insert overwrite table t partition(part1=1, part2) select 1, 1")
+        }
+        assert(fastPathAppender.loggingEvents.exists(
+          _.getMessage.getFormattedMessage.contains(skipMsg)),
+          "the fast path must log that the upfront listPartitions call is being skipped")
+        assert(!fastPathAppender.loggingEvents.exists(
+          _.getMessage.getFormattedMessage.contains(listMsg)),
+          "the fast path must not also log the upfront listPartitions call")
+
+        // Control: dynamic partition append is outside the fast path and always lists partitions
+        // upfront, proving the absence of listMsg above is not vacuous.
+        val slowPathAppender = new LogAppender("fallback path lists partitions")
+        slowPathAppender.setThreshold(Level.DEBUG)
+        withLogAppender(slowPathAppender, Seq(loggerName), level = Some(Level.DEBUG)) {
+          sql("insert into t partition(part1=1, part2) select 2, 2")
+        }
+        assert(slowPathAppender.loggingEvents.exists(
+          _.getMessage.getFormattedMessage.contains(listMsg)),
+          "a path outside the fast path must log the upfront listPartitions call")
+        assert(!slowPathAppender.loggingEvents.exists(
+          _.getMessage.getFormattedMessage.contains(skipMsg)),
+          "a path outside the fast path must not log that listPartitions was skipped")
+      }
+    }
+  }
+
+  test("SPARK-38230: fast path redundantly re-issues AlterTableAddPartitionCommand for " +
+    "already-existing partitions") {
+    withSQLConf(
+      SQLConf.PARTITION_OVERWRITE_MODE.key -> PartitionOverwriteMode.DYNAMIC.toString,
+      SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key -> "true") {
+      withTable("t") {
+        sql(
+          """
+            |create table t(i int, part1 int, part2 int) using parquet
+            |partitioned by (part1, part2)
+          """.stripMargin)
+        sql("insert overwrite table t partition(part1=1, part2) select 1, 1")
+        checkAnswer(spark.table("t"), Row(1, 1, 1) :: Nil)
+
+        val createdSpecs = scala.collection.mutable.ArrayBuffer.empty[Map[String, String]]
+        val listener = new ExternalCatalogEventListener {
+          override def onEvent(event: ExternalCatalogEvent): Unit = event match {
+            case e: CreatePartitionsEvent if e.name == "t" => createdSpecs ++= e.partSpecs
+            case _ =>
+          }
+        }
+        spark.sharedState.externalCatalog.addListener(listener)
+        try {
+          // Overwriting the same (already-existing) partition a second time still goes through
+          // the fast path's unconditional AlterTableAddPartitionCommand, since it does not
+          // subtract already-known partitions from the touched set the way the slow path does.
+          sql("insert overwrite table t partition(part1=1, part2) select 2, 1")
+        } finally {
+          spark.sharedState.externalCatalog.removeListener(listener)
+        }
+        checkAnswer(spark.table("t"), Row(2, 1, 1) :: Nil)
+        assert(createdSpecs.contains(Map("part1" -> "1", "part2" -> "1")),
+          "the fast path must redundantly re-issue AlterTableAddPartitionCommand for a " +
+            "partition that already existed before this job ran")
+      }
+    }
+  }
+
   test("SPARK-35106: Throw exception when rename custom partition paths returns false") {
     withSQLConf(
       "fs.file.impl" -> classOf[RenameFromSparkStagingToFinalDirAlwaysTurnsFalseFilesystem].getName,
@@ -3198,3 +3515,16 @@ class RenameFromSparkStagingToFinalDirAlwaysTurnsFalseFilesystem extends RawLoca
     path.toString.contains(".spark-staging-")
   }
 }
+
+/**
+ * A commit protocol that overrides nothing from [[SQLHadoopMapReduceCommitProtocol]]. Since
+ * `supportsPreCommitPartitionValidation` is keyed off exact class identity, this subclass never
+ * supports it even though it is the class actually instantiated by the real SQL execution path
+ * (via `spark.sql.sources.commitProtocolClass`), making it a vehicle for testing the fallback to
+ * the upfront catalog `listPartitions` call.
+ */
+class NonSupportingCommitProtocol(
+    jobId: String,
+    path: String,
+    dynamicPartitionOverwrite: Boolean = false)
+  extends SQLHadoopMapReduceCommitProtocol(jobId, path, dynamicPartitionOverwrite)

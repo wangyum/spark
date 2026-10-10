@@ -1890,6 +1890,12 @@
     ],
     "sqlState" : "42601"
   },
+  "CUSTOM_PARTITION_LOCATION_DETECTED" : {
+    "message" : [
+      "Detected custom partition location(s) for table <tableName>: <partitionList>. When <config> is enabled, partitions are expected to reside at default table locations. Please set the partition location to default or disable <config>."
+    ],
+    "sqlState" : "KD000"
+  },
   "CYCLIC_FUNCTION_REFERENCE" : {
     "message" : [
       "Cyclic function reference detected: <path>."

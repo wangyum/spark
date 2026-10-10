@@ -6046,6 +6046,25 @@ object SQLConf {
       .enumConf(PartitionOverwriteMode)
       .createWithDefault(PartitionOverwriteMode.STATIC)
 
+  val ASSUME_DEFAULT_PARTITION_LOCATIONS =
+    buildConf("spark.sql.sources.assumeDefaultPartitionLocations.enabled")
+      .doc("When true, Spark skips the upfront full-table partition listing from the catalog " +
+        "for dynamic partition overwrite, which avoids driver OOM and metastore timeouts on " +
+        "tables with a very large number of partitions. Partitions are written to the default " +
+        "table location, and Spark checks only the partitions touched by the job immediately " +
+        "before promoting them from the staging directory, aborting if any has a custom " +
+        "location in the catalog. This fast path is guaranteed only for the exact built-in " +
+        "default staged dynamic partition overwrite committer class; it is a structural, not a " +
+        "case-by-case, restriction, so it applies even to a subclass of that committer that " +
+        "changes nothing relevant, since only Spark itself can declare a commit protocol class " +
+        "eligible for this fast path. Custom commit protocols (including such subclasses), the " +
+        "Path Output Committer, and manifest committers all fall back to the upfront catalog " +
+        "listing. Dynamic partition appends and static partition writes also always list " +
+        "partitions upfront.")
+      .version("4.4.0")
+      .booleanConf
+      .createWithDefault(false)
+
   val INSERT_INTO_REPLACE_ON_ENABLED =
     buildConf("spark.sql.insertIntoReplaceOn.enabled")
       .doc("Enable the SQL syntax INSERT INTO ... REPLACE ON (...). " +
@@ -9931,6 +9950,8 @@ class SQLConf extends Serializable with Logging with SqlApiConf {
 
   def partitionOverwriteMode: PartitionOverwriteMode.Value =
     getConf(PARTITION_OVERWRITE_MODE)
+
+  def assumeDefaultPartitionLocations: Boolean = getConf(ASSUME_DEFAULT_PARTITION_LOCATIONS)
 
   def storeAssignmentPolicy: StoreAssignmentPolicy.Value =
     getConf(STORE_ASSIGNMENT_POLICY)

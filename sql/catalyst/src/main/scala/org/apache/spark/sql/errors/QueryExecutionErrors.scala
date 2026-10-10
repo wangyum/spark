@@ -882,6 +882,19 @@ private[sql] object QueryExecutionErrors extends QueryErrorsBase with ExecutionE
       cause = null)
   }
 
+  def customPartitionLocationDetectedError(
+      table: String,
+      config: String,
+      partitionList: String): SparkException = {
+    new SparkException(
+      errorClass = "CUSTOM_PARTITION_LOCATION_DETECTED",
+      messageParameters = Map(
+        "tableName" -> table,
+        "config" -> config,
+        "partitionList" -> partitionList),
+      cause = null)
+  }
+
   def failedToCastValueToDataTypeForPartitionColumnError(
       value: String, dataType: DataType, columnName: String): SparkRuntimeException = {
     new SparkRuntimeException(

@@ -61,6 +61,11 @@ class PathOutputCommitProtocol(
   extends HadoopMapReduceCommitProtocol(jobId, dest, dynamicPartitionOverwrite)
     with Serializable {
 
+  // Parent commitJob is reused, but non-file committers publish to the final path and do not
+  // record partitionPaths, so the pre-commit hook would observe an empty set. Keep the full
+  // catalog listing for this protocol.
+  override def supportsPreCommitPartitionValidation: Boolean = false
+
   /** The committer created. */
   @transient private var committer: PathOutputCommitter = _
 

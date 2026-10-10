@@ -37,6 +37,10 @@ class SQLHadoopMapReduceCommitProtocol(
   extends HadoopMapReduceCommitProtocol(jobId, path, dynamicPartitionOverwrite)
     with Serializable with Logging {
 
+  override def supportsPreCommitPartitionValidation: Boolean = {
+    dynamicPartitionOverwrite && getClass == classOf[SQLHadoopMapReduceCommitProtocol]
+  }
+
   override protected def setupCommitter(context: TaskAttemptContext): OutputCommitter = {
     var committer = super.setupCommitter(context)
 

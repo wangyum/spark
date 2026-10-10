@@ -31,6 +31,7 @@ import org.apache.spark.sql.classic.SparkSession
 import org.apache.spark.sql.errors.{QueryCompilationErrors, QueryExecutionErrors}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.command._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.PartitionOverwriteMode
 import org.apache.spark.sql.util.SchemaUtils
 
@@ -102,22 +103,46 @@ case class InsertIntoHadoopFsRelationCommand(
     var customPartitionLocations: Map[TablePartitionSpec, String] = Map.empty
     var matchingPartitions: Seq[CatalogTablePartition] = Seq.empty
 
-    // When partitions are tracked by the catalog, compute all custom partition locations that
-    // may be relevant to the insertion job.
-    if (partitionsTrackedByCatalog) {
-      matchingPartitions = sparkSession.sessionState.catalog.listPartitions(
-        catalogTable.get.identifier, Some(staticPartitions))
-      initialMatchingPartitions = matchingPartitions.map(_.spec)
-      customPartitionLocations = getCustomPartitionLocations(
-        fs, catalogTable.get, qualifiedOutputPath, matchingPartitions)
-    }
-
     val jobId = java.util.UUID.randomUUID().toString
     val committer = FileCommitProtocol.instantiate(
       sparkSession.sessionState.conf.fileCommitProtocolClass,
       jobId = jobId,
       outputPath = outputPath.toString,
       dynamicPartitionOverwrite = dynamicPartitionOverwrite)
+
+    val canSkipListPartitions = partitionsTrackedByCatalog &&
+      conf.assumeDefaultPartitionLocations &&
+      partitionColumns.length > staticPartitions.size &&
+      dynamicPartitionOverwrite &&
+      !ifPartitionNotExists &&
+      committer.supportsPreCommitPartitionValidation
+
+    if (canSkipListPartitions) {
+      logDebug(s"Skipping upfront listPartitions for ${catalogTable.get.identifier}; " +
+        "touched partitions will be validated against the catalog just before commit")
+      // For dynamic partition overwrite, validate touched partitions before they are promoted
+      // from staging to final table location. A conflict aborts the job while output is still
+      // staged, so no data is clobbered or leaked at the final table location.
+      committer.setOnPartitionsReadyToCommit { partitionPaths =>
+        if (partitionPaths.nonEmpty) {
+          val specs = partitionPaths.map(PartitioningUtils.parsePathFragment)
+          validateNoCustomPartitionLocations(
+            sparkSession, fs, catalogTable.get, qualifiedOutputPath, specs)
+        }
+      }
+    }
+
+    // When partitions are tracked by the catalog, compute all custom partition locations that
+    // may be relevant to the insertion job.
+    if (partitionsTrackedByCatalog && !canSkipListPartitions) {
+      logDebug(s"Listing partitions of ${catalogTable.get.identifier} from the catalog to " +
+        "compute custom partition locations")
+      matchingPartitions = sparkSession.sessionState.catalog.listPartitions(
+        catalogTable.get.identifier, Some(staticPartitions))
+      initialMatchingPartitions = matchingPartitions.map(_.spec)
+      customPartitionLocations = getCustomPartitionLocations(
+        fs, catalogTable.get, qualifiedOutputPath, matchingPartitions)
+    }
 
     val doInsertion = if (mode == SaveMode.Append) {
       true
@@ -150,7 +175,11 @@ case class InsertIntoHadoopFsRelationCommand(
       def refreshUpdatedPartitions(updatedPartitionPaths: Set[String]): Unit = {
         val updatedPartitions = updatedPartitionPaths.map(PartitioningUtils.parsePathFragment)
         if (partitionsTrackedByCatalog) {
-          val newPartitions = updatedPartitions -- initialMatchingPartitions
+          val newPartitions = if (canSkipListPartitions) {
+            updatedPartitions
+          } else {
+            updatedPartitions -- initialMatchingPartitions
+          }
           if (newPartitions.nonEmpty) {
             AlterTableAddPartitionCommand(
               catalogTable.get.identifier, newPartitions.toSeq.map(p => (p, None)),
@@ -285,6 +314,47 @@ case class InsertIntoHadoopFsRelationCommand(
         None
       }
     }.toMap
+  }
+
+  private def validateNoCustomPartitionLocations(
+      sparkSession: SparkSession,
+      fs: FileSystem,
+      table: CatalogTable,
+      qualifiedOutputPath: Path,
+      updatedPartitions: Set[TablePartitionSpec]): Unit = {
+    val existingPartitions = updatedPartitions.flatMap { spec =>
+      sparkSession.sessionState.catalog.externalCatalog.getPartitionOption(
+        table.database, table.identifier.table, spec)
+    }
+    if (existingPartitions.nonEmpty) {
+      val customLocations = getCustomPartitionLocations(
+        fs, table, qualifiedOutputPath, existingPartitions.toSeq)
+      if (customLocations.nonEmpty) {
+        throw QueryExecutionErrors.customPartitionLocationDetectedError(
+          table.identifier.unquotedString,
+          SQLConf.ASSUME_DEFAULT_PARTITION_LOCATIONS.key,
+          formatCustomPartitionList(customLocations.keys))
+      }
+    }
+  }
+
+  /**
+   * Renders conflicting partition specs for an error message. Only a bounded prefix is included
+   * so a job that touches many custom locations cannot produce an unbounded exception payload.
+   */
+  private def formatCustomPartitionList(specs: Iterable[TablePartitionSpec]): String = {
+    val rendered = specs.toSeq.map { spec =>
+      spec.toSeq.sorted.map { case (k, v) => s"$k=$v" }.mkString(", ")
+    }.sorted
+    // Keep the exception bounded when thousands of partitions conflict.
+    val maxShown = 5
+    val shown = rendered.take(maxShown)
+    val hidden = rendered.length - shown.length
+    if (hidden > 0) {
+      shown.mkString("; ") + s"; ... ($hidden more)"
+    } else {
+      shown.mkString("; ")
+    }
   }
 
   override protected def withNewChildInternal(

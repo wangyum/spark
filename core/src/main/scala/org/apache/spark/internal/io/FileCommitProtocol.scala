@@ -196,6 +196,53 @@ abstract class FileCommitProtocol extends Logging {
   def onTaskCommit(taskCommit: TaskCommitMessage): Unit = {
     logDebug(s"onTaskCommit($taskCommit)")
   }
+
+  /**
+   * Registers a callback, run on the driver, with the set of relative partition paths that are
+   * about to be promoted from a staging location to their final table location -- immediately
+   * before that promotion happens. Only implementations that stage dynamic partition overwrites
+   * ahead of a job-level move (see [[HadoopMapReduceCommitProtocol]]) invoke this; others ignore
+   * it. A callback that throws aborts the commit before any of the job's output becomes visible
+   * at its final location.
+   *
+   * There is only one callback slot, and a committer instance is only ever used for a single
+   * write job, so a second registration almost certainly indicates two independent call sites
+   * stepping on each other rather than an intentional replacement -- silently dropping the first
+   * callback in that case would be a correctness hazard, so this throws instead. Callers that
+   * need multiple independent checks should compose them into a single callback themselves.
+   *
+   * Internal to Spark: SQL registers the check, and commit protocols invoke it through
+   * [[validatePartitionsReadyToCommit]]. Not a stable API.
+   */
+  private[spark] def setOnPartitionsReadyToCommit(callback: Set[String] => Unit): Unit = {
+    require(partitionsReadyToCommitCallback == null,
+      "A partitions-ready-to-commit callback is already registered on this commit protocol " +
+        "instance; compose multiple checks into a single callback instead of registering more " +
+        "than one.")
+    partitionsReadyToCommitCallback = callback
+  }
+
+  @transient private var partitionsReadyToCommitCallback: Set[String] => Unit = _
+
+  /**
+   * Invokes the callback registered via [[setOnPartitionsReadyToCommit]], if any. `protected`
+   * so only a commit protocol that stages a dynamic partition overwrite can call it. The
+   * registration method stays `private[spark]` because only Spark SQL installs the check.
+   */
+  protected def validatePartitionsReadyToCommit(partitionPaths: Set[String]): Unit = {
+    if (partitionsReadyToCommitCallback != null) {
+      partitionsReadyToCommitCallback(partitionPaths)
+    }
+  }
+
+  /**
+   * Whether this commit protocol supports staging dynamic partition overwrite output
+   * and invoking [[validatePartitionsReadyToCommit]] before promoting files to final locations.
+   *
+   * Internal to Spark: only [[HadoopMapReduceCommitProtocol]] itself (not even its own
+   * subclasses) ever returns true. Not a stable API.
+   */
+  private[spark] def supportsPreCommitPartitionValidation: Boolean = false
 }
 
 
