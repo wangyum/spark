@@ -112,36 +112,4 @@ class HiveClientImplSuite extends SparkFunSuite with SQLHelper {
     assert(shim.getPartitionSummaries(null, table, new java.util.HashMap(),
       PartitionFieldMask.LocationOnly).isEmpty)
   }
-
-  test("Shim_v4_0 getPartitionSummaries fallback when projection is disabled or fails") {
-    val table = new org.apache.hadoop.hive.ql.metadata.Table("default", "t")
-    table.setPartCols(java.util.Arrays.asList(new FieldSchema("p", "int", null)))
-    assert(table.isPartitioned)
-
-    var fallbackCalled = false
-    val testShim = new Shim_v4_0() {
-      override def getPartitions(
-          hive: org.apache.hadoop.hive.ql.metadata.Hive,
-          tbl: org.apache.hadoop.hive.ql.metadata.Table,
-          partSpec: java.util.Map[String, String])
-        : Seq[org.apache.hadoop.hive.ql.metadata.Partition] = {
-        fallbackCalled = true
-        Seq.empty
-      }
-    }
-
-    withSQLConf(SQLConf.HIVE_METASTORE_PARTITION_PROJECTION_ENABLED.key -> "false") {
-      fallbackCalled = false
-      assert(testShim.getPartitionSummaries(null, table, new java.util.HashMap(),
-        PartitionFieldMask.LocationOnly).isEmpty)
-      assert(fallbackCalled)
-    }
-
-    withSQLConf(SQLConf.HIVE_METASTORE_PARTITION_PROJECTION_ENABLED.key -> "true") {
-      fallbackCalled = false
-      assert(testShim.getPartitionSummaries(null, table, new java.util.HashMap(),
-        PartitionFieldMask.LocationOnly).isEmpty)
-      assert(fallbackCalled)
-    }
-  }
 }

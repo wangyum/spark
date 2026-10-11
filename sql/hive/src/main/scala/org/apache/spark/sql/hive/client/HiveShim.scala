@@ -1667,7 +1667,7 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
     if (!table.isPartitioned) {
       return Seq.empty
     }
-    if (!SQLConf.get.metastorePartitionProjectionEnabled || mask.isFull) {
+    if (mask.isFull) {
       return super.getPartitionSummaries(hive, table, partSpec, mask)
     }
     try {
@@ -1719,7 +1719,7 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
       } else {
         val origPartColNames = table.getPartCols.asScala.map(_.getName).toSeq
         val baseTableLocation = Option(table.getSd).map(_.getLocation).orNull
-        partitionSpecs.asScala.toSeq.flatMap { pSpec =>
+        val rawSummaries = partitionSpecs.asScala.toSeq.flatMap { pSpec =>
           val sharedSD = getSharedSDPartitionSpecMethod.invoke(pSpec)
           val partitionList = getPartitionListMethod.invoke(pSpec)
           val rootPath = Option(getRootPathMethod.invoke(pSpec))
@@ -1778,6 +1778,14 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
           } else {
             Seq.empty
           }
+        }
+        if (!isPrefix && lowerPartSpec.nonEmpty) {
+          rawSummaries.filter { s =>
+            val lowerSpec = s.spec.map { case (k, v) => k.toLowerCase(Locale.ROOT) -> v }
+            lowerPartSpec.forall { case (k, v) => lowerSpec.get(k).contains(v) }
+          }
+        } else {
+          rawSummaries
         }
       }
     } catch {

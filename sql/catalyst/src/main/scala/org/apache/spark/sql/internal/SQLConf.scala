@@ -2297,16 +2297,6 @@ object SQLConf {
       .booleanConf
       .createWithDefault(false)
 
-  val HIVE_METASTORE_PARTITION_PROJECTION_ENABLED =
-    buildConf("spark.sql.hive.metastorePartitionProjectionEnabled")
-      .doc("When true, Spark leverages Hive Metastore partition projection (supported in " +
-        "Hive 4.0+) to fetch only required partition fields (e.g. values and location), " +
-        "avoiding fetching heavy partition parameters and SerDe info when only partition specs " +
-        "and locations are needed.")
-      .version("4.4.0")
-      .booleanConf
-      .createWithDefault(true)
-
   val HIVE_MANAGE_FILESOURCE_PARTITIONS =
     buildConf("spark.sql.hive.manageFilesourcePartitions")
       .doc("When true, enable metastore partition management for file source tables as well. " +
@@ -9355,9 +9345,6 @@ class SQLConf extends Serializable with Logging with SqlApiConf {
 
   def metastorePartitionPruningFastFallback: Boolean =
     getConf(HIVE_METASTORE_PARTITION_PRUNING_FAST_FALLBACK)
-
-  def metastorePartitionProjectionEnabled: Boolean =
-    getConf(HIVE_METASTORE_PARTITION_PROJECTION_ENABLED)
 
   def manageFilesourcePartitions: Boolean = getConf(HIVE_MANAGE_FILESOURCE_PARTITIONS)
 

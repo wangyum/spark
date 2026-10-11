@@ -33,15 +33,17 @@ import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.analysis.{DatabaseAlreadyExistsException, NoSuchDatabaseException, PartitionsAlreadyExistException}
 import org.apache.spark.sql.catalyst.catalog._
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, EqualTo, Literal}
+import org.apache.spark.sql.catalyst.plans.SQLHelper
 import org.apache.spark.sql.connector.catalog.TableCatalog
 import org.apache.spark.sql.hive.HiveExternalCatalog
 import org.apache.spark.sql.hive.test.TestHiveVersion
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, StructType}
 import org.apache.spark.tags.SlowHiveTest
 import org.apache.spark.util.{MutableURLClassLoader, Utils}
 
 @SlowHiveTest
-class HiveClientSuite(version: String) extends HiveVersionSuite(version) {
+class HiveClientSuite(version: String) extends HiveVersionSuite(version) with SQLHelper {
 
   private var versionSpark: TestHiveVersion = null
 
@@ -434,11 +436,31 @@ class HiveClientSuite(version: String) extends HiveVersionSuite(version) {
     assert(testPartitionCount == summaries.size)
     assert(summaries.forall(_.locationUri.isDefined))
 
+    val prefix = client.getPartitionSummaries(
+      "default", "src_part", Some(Map("key1" -> "1")), PartitionFieldMask.LocationOnly)
+    assert(testPartitionCount == prefix.size)
+    assert(prefix.forall(_.locationUri.isDefined))
+
     val partial = client.getPartitionSummaries(
       "default", "src_part", Some(Map("key2" -> "1")), PartitionFieldMask.LocationOnly)
     assert(partial.size == 1)
     assert(partial.head.spec == Map("key1" -> "1", "key2" -> "1"))
     assert(partial.head.locationUri.isDefined)
+
+    val specOnly = client.getPartitionSummaries(
+      "default", "src_part", None, PartitionFieldMask.SpecOnly)
+    assert(testPartitionCount == specOnly.size)
+    assert(specOnly.forall(_.locationUri.isEmpty))
+
+    withSQLConf(SQLConf.HIVE_METASTORE_PARTITION_PROJECTION_ENABLED.key -> "false") {
+      val disabled = client.getPartitionSummaries(
+        "default", "src_part", None, PartitionFieldMask.LocationOnly)
+      assert(testPartitionCount == disabled.size)
+      assert(disabled.forall(_.locationUri.isDefined))
+    }
+
+    assert(client.getPartitionSummaries(
+      "default", "src", None, PartitionFieldMask.LocationOnly).isEmpty)
   }
 
   test("getPartitionsByFilter") {
@@ -518,6 +540,11 @@ class HiveClientSuite(version: String) extends HiveVersionSuite(version) {
       .storage.locationUri.contains(newLocation))
     assert(client.getPartition("default", "src_part", spec)
       .parameters.get(StatsSetupConst.TOTAL_SIZE).contains("0"))
+
+    val customSummaries = client.getPartitionSummaries(
+      "default", "src_part", Some(spec), PartitionFieldMask.LocationOnly)
+    assert(customSummaries.length == 1)
+    assert(customSummaries.head.locationUri.contains(newLocation))
   }
 
   test("dropPartitions") {
