@@ -1337,40 +1337,36 @@ private[client] class Shim_v3_0 extends Shim_v2_3 {
 
 private[client] class Shim_v3_1 extends Shim_v3_0
 
-private[client] class Shim_v4_0(cl: ClassLoader) extends Shim_v3_1 {
-  def this() = this(classOf[Shim_v4_0].getClassLoader)
-
-  protected def getMetastoreClient(hive: Hive): AnyRef = getMSC(hive)
-
-  private lazy val clazzLoadFileType = cl.loadClass(
+private[client] class Shim_v4_0 extends Shim_v3_1 {
+  private lazy val clazzLoadFileType = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.ql.plan.LoadTableDesc$LoadFileType")
-  private lazy val clazzLoadTableDesc = cl.loadClass(
+  private lazy val clazzLoadTableDesc = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.ql.plan.LoadTableDesc")
   private lazy val clazzPartitionDetails =
     Utils.classForName("org.apache.hadoop.hive.ql.exec.Utilities$PartitionDesc")
-  private lazy val clazzGetPartitionsRequest = cl.loadClass(
+  private lazy val clazzGetPartitionsRequest = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.api.GetPartitionsRequest")
-  private lazy val clazzGetProjectionsSpec = cl.loadClass(
+  private lazy val clazzGetProjectionsSpec = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.api.GetProjectionsSpec")
-  private lazy val clazzGetPartitionsFilterSpec = cl.loadClass(
+  private lazy val clazzGetPartitionsFilterSpec = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.api.GetPartitionsFilterSpec")
-  private lazy val clazzPartitionFilterMode = cl.loadClass(
+  private lazy val clazzPartitionFilterMode = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.api.PartitionFilterMode")
-  private lazy val clazzGetPartitionsResponse = cl.loadClass(
+  private lazy val clazzGetPartitionsResponse = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.api.GetPartitionsResponse")
-  private lazy val clazzPartitionSpec = cl.loadClass(
+  private lazy val clazzPartitionSpec = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.api.PartitionSpec")
-  private lazy val clazzPartitionSpecWithSharedSD = cl.loadClass(
+  private lazy val clazzPartitionSpecWithSharedSD = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.api.PartitionSpecWithSharedSD")
-  private lazy val clazzPartitionWithoutSD = cl.loadClass(
+  private lazy val clazzPartitionWithoutSD = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.api.PartitionWithoutSD")
-  private lazy val clazzPartitionListComposingSpec = cl.loadClass(
+  private lazy val clazzPartitionListComposingSpec = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.api.PartitionListComposingSpec")
-  private lazy val clazzMetastorePartition = cl.loadClass(
+  private lazy val clazzMetastorePartition = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.api.Partition")
-  private lazy val clazzStorageDescriptor = cl.loadClass(
+  private lazy val clazzStorageDescriptor = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.api.StorageDescriptor")
-  private lazy val clazzIMetaStoreClient = cl.loadClass(
+  private lazy val clazzIMetaStoreClient = getClass.getClassLoader.loadClass(
     "org.apache.hadoop.hive.metastore.IMetaStoreClient")
 
   private lazy val getPartitionsWithSpecsMethod =
@@ -1715,7 +1711,7 @@ private[client] class Shim_v4_0(cl: ClassLoader) extends Shim_v3_1 {
       setFilterSpecMethod.invoke(req, filterSpec)
 
       recordHiveCall()
-      val msc = getMetastoreClient(hive)
+      val msc = getMSC(hive)
       val response = getPartitionsWithSpecsMethod.invoke(msc, req)
       val partitionSpecs = getPartitionSpecMethod.invoke(response).asInstanceOf[JList[AnyRef]]
       if (partitionSpecs == null || partitionSpecs.isEmpty) {
