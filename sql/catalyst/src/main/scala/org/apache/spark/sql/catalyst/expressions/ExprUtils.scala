@@ -246,11 +246,12 @@ object ExprUtils extends EvalHelper with QueryErrorsBase {
    *   - total accessors: GetStructField, GetArrayStructFields and GetMapValue never throw.
    *     Note that GetArrayItem/ElementAt are NOT included: they throw on invalid ordinals
    *     when ANSI mode is on;
+   *   - lossless widening casts: Cast where Cast.canUpCast(child.dataType, toType) is true;
    *   - logic/predicates: And, Or, Not, comparisons, IsNull, IsNotNull, IsNaN, NullIf,
    *     Coalesce, In and InSet are total boolean functions.
-   * Anything else (arithmetic, casts, string functions, UDFs, nested IF/CASE WHEN, ...)
-   * conservatively returns false. On top of the whitelist, the expression must be
-   * deterministic and must not contain subqueries.
+   * Anything else (arithmetic, non-widening casts, string functions, UDFs,
+   * nested IF/CASE WHEN, ...) conservatively returns false. On top of the whitelist,
+   * the expression must be deterministic and must not contain subqueries.
    *
    * Note: this deliberately does not rely on [[Expression.throwable]], which is opt-in
    * metadata that most expressions do not override. A throwing ScalaUDF with
@@ -262,6 +263,8 @@ object ExprUtils extends EvalHelper with QueryErrorsBase {
 
   private def canEvaluateUnconditionallyInternal(e: Expression): Boolean = e match {
     case _: AttributeReference | _: Literal => true
+    case Cast(child, toType, _, _) =>
+      Cast.canUpCast(child.dataType, toType) && canEvaluateUnconditionallyInternal(child)
     case _: GetStructField | _: GetArrayStructFields | _: GetMapValue =>
       e.children.forall(canEvaluateUnconditionallyInternal)
     case _: And | _: Or | _: Not | _: BinaryComparison | _: IsNull | _: IsNotNull |

@@ -34,6 +34,9 @@ class ExprUtilsSuite extends SparkFunSuite {
         AttributeReference("s", StructType(StructField("f1", IntegerType) :: Nil))(), 0)))
     assert(ExprUtils.canEvaluateUnconditionally(Coalesce(Seq(a, Literal(0L)))))
     assert(ExprUtils.canEvaluateUnconditionally(In(a, Seq(Literal(1L), Literal(2L)))))
+    assert(ExprUtils.canEvaluateUnconditionally(
+      Cast(AttributeReference("i", IntegerType)(), LongType)))
+    assert(ExprUtils.canEvaluateUnconditionally(Cast(a, StringType)))
   }
 
   test("canEvaluateUnconditionally: expressions that can throw are excluded") {
@@ -44,7 +47,10 @@ class ExprUtilsSuite extends SparkFunSuite {
     assert(!arithmetic.throwable)
     assert(!ExprUtils.canEvaluateUnconditionally(arithmetic))
     assert(!ExprUtils.canEvaluateUnconditionally(EqualTo(Remainder(a, Literal(3L)), Literal(0L))))
-    assert(!ExprUtils.canEvaluateUnconditionally(Cast(a, StringType)))
+    // Narrowing cast (Long -> Int) and parsing cast (String -> Int) can throw in ANSI mode.
+    assert(!ExprUtils.canEvaluateUnconditionally(Cast(a, IntegerType)))
+    val s = AttributeReference("s", StringType)()
+    assert(!ExprUtils.canEvaluateUnconditionally(Cast(s, IntegerType)))
     // GetArrayItem/ElementAt can throw on invalid ordinals in ANSI mode.
     val arr = AttributeReference("arr", ArrayType(IntegerType))()
     assert(!ExprUtils.canEvaluateUnconditionally(GetArrayItem(arr, Literal(0))))
