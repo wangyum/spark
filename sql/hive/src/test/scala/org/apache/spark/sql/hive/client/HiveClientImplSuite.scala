@@ -328,7 +328,10 @@ class HiveClientImplSuite extends SparkFunSuite with SQLHelper {
     shim.getPartitionSummaries(null, table, nonPrefixSpec, PartitionFieldMask.LocationOnly)
 
     assert(capturedRequest != null)
-    // Non-prefix spec MUST NOT push down filterSpec to avoid DirectSQL wildcard matching bugs
-    assert(capturedRequest.getFilterSpec == null)
+    // Non-prefix spec does not set filterMode/filters to avoid DirectSQL wildcard matching bugs,
+    // while providing an empty filterSpec to avoid Hive 4.0 HMS ObjectStore NPE.
+    assert(capturedRequest.getFilterSpec != null)
+    assert(capturedRequest.getFilterSpec.getFilterMode == null)
+    assert(capturedRequest.getFilterSpec.getFilters == null)
   }
 }

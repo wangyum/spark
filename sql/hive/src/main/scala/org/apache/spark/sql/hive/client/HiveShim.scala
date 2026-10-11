@@ -1700,7 +1700,9 @@ private[client] class Shim_v4_0(cl: ClassLoader) extends Shim_v3_1 {
         setFiltersMethod.invoke(fs, pvals.asJava)
         fs
       } else {
-        null
+        // Hive 4.0 HMS ObjectStore unconditionally calls filterSpec.isSetFilterMode(),
+        // so an empty GetPartitionsFilterSpec is required even when no filter is applied.
+        clazzGetPartitionsFilterSpec.getConstructor().newInstance()
       }
 
       val req = clazzGetPartitionsRequest.getConstructor().newInstance()
@@ -1710,9 +1712,7 @@ private[client] class Shim_v4_0(cl: ClassLoader) extends Shim_v3_1 {
         setCatNameMethod.invoke(req, cat)
       }
       setProjectionSpecMethod.invoke(req, projSpec)
-      if (filterSpec != null) {
-        setFilterSpecMethod.invoke(req, filterSpec)
-      }
+      setFilterSpecMethod.invoke(req, filterSpec)
 
       recordHiveCall()
       val msc = getMetastoreClient(hive)
