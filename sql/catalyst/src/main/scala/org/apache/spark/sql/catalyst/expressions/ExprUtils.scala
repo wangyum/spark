@@ -243,10 +243,10 @@ object ExprUtils extends EvalHelper with QueryErrorsBase {
    *
    * Only a whitelist of total, deterministic expressions qualifies:
    *   - leaves: attribute references and literals;
+   *   - lossless widening casts: Cast where Cast.canUpCast(child.dataType, toType) is true;
    *   - total accessors: GetStructField, GetArrayStructFields and GetMapValue never throw.
    *     Note that GetArrayItem/ElementAt are NOT included: they throw on invalid ordinals
    *     when ANSI mode is on;
-   *   - lossless widening casts: Cast where Cast.canUpCast(child.dataType, toType) is true;
    *   - logic/predicates: And, Or, Not, comparisons, IsNull, IsNotNull, IsNaN, NullIf,
    *     Coalesce, In and InSet are total boolean functions.
    * Anything else (arithmetic, non-widening casts, string functions, UDFs,
