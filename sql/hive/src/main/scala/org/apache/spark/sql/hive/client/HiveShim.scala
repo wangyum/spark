@@ -1337,23 +1337,82 @@ private[client] class Shim_v3_0 extends Shim_v2_3 {
 
 private[client] class Shim_v3_1 extends Shim_v3_0
 
-private[client] class Shim_v4_0 extends Shim_v3_1 {
-  private lazy val clazzLoadFileType = getClass.getClassLoader.loadClass(
+private[client] class Shim_v4_0(cl: ClassLoader) extends Shim_v3_1 {
+  def this() = this(classOf[Shim_v4_0].getClassLoader)
+
+  protected def getMetastoreClient(hive: Hive): AnyRef = getMSC(hive)
+
+  private lazy val clazzLoadFileType = cl.loadClass(
     "org.apache.hadoop.hive.ql.plan.LoadTableDesc$LoadFileType")
-  private lazy val clazzLoadTableDesc = getClass.getClassLoader.loadClass(
+  private lazy val clazzLoadTableDesc = cl.loadClass(
     "org.apache.hadoop.hive.ql.plan.LoadTableDesc")
   private lazy val clazzPartitionDetails =
     Utils.classForName("org.apache.hadoop.hive.ql.exec.Utilities$PartitionDesc")
-  private lazy val clazzGetPartitionsRequest = getClass.getClassLoader.loadClass(
+  private lazy val clazzGetPartitionsRequest = cl.loadClass(
     "org.apache.hadoop.hive.metastore.api.GetPartitionsRequest")
-  private lazy val clazzGetProjectionsSpec = getClass.getClassLoader.loadClass(
+  private lazy val clazzGetProjectionsSpec = cl.loadClass(
     "org.apache.hadoop.hive.metastore.api.GetProjectionsSpec")
-  private lazy val clazzGetPartitionsFilterSpec = getClass.getClassLoader.loadClass(
+  private lazy val clazzGetPartitionsFilterSpec = cl.loadClass(
     "org.apache.hadoop.hive.metastore.api.GetPartitionsFilterSpec")
-  private lazy val clazzPartitionFilterMode = getClass.getClassLoader.loadClass(
+  private lazy val clazzPartitionFilterMode = cl.loadClass(
     "org.apache.hadoop.hive.metastore.api.PartitionFilterMode")
+  private lazy val clazzGetPartitionsResponse = cl.loadClass(
+    "org.apache.hadoop.hive.metastore.api.GetPartitionsResponse")
+  private lazy val clazzPartitionSpec = cl.loadClass(
+    "org.apache.hadoop.hive.metastore.api.PartitionSpec")
+  private lazy val clazzPartitionSpecWithSharedSD = cl.loadClass(
+    "org.apache.hadoop.hive.metastore.api.PartitionSpecWithSharedSD")
+  private lazy val clazzPartitionWithoutSD = cl.loadClass(
+    "org.apache.hadoop.hive.metastore.api.PartitionWithoutSD")
+  private lazy val clazzPartitionListComposingSpec = cl.loadClass(
+    "org.apache.hadoop.hive.metastore.api.PartitionListComposingSpec")
+  private lazy val clazzMetastorePartition = cl.loadClass(
+    "org.apache.hadoop.hive.metastore.api.Partition")
+  private lazy val clazzStorageDescriptor = cl.loadClass(
+    "org.apache.hadoop.hive.metastore.api.StorageDescriptor")
+  private lazy val clazzIMetaStoreClient = cl.loadClass(
+    "org.apache.hadoop.hive.metastore.IMetaStoreClient")
+
   private lazy val getPartitionsWithSpecsMethod =
-    findMethod(classOf[IMetaStoreClient], "getPartitionsWithSpecs", clazzGetPartitionsRequest)
+    findMethod(clazzIMetaStoreClient, "getPartitionsWithSpecs", clazzGetPartitionsRequest)
+  private lazy val setFieldListMethod =
+    findMethod(clazzGetProjectionsSpec, "setFieldList", classOf[JList[String]])
+  private lazy val setFilterModeMethod =
+    findMethod(clazzGetPartitionsFilterSpec, "setFilterMode", clazzPartitionFilterMode)
+  private lazy val setFiltersMethod =
+    findMethod(clazzGetPartitionsFilterSpec, "setFilters", classOf[JList[String]])
+  private lazy val setDbNameMethod =
+    findMethod(clazzGetPartitionsRequest, "setDbName", classOf[String])
+  private lazy val setTblNameMethod =
+    findMethod(clazzGetPartitionsRequest, "setTblName", classOf[String])
+  private lazy val setCatNameMethod =
+    findMethod(clazzGetPartitionsRequest, "setCatName", classOf[String])
+  private lazy val setProjectionSpecMethod =
+    findMethod(clazzGetPartitionsRequest, "setProjectionSpec", clazzGetProjectionsSpec)
+  private lazy val setFilterSpecMethod =
+    findMethod(clazzGetPartitionsRequest, "setFilterSpec", clazzGetPartitionsFilterSpec)
+  private lazy val getPartitionSpecMethod =
+    findMethod(clazzGetPartitionsResponse, "getPartitionSpec")
+  private lazy val getSharedSDPartitionSpecMethod =
+    findMethod(clazzPartitionSpec, "getSharedSDPartitionSpec")
+  private lazy val getPartitionListMethod =
+    findMethod(clazzPartitionSpec, "getPartitionList")
+  private lazy val getRootPathMethod =
+    findMethod(clazzPartitionSpec, "getRootPath")
+  private lazy val getSharedSDPartitionsMethod =
+    findMethod(clazzPartitionSpecWithSharedSD, "getPartitions")
+  private lazy val getPartitionWithoutSDValuesMethod =
+    findMethod(clazzPartitionWithoutSD, "getValues")
+  private lazy val getPartitionWithoutSDRelativePathMethod =
+    findMethod(clazzPartitionWithoutSD, "getRelativePath")
+  private lazy val getPartitionListPartitionsMethod =
+    findMethod(clazzPartitionListComposingSpec, "getPartitions")
+  private lazy val getPartitionValuesMethod =
+    findMethod(clazzMetastorePartition, "getValues")
+  private lazy val getPartitionSdMethod =
+    findMethod(clazzMetastorePartition, "getSd")
+  private lazy val getSdLocationMethod =
+    findMethod(clazzStorageDescriptor, "getLocation")
 
   override protected lazy val wildcard: String = "%"
 
@@ -1622,9 +1681,7 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
       } else {
         java.util.Collections.singletonList("values")
       }
-      clazzGetProjectionsSpec
-        .getMethod("setFieldList", classOf[JList[String]])
-        .invoke(projSpec, fieldList)
+      setFieldListMethod.invoke(projSpec, fieldList)
 
       val partColNames = table.getPartCols.asScala.map(_.getName.toLowerCase(Locale.ROOT)).toSeq
       val lowerPartSpec = partSpec.asScala.map { case (k, v) =>
@@ -1639,42 +1696,27 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
         val fs = clazzGetPartitionsFilterSpec.getConstructor().newInstance()
         val byValues = clazzPartitionFilterMode.getEnumConstants
           .find(_.toString == "BY_VALUES").get
-        clazzGetPartitionsFilterSpec
-          .getMethod("setFilterMode", clazzPartitionFilterMode)
-          .invoke(fs, byValues)
-        clazzGetPartitionsFilterSpec
-          .getMethod("setFilters", classOf[JList[String]])
-          .invoke(fs, pvals.asJava)
+        setFilterModeMethod.invoke(fs, byValues)
+        setFiltersMethod.invoke(fs, pvals.asJava)
         fs
       } else {
         null
       }
 
       val req = clazzGetPartitionsRequest.getConstructor().newInstance()
-      clazzGetPartitionsRequest
-        .getMethod("setDbName", classOf[String])
-        .invoke(req, table.getDbName)
-      clazzGetPartitionsRequest
-        .getMethod("setTblName", classOf[String])
-        .invoke(req, table.getTableName)
+      setDbNameMethod.invoke(req, table.getDbName)
+      setTblNameMethod.invoke(req, table.getTableName)
       Option(table.getTTable.getCatName).foreach { cat =>
-        clazzGetPartitionsRequest
-          .getMethod("setCatName", classOf[String])
-          .invoke(req, cat)
+        setCatNameMethod.invoke(req, cat)
       }
-      clazzGetPartitionsRequest
-        .getMethod("setProjectionSpec", clazzGetProjectionsSpec)
-        .invoke(req, projSpec)
+      setProjectionSpecMethod.invoke(req, projSpec)
       if (filterSpec != null) {
-        clazzGetPartitionsRequest
-          .getMethod("setFilterSpec", clazzGetPartitionsFilterSpec)
-          .invoke(req, filterSpec)
+        setFilterSpecMethod.invoke(req, filterSpec)
       }
 
       recordHiveCall()
-      val msc = getMSC(hive)
+      val msc = getMetastoreClient(hive)
       val response = getPartitionsWithSpecsMethod.invoke(msc, req)
-      val getPartitionSpecMethod = response.getClass.getMethod("getPartitionSpec")
       val partitionSpecs = getPartitionSpecMethod.invoke(response).asInstanceOf[JList[AnyRef]]
       if (partitionSpecs == null || partitionSpecs.isEmpty) {
         Seq.empty
@@ -1682,21 +1724,21 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
         val origPartColNames = table.getPartCols.asScala.map(_.getName).toSeq
         val baseTableLocation = Option(table.getSd).map(_.getLocation).orNull
         partitionSpecs.asScala.toSeq.flatMap { pSpec =>
-          val sharedSD = pSpec.getClass.getMethod("getSharedSDPartitionSpec").invoke(pSpec)
-          val partitionList = pSpec.getClass.getMethod("getPartitionList").invoke(pSpec)
-          val rootPath = Option(pSpec.getClass.getMethod("getRootPath").invoke(pSpec))
+          val sharedSD = getSharedSDPartitionSpecMethod.invoke(pSpec)
+          val partitionList = getPartitionListMethod.invoke(pSpec)
+          val rootPath = Option(getRootPathMethod.invoke(pSpec))
             .map(_.asInstanceOf[String]).getOrElse(baseTableLocation)
 
           if (sharedSD != null) {
-            val parts = sharedSD.getClass.getMethod("getPartitions").invoke(sharedSD)
+            val parts = getSharedSDPartitionsMethod.invoke(sharedSD)
               .asInstanceOf[JList[AnyRef]]
             if (parts != null) {
               parts.asScala.map { p =>
-                val values = p.getClass.getMethod("getValues").invoke(p)
+                val values = getPartitionWithoutSDValuesMethod.invoke(p)
                   .asInstanceOf[JList[String]].asScala.toSeq
                 val spec = origPartColNames.zip(values).toMap
                 val locationUri = if (mask.includeLocation) {
-                  val relPath = p.getClass.getMethod("getRelativePath").invoke(p)
+                  val relPath = getPartitionWithoutSDRelativePathMethod.invoke(p)
                     .asInstanceOf[String]
                   val locPath = if (relPath != null && relPath.nonEmpty) {
                     if (rootPath != null) new Path(rootPath, relPath.stripPrefix("/")).toString
@@ -1714,17 +1756,17 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
               Seq.empty
             }
           } else if (partitionList != null) {
-            val parts = partitionList.getClass.getMethod("getPartitions").invoke(partitionList)
+            val parts = getPartitionListPartitionsMethod.invoke(partitionList)
               .asInstanceOf[JList[AnyRef]]
             if (parts != null) {
               parts.asScala.map { p =>
-                val values = p.getClass.getMethod("getValues").invoke(p)
+                val values = getPartitionValuesMethod.invoke(p)
                   .asInstanceOf[JList[String]].asScala.toSeq
                 val spec = origPartColNames.zip(values).toMap
                 val locationUri = if (mask.includeLocation) {
-                  val sd = p.getClass.getMethod("getSd").invoke(p)
+                  val sd = getPartitionSdMethod.invoke(p)
                   val loc = if (sd != null) {
-                    sd.getClass.getMethod("getLocation").invoke(sd).asInstanceOf[String]
+                    getSdLocationMethod.invoke(sd).asInstanceOf[String]
                   } else {
                     null
                   }
