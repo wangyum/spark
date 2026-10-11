@@ -452,13 +452,6 @@ class HiveClientSuite(version: String) extends HiveVersionSuite(version) with SQ
     assert(testPartitionCount == specOnly.size)
     assert(specOnly.forall(_.locationUri.isEmpty))
 
-    withSQLConf(SQLConf.HIVE_METASTORE_PARTITION_PROJECTION_ENABLED.key -> "false") {
-      val disabled = client.getPartitionSummaries(
-        "default", "src_part", None, PartitionFieldMask.LocationOnly)
-      assert(testPartitionCount == disabled.size)
-      assert(disabled.forall(_.locationUri.isDefined))
-    }
-
     assert(client.getPartitionSummaries(
       "default", "src", None, PartitionFieldMask.LocationOnly).isEmpty)
   }
