@@ -625,6 +625,13 @@ class InMemoryCatalog(
     }
   }
 
+  override def listPartitionSpecsAndLocations(
+      db: String,
+      table: String,
+      partialSpec: Option[TablePartitionSpec] = None): Seq[CatalogTablePartition] = {
+    listPartitions(db, table, partialSpec)
+  }
+
   override def listPartitionsByFilter(
       db: String,
       table: String,

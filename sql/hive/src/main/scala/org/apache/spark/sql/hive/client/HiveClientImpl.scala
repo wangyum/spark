@@ -837,6 +837,30 @@ private[hive] class HiveClientImpl(
     parts
   }
 
+  override def getPartitionSpecsAndLocations(
+      db: String,
+      table: String,
+      spec: Option[TablePartitionSpec]): Seq[CatalogTablePartition] = {
+    val hiveTable = withHiveState {
+      getRawTableOption(db, table).getOrElse(throw new NoSuchTableException(db, table))
+    }
+    getPartitionSpecsAndLocations(hiveTable, spec)
+  }
+
+  private def getPartitionSpecsAndLocations(
+      hiveTable: HiveTable,
+      spec: Option[TablePartitionSpec]): Seq[CatalogTablePartition] = withHiveState {
+    val partSpec = spec match {
+      case None => CatalogTypes.emptyTablePartitionSpec
+      case Some(s) =>
+        assert(s.values.forall(_.nonEmpty), s"partition spec '$s' is invalid")
+        s
+    }
+    val parts = shim.getPartitionSpecsAndLocations(client, hiveTable, partSpec.asJava)
+    HiveCatalogMetrics.incrementFetchedPartitions(parts.length)
+    parts
+  }
+
   override def getPartitionsByFilter(
       rawHiveTable: RawHiveTable,
       predicates: Seq[Expression]): Seq[CatalogTablePartition] = withHiveState {

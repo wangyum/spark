@@ -478,6 +478,22 @@ abstract class ExternalCatalogSuite extends SparkFunSuite {
     assert(catalog.listPartitions("db2", "tbl2", Some(Map("a" -> "unknown"))).isEmpty)
   }
 
+  test("list partition specs and locations") {
+    val catalog = newBasicCatalog()
+    val parts = catalog.listPartitionSpecsAndLocations("db2", "tbl2")
+    assert(parts.map(_.spec).toSet == Set(part1.spec, part2.spec))
+    assert(parts.forall(_.storage.locationUri.isDefined))
+
+    val filteredParts = catalog.listPartitionSpecsAndLocations(
+      "db2", "tbl2", Some(Map("a" -> "1")))
+    assert(filteredParts.length == 1)
+    assert(filteredParts.head.spec == part1.spec)
+    assert(filteredParts.head.storage.locationUri.isDefined)
+
+    assert(catalog.listPartitionSpecsAndLocations(
+      "db2", "tbl2", Some(Map("a" -> "unknown"))).isEmpty)
+  }
+
   test("SPARK-45054: list partitions should restore stats") {
     val catalog = newBasicCatalog()
     val stats = Some(CatalogStatistics(sizeInBytes = 1))

@@ -148,6 +148,11 @@ private[client] sealed abstract class Shim {
       table: Table,
       partSpec: JMap[String, String]): Seq[Partition]
 
+  def getPartitionSpecsAndLocations(
+      hive: Hive,
+      table: Table,
+      partSpec: JMap[String, String]): Seq[CatalogTablePartition]
+
   def getPartitionNames(
       hive: Hive,
       dbName: String,
@@ -993,6 +998,18 @@ private[client] class Shim_v2_0 extends Shim with Logging {
     hive.getPartitions(table, partSpec).asScala.toSeq
   }
 
+  override def getPartitionSpecsAndLocations(
+      hive: Hive,
+      table: Table,
+      partSpec: JMap[String, String]): Seq[CatalogTablePartition] = {
+    if (!table.isPartitioned) {
+      Seq.empty
+    } else {
+      recordHiveCall()
+      getPartitions(hive, table, partSpec).map(HiveClientImpl.fromHivePartition)
+    }
+  }
+
   override def getPartitionNames(
       hive: Hive,
       dbName: String,
@@ -1316,6 +1333,16 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
     "org.apache.hadoop.hive.ql.plan.LoadTableDesc")
   private lazy val clazzPartitionDetails =
     Utils.classForName("org.apache.hadoop.hive.ql.exec.Utilities$PartitionDesc")
+  private lazy val clazzGetPartitionsRequest = getClass.getClassLoader.loadClass(
+    "org.apache.hadoop.hive.metastore.api.GetPartitionsRequest")
+  private lazy val clazzGetProjectionsSpec = getClass.getClassLoader.loadClass(
+    "org.apache.hadoop.hive.metastore.api.GetProjectionsSpec")
+  private lazy val clazzGetPartitionsFilterSpec = getClass.getClassLoader.loadClass(
+    "org.apache.hadoop.hive.metastore.api.GetPartitionsFilterSpec")
+  private lazy val clazzPartitionFilterMode = getClass.getClassLoader.loadClass(
+    "org.apache.hadoop.hive.metastore.api.PartitionFilterMode")
+  private lazy val getPartitionsWithSpecsMethod =
+    findMethod(classOf[IMetaStoreClient], "getPartitionsWithSpecs", clazzGetPartitionsRequest)
 
   override protected lazy val wildcard: String = "%"
 
@@ -1564,6 +1591,136 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
       newPart: Partition): Unit = {
     recordHiveCall()
     renamePartitionMethod.invoke(hive, table, oldPartSpec, newPart, writeIdInLoadTableOrPartition)
+  }
+
+  override def getPartitionSpecsAndLocations(
+      hive: Hive,
+      table: Table,
+      partSpec: JMap[String, String]): Seq[CatalogTablePartition] = {
+    if (!table.isPartitioned) {
+      return Seq.empty
+    }
+    if (!SQLConf.get.metastorePartitionProjectionEnabled) {
+      return super.getPartitionSpecsAndLocations(hive, table, partSpec)
+    }
+    try {
+      val projSpec = clazzGetProjectionsSpec.getConstructor().newInstance()
+      clazzGetProjectionsSpec
+        .getMethod("setFieldList", classOf[JList[String]])
+        .invoke(projSpec, java.util.Arrays.asList("values", "sd.location"))
+
+      val partCols = table.getPartCols.asScala.map(_.getName).toSeq
+      val lowerPartSpec = partSpec.asScala.map { case (k, v) =>
+        k.toLowerCase(Locale.ROOT) -> v
+      }
+      val pvals = partCols.map(col => lowerPartSpec.getOrElse(col.toLowerCase(Locale.ROOT), ""))
+      val filterSpec = if (pvals.exists(_.nonEmpty)) {
+        val fs = clazzGetPartitionsFilterSpec.getConstructor().newInstance()
+        val byValues = clazzPartitionFilterMode.getEnumConstants
+          .find(_.toString == "BY_VALUES").get
+        clazzGetPartitionsFilterSpec
+          .getMethod("setFilterMode", clazzPartitionFilterMode)
+          .invoke(fs, byValues)
+        clazzGetPartitionsFilterSpec
+          .getMethod("setFilters", classOf[JList[String]])
+          .invoke(fs, pvals.asJava)
+        fs
+      } else {
+        null
+      }
+
+      val req = clazzGetPartitionsRequest.getConstructor().newInstance()
+      clazzGetPartitionsRequest
+        .getMethod("setDbName", classOf[String])
+        .invoke(req, table.getDbName)
+      clazzGetPartitionsRequest
+        .getMethod("setTblName", classOf[String])
+        .invoke(req, table.getTableName)
+      Option(table.getTTable.getCatName).foreach { cat =>
+        clazzGetPartitionsRequest
+          .getMethod("setCatName", classOf[String])
+          .invoke(req, cat)
+      }
+      clazzGetPartitionsRequest
+        .getMethod("setProjectionSpec", clazzGetProjectionsSpec)
+        .invoke(req, projSpec)
+      if (filterSpec != null) {
+        clazzGetPartitionsRequest
+          .getMethod("setFilterSpec", clazzGetPartitionsFilterSpec)
+          .invoke(req, filterSpec)
+      }
+
+      recordHiveCall()
+      val msc = getMSC(hive)
+      val response = getPartitionsWithSpecsMethod.invoke(msc, req)
+      val getPartitionSpecMethod = response.getClass.getMethod("getPartitionSpec")
+      val partitionSpecs = getPartitionSpecMethod.invoke(response).asInstanceOf[JList[AnyRef]]
+      if (partitionSpecs == null || partitionSpecs.isEmpty) {
+        Seq.empty
+      } else {
+        val baseTableLocation = Option(table.getSd).map(_.getLocation).orNull
+        partitionSpecs.asScala.toSeq.flatMap { pSpec =>
+          val sharedSD = pSpec.getClass.getMethod("getSharedSDPartitionSpec").invoke(pSpec)
+          val partitionList = pSpec.getClass.getMethod("getPartitionList").invoke(pSpec)
+          val rootPath = Option(pSpec.getClass.getMethod("getRootPath").invoke(pSpec))
+            .map(_.asInstanceOf[String]).getOrElse(baseTableLocation)
+
+          if (sharedSD != null) {
+            val parts = sharedSD.getClass.getMethod("getPartitions").invoke(sharedSD)
+              .asInstanceOf[JList[AnyRef]]
+            if (parts != null) {
+              parts.asScala.map { p =>
+                val values = p.getClass.getMethod("getValues").invoke(p)
+                  .asInstanceOf[JList[String]].asScala.toSeq
+                val spec = partCols.zip(values).toMap
+                val relPath = p.getClass.getMethod("getRelativePath").invoke(p)
+                  .asInstanceOf[String]
+                val loc = if (relPath != null && relPath.nonEmpty) {
+                  if (rootPath != null) rootPath + relPath else relPath
+                } else {
+                  rootPath
+                }
+                CatalogTablePartition(
+                  spec = spec,
+                  storage = CatalogStorageFormat.empty.copy(
+                    locationUri = Option(loc).map(CatalogUtils.stringToURI)))
+              }
+            } else {
+              Seq.empty
+            }
+          } else if (partitionList != null) {
+            val parts = partitionList.getClass.getMethod("getPartitions").invoke(partitionList)
+              .asInstanceOf[JList[AnyRef]]
+            if (parts != null) {
+              parts.asScala.map { p =>
+                val values = p.getClass.getMethod("getValues").invoke(p)
+                  .asInstanceOf[JList[String]].asScala.toSeq
+                val spec = partCols.zip(values).toMap
+                val sd = p.getClass.getMethod("getSd").invoke(p)
+                val loc = if (sd != null) {
+                  sd.getClass.getMethod("getLocation").invoke(sd).asInstanceOf[String]
+                } else {
+                  null
+                }
+                CatalogTablePartition(
+                  spec = spec,
+                  storage = CatalogStorageFormat.empty.copy(
+                    locationUri = Option(loc).map(CatalogUtils.stringToURI)))
+              }
+            } else {
+              Seq.empty
+            }
+          } else {
+            Seq.empty
+          }
+        }
+      }
+    } catch {
+      case e @ (_: Exception | _: LinkageError) =>
+        logWarning("Failed to get partition specs with projection from Hive Metastore, " +
+          "falling back to getPartitions", e)
+        super.getPartitionSpecsAndLocations(hive, table, partSpec)
+    }
   }
 }
 

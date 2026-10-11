@@ -105,7 +105,7 @@ case class InsertIntoHadoopFsRelationCommand(
     // When partitions are tracked by the catalog, compute all custom partition locations that
     // may be relevant to the insertion job.
     if (partitionsTrackedByCatalog) {
-      matchingPartitions = sparkSession.sessionState.catalog.listPartitions(
+      matchingPartitions = sparkSession.sessionState.catalog.listPartitionSpecsAndLocations(
         catalogTable.get.identifier, Some(staticPartitions))
       initialMatchingPartitions = matchingPartitions.map(_.spec)
       customPartitionLocations = getCustomPartitionLocations(

@@ -3176,6 +3176,21 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
       }
     }
   }
+
+  test("insert into table with custom partition location") {
+    withTable("t") {
+      withTempDir { partDir =>
+        sql("CREATE TABLE t(c1 int, p1 int) USING parquet PARTITIONED BY (p1)")
+        sql("INSERT INTO t PARTITION (p1 = 1) VALUES (10)")
+        sql(s"ALTER TABLE t PARTITION (p1 = 1) SET LOCATION '${partDir.toURI}'")
+        sql("INSERT OVERWRITE TABLE t PARTITION (p1 = 1) VALUES (20)")
+        checkAnswer(spark.table("t"), Row(20, 1))
+        val parts = spark.sessionState.catalog.listPartitionSpecsAndLocations(TableIdentifier("t"))
+        assert(parts.length == 1)
+        assert(parts.head.spec == Map("p1" -> "1"))
+      }
+    }
+  }
 }
 
 class FileExistingTestFileSystem extends RawLocalFileSystem {

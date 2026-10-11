@@ -1601,6 +1601,19 @@ abstract class SessionCatalogSuite extends AnalysisTest with Eventually {
     }
   }
 
+  test("list partition specs and locations") {
+    withBasicCatalog { catalog =>
+      assert(catalogPartitionsEqual(
+        catalog.listPartitionSpecsAndLocations(TableIdentifier("tbl2", Some("db2"))), part1, part2))
+      catalog.setCurrentDatabase("db2")
+      assert(catalogPartitionsEqual(
+        catalog.listPartitionSpecsAndLocations(TableIdentifier("tbl2")), part1, part2))
+      assert(catalogPartitionsEqual(
+        catalog.listPartitionSpecsAndLocations(
+          TableIdentifier("tbl2", Some("db2")), Some(Map("a" -> "1"))), part1))
+    }
+  }
+
   test("list partitions with invalid partial partition spec") {
     withBasicCatalog { catalog =>
       checkError(
