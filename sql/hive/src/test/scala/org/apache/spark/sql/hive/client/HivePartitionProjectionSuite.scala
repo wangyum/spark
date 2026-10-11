@@ -22,14 +22,18 @@ import java.net.URI
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
 import org.apache.hadoop.mapred.TextInputFormat
+import org.scalactic.source.Position
+import org.scalatest.Tag
 
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.catalog._
 import org.apache.spark.sql.catalyst.plans.SQLHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.util.Utils
 
-class Hive40PartitionProjectionSuite extends HiveVersionSuite("4.0") with SQLHelper {
+abstract class HivePartitionProjectionSuite(version: String)
+  extends HiveVersionSuite(version) with SQLHelper {
 
   override def beforeAll(): Unit = {
     super.beforeAll()
@@ -42,8 +46,8 @@ class Hive40PartitionProjectionSuite extends HiveVersionSuite("4.0") with SQLHel
     super.afterAll()
   }
 
-  test("Hive 4.0 partition projection under real IsolatedClientLoader") {
-    val tableName = "proj_test"
+  test("partition projection under real IsolatedClientLoader") {
+    val tableName = s"proj_test_$version".replace('.', '_')
     val table = CatalogTable(
       identifier = TableIdentifier(tableName, Some("default")),
       tableType = CatalogTableType.MANAGED,
@@ -102,7 +106,7 @@ class Hive40PartitionProjectionSuite extends HiveVersionSuite("4.0") with SQLHel
       // 3. Non-prefix partition spec (does not push down filter, but projection succeeds)
       val nonPrefix = client.getPartitionSummaries(
         "default", tableName, Some(Map("p2" -> "a")), PartitionFieldMask.LocationOnly)
-      assert(nonPrefix.length == 4) // HMS returns all projected partitions without error
+      assert(nonPrefix.length == 4)
 
       // 4. SpecOnly projection (no location)
       val specOnly = client.getPartitionSummaries(
@@ -122,9 +126,9 @@ class Hive40PartitionProjectionSuite extends HiveVersionSuite("4.0") with SQLHel
     }
   }
 
-  test("Hive 4.0 partition projection on unpartitioned table") {
+  test("partition projection on unpartitioned table") {
     val unpartTable = CatalogTable(
-      identifier = TableIdentifier("unpart_test", Some("default")),
+      identifier = TableIdentifier(s"unpart_test_$version".replace('.', '_'), Some("default")),
       tableType = CatalogTableType.MANAGED,
       schema = new StructType().add("id", "int"),
       storage = CatalogStorageFormat.empty
@@ -132,9 +136,25 @@ class Hive40PartitionProjectionSuite extends HiveVersionSuite("4.0") with SQLHel
     client.createTable(unpartTable, ignoreIfExists = false)
     try {
       assert(client.getPartitionSummaries(
-        "default", "unpart_test", None, PartitionFieldMask.LocationOnly).isEmpty)
+        "default", unpartTable.identifier.table, None, PartitionFieldMask.LocationOnly).isEmpty)
     } finally {
-      client.dropTable("default", "unpart_test", ignoreIfNotExists = true, purge = true)
+      client.dropTable("default", unpartTable.identifier.table, ignoreIfNotExists = true,
+        purge = true)
+    }
+  }
+}
+
+class Hive40PartitionProjectionSuite extends HivePartitionProjectionSuite("4.0")
+
+class Hive41PartitionProjectionSuite extends HivePartitionProjectionSuite("4.1")
+
+class Hive42PartitionProjectionSuite extends HivePartitionProjectionSuite("4.2") {
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
+      (implicit pos: Position): Unit = {
+    if (Utils.isJavaVersionAtLeast21) {
+      super.test(testName, testTags: _*)(testFun)
+    } else {
+      ignore(s"Hive 4.2 requires Java 21+: $testName", testTags: _*)(testFun)
     }
   }
 }
