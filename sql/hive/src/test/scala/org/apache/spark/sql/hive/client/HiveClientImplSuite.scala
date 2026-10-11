@@ -21,7 +21,7 @@ import org.apache.hadoop.hive.metastore.api.FieldSchema
 
 import org.apache.spark.{SparkFunSuite, SparkUnsupportedOperationException}
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTableType}
+import org.apache.spark.sql.catalyst.catalog.{CatalogStorageFormat, CatalogTable, CatalogTableType, PartitionFieldMask}
 import org.apache.spark.sql.catalyst.plans.SQLHelper
 import org.apache.spark.sql.hive.{HiveUtils, StaticInitFlags, StaticInitInputFormat, StaticInitOutputFormat}
 import org.apache.spark.sql.internal.SQLConf
@@ -105,14 +105,15 @@ class HiveClientImplSuite extends SparkFunSuite with SQLHelper {
         "fieldName" -> "`c`"))
   }
 
-  test("Shim_v4_0 getPartitionSpecsAndLocations fallback on unpartitioned table") {
+  test("Shim_v4_0 getPartitionSummaries fallback on unpartitioned table") {
     val shim = new Shim_v4_0()
     assert(shim.isInstanceOf[Shim_v3_1])
     val table = new org.apache.hadoop.hive.ql.metadata.Table("default", "t")
-    assert(shim.getPartitionSpecsAndLocations(null, table, new java.util.HashMap()).isEmpty)
+    assert(shim.getPartitionSummaries(null, table, new java.util.HashMap(),
+      PartitionFieldMask.LocationOnly).isEmpty)
   }
 
-  test("Shim_v4_0 getPartitionSpecsAndLocations fallback when projection is disabled or fails") {
+  test("Shim_v4_0 getPartitionSummaries fallback when projection is disabled or fails") {
     val table = new org.apache.hadoop.hive.ql.metadata.Table("default", "t")
     table.setPartCols(java.util.Arrays.asList(new FieldSchema("p", "int", null)))
     assert(table.isPartitioned)
@@ -131,13 +132,15 @@ class HiveClientImplSuite extends SparkFunSuite with SQLHelper {
 
     withSQLConf(SQLConf.HIVE_METASTORE_PARTITION_PROJECTION_ENABLED.key -> "false") {
       fallbackCalled = false
-      assert(testShim.getPartitionSpecsAndLocations(null, table, new java.util.HashMap()).isEmpty)
+      assert(testShim.getPartitionSummaries(null, table, new java.util.HashMap(),
+        PartitionFieldMask.LocationOnly).isEmpty)
       assert(fallbackCalled)
     }
 
     withSQLConf(SQLConf.HIVE_METASTORE_PARTITION_PROJECTION_ENABLED.key -> "true") {
       fallbackCalled = false
-      assert(testShim.getPartitionSpecsAndLocations(null, table, new java.util.HashMap()).isEmpty)
+      assert(testShim.getPartitionSummaries(null, table, new java.util.HashMap(),
+        PartitionFieldMask.LocationOnly).isEmpty)
       assert(fallbackCalled)
     }
   }

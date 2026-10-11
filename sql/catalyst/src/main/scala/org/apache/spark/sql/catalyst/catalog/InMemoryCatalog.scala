@@ -625,11 +625,16 @@ class InMemoryCatalog(
     }
   }
 
-  override def listPartitionSpecsAndLocations(
+  override def listPartitionSummaries(
       db: String,
       table: String,
-      partialSpec: Option[TablePartitionSpec] = None): Seq[CatalogTablePartition] = {
-    listPartitions(db, table, partialSpec)
+      partialSpec: Option[TablePartitionSpec] = None,
+      mask: PartitionFieldMask = PartitionFieldMask.LocationOnly): Seq[TablePartitionSummary] = {
+    listPartitions(db, table, partialSpec).map { p =>
+      TablePartitionSummary(
+        spec = p.spec,
+        locationUri = if (mask.includeLocation) p.storage.locationUri else None)
+    }
   }
 
   override def listPartitionsByFilter(

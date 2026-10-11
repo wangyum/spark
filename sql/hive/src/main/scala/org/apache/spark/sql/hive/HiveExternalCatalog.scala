@@ -1386,24 +1386,25 @@ private[spark] class HiveExternalCatalog(conf: SparkConf, hadoopConf: Configurat
     parts.map(restorePartitionMetadata(_, catalogTable))
   }
 
-  override def listPartitionSpecsAndLocations(
+  override def listPartitionSummaries(
       db: String,
       table: String,
-      partialSpec: Option[TablePartitionSpec] = None): Seq[CatalogTablePartition] = withClient {
-    val catalogTable = getTable(db, table)
-    val partColNameMap = buildLowerCasePartColNameMap(catalogTable)
-    val metaStoreSpec = partialSpec.map(toMetaStorePartitionSpec)
-    val res = client.getPartitionSpecsAndLocations(db, table, metaStoreSpec)
-      .map { part => part.copy(spec = restorePartitionSpec(part.spec, partColNameMap))
-    }
+      partialSpec: Option[TablePartitionSpec] = None,
+      mask: PartitionFieldMask = PartitionFieldMask.LocationOnly): Seq[TablePartitionSummary] =
+    withClient {
+      val catalogTable = getTable(db, table)
+      val partColNameMap = buildLowerCasePartColNameMap(catalogTable)
+      val metaStoreSpec = partialSpec.map(toMetaStorePartitionSpec)
+      val res = client.getPartitionSummaries(db, table, metaStoreSpec, mask)
+        .map { part => part.copy(spec = restorePartitionSpec(part.spec, partColNameMap))
+      }
 
-    val parts = metaStoreSpec match {
-      case Some(spec) if spec.exists(_._2.contains(".")) =>
-        res.filter(p => isPartialPartitionSpec(spec, toMetaStorePartitionSpec(p.spec)))
-      case _ => res
+      metaStoreSpec match {
+        case Some(spec) =>
+          res.filter(p => isPartialPartitionSpec(spec, toMetaStorePartitionSpec(p.spec)))
+        case _ => res
+      }
     }
-    parts.map(restorePartitionMetadata(_, catalogTable))
-  }
 
   override def listPartitionsByFilter(
       db: String,

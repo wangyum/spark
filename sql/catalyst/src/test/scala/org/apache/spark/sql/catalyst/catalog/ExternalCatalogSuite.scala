@@ -478,19 +478,25 @@ abstract class ExternalCatalogSuite extends SparkFunSuite {
     assert(catalog.listPartitions("db2", "tbl2", Some(Map("a" -> "unknown"))).isEmpty)
   }
 
-  test("list partition specs and locations") {
+  test("list partition summaries") {
     val catalog = newBasicCatalog()
-    val parts = catalog.listPartitionSpecsAndLocations("db2", "tbl2")
-    assert(parts.map(_.spec).toSet == Set(part1.spec, part2.spec))
-    assert(parts.forall(_.storage.locationUri.isDefined))
+    val summaries = catalog.listPartitionSummaries("db2", "tbl2")
+    assert(summaries.map(_.spec).toSet == Set(part1.spec, part2.spec))
+    assert(summaries.forall(_.locationUri.isDefined))
 
-    val filteredParts = catalog.listPartitionSpecsAndLocations(
-      "db2", "tbl2", Some(Map("a" -> "1")))
-    assert(filteredParts.length == 1)
-    assert(filteredParts.head.spec == part1.spec)
-    assert(filteredParts.head.storage.locationUri.isDefined)
+    val filtered = catalog.listPartitionSummaries(
+      "db2", "tbl2", Some(Map("a" -> "1")), PartitionFieldMask.LocationOnly)
+    assert(filtered.length == 1)
+    assert(filtered.head.spec == part1.spec)
+    assert(filtered.head.locationUri.isDefined)
 
-    assert(catalog.listPartitionSpecsAndLocations(
+    val specOnly = catalog.listPartitionSummaries(
+      "db2", "tbl2", Some(Map("a" -> "1")), PartitionFieldMask.SpecOnly)
+    assert(specOnly.length == 1)
+    assert(specOnly.head.spec == part1.spec)
+    assert(specOnly.head.locationUri.isEmpty)
+
+    assert(catalog.listPartitionSummaries(
       "db2", "tbl2", Some(Map("a" -> "unknown"))).isEmpty)
   }
 

@@ -256,13 +256,14 @@ private[hive] trait HiveClient {
       partialSpec: Option[TablePartitionSpec]): Seq[CatalogTablePartition]
 
   /**
-   * Returns partition specs and locations for the given table that match the supplied partition
-   * spec. If no partition spec is specified, all partitions are returned.
+   * Returns partition summaries for the given table that match the supplied partition spec,
+   * retrieving only the fields requested by the partition field mask.
    */
-  def getPartitionSpecsAndLocations(
+  def getPartitionSummaries(
       db: String,
       table: String,
-      partialSpec: Option[TablePartitionSpec]): Seq[CatalogTablePartition]
+      partialSpec: Option[TablePartitionSpec],
+      mask: PartitionFieldMask): Seq[TablePartitionSummary]
 
   /** Returns partitions filtered by predicates for the given table. */
   def getPartitionsByFilter(

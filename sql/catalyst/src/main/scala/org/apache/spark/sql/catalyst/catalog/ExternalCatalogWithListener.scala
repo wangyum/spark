@@ -270,11 +270,12 @@ class ExternalCatalogWithListener(delegate: ExternalCatalog)
     delegate.listPartitions(db, table, partialSpec)
   }
 
-  override def listPartitionSpecsAndLocations(
+  override def listPartitionSummaries(
       db: String,
       table: String,
-      partialSpec: Option[TablePartitionSpec] = None): Seq[CatalogTablePartition] = {
-    delegate.listPartitionSpecsAndLocations(db, table, partialSpec)
+      partialSpec: Option[TablePartitionSpec] = None,
+      mask: PartitionFieldMask = PartitionFieldMask.LocationOnly): Seq[TablePartitionSummary] = {
+    delegate.listPartitionSummaries(db, table, partialSpec, mask)
   }
 
   override def listPartitionsByFilter(

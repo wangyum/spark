@@ -837,26 +837,28 @@ private[hive] class HiveClientImpl(
     parts
   }
 
-  override def getPartitionSpecsAndLocations(
+  override def getPartitionSummaries(
       db: String,
       table: String,
-      spec: Option[TablePartitionSpec]): Seq[CatalogTablePartition] = {
+      spec: Option[TablePartitionSpec],
+      mask: PartitionFieldMask): Seq[TablePartitionSummary] = {
     val hiveTable = withHiveState {
       getRawTableOption(db, table).getOrElse(throw new NoSuchTableException(db, table))
     }
-    getPartitionSpecsAndLocations(hiveTable, spec)
+    getPartitionSummaries(hiveTable, spec, mask)
   }
 
-  private def getPartitionSpecsAndLocations(
+  private def getPartitionSummaries(
       hiveTable: HiveTable,
-      spec: Option[TablePartitionSpec]): Seq[CatalogTablePartition] = withHiveState {
+      spec: Option[TablePartitionSpec],
+      mask: PartitionFieldMask): Seq[TablePartitionSummary] = withHiveState {
     val partSpec = spec match {
       case None => CatalogTypes.emptyTablePartitionSpec
       case Some(s) =>
         assert(s.values.forall(_.nonEmpty), s"partition spec '$s' is invalid")
         s
     }
-    val parts = shim.getPartitionSpecsAndLocations(client, hiveTable, partSpec.asJava)
+    val parts = shim.getPartitionSummaries(client, hiveTable, partSpec.asJava, mask)
     HiveCatalogMetrics.incrementFetchedPartitions(parts.length)
     parts
   }

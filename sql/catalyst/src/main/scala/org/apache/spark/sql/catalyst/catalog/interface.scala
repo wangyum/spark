@@ -268,6 +268,61 @@ case class CatalogTablePartition(
 }
 
 /**
+ * A projection mask indicating which partition fields to retrieve from the catalog.
+ *
+ * @param includeLocation whether to retrieve the partition storage location.
+ * @param includeStorage whether to retrieve full storage format (SerDe, input/output formats).
+ * @param includeParameters whether to retrieve partition-level parameters/properties.
+ * @param includeStats whether to retrieve partition-level statistics.
+ */
+case class PartitionFieldMask(
+    includeLocation: Boolean = true,
+    includeStorage: Boolean = false,
+    includeParameters: Boolean = false,
+    includeStats: Boolean = false) {
+
+  def isFull: Boolean = includeLocation && includeStorage && includeParameters && includeStats
+}
+
+object PartitionFieldMask {
+  val Full: PartitionFieldMask = PartitionFieldMask(
+    includeLocation = true,
+    includeStorage = true,
+    includeParameters = true,
+    includeStats = true)
+
+  val LocationOnly: PartitionFieldMask = PartitionFieldMask(
+    includeLocation = true,
+    includeStorage = false,
+    includeParameters = false,
+    includeStats = false)
+
+  val SpecOnly: PartitionFieldMask = PartitionFieldMask(
+    includeLocation = false,
+    includeStorage = false,
+    includeParameters = false,
+    includeStats = false)
+}
+
+/**
+ * A lightweight summary of a partition holding only its spec and optional location URI,
+ * avoiding the memory and RPC overhead of instantiating a full [[CatalogTablePartition]].
+ *
+ * @param spec partition spec values mapping partition column names to string values
+ * @param locationUri optional partition location URI
+ */
+case class TablePartitionSummary(
+    spec: CatalogTypes.TablePartitionSpec,
+    locationUri: Option[URI] = None) {
+
+  /** Return the partition location, assuming it is specified. */
+  def location: URI = locationUri.getOrElse {
+    val specString = spec.map { case (k, v) => s"$k=$v" }.mkString(", ")
+    throw QueryCompilationErrors.partitionNotSpecifyLocationUriError(specString)
+  }
+}
+
+/**
  * A container for clustering information.
  *
  * @param columnNames the names of the columns used for clustering.

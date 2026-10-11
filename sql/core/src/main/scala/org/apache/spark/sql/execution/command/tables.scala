@@ -473,8 +473,8 @@ case class TruncateTableCommand(
             spark.sessionState.conf.resolver)
         }
         val partLocations =
-          catalog.listPartitionSpecsAndLocations(
-            table.identifier, normalizedSpec).map(_.storage.locationUri)
+          catalog.listPartitionSummaries(
+            table.identifier, normalizedSpec).map(_.locationUri)
 
         // Fail if the partition spec is fully specified (not partial) and the partition does not
         // exist.

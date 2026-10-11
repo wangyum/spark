@@ -428,16 +428,17 @@ class HiveClientSuite(version: String) extends HiveVersionSuite(version) {
       client.getPartitions("default", "src_part", None).size)
   }
 
-  test("getPartitionSpecsAndLocations(db, table, spec)") {
-    val partitions = client.getPartitionSpecsAndLocations("default", "src_part", None)
-    assert(testPartitionCount == partitions.size)
-    assert(partitions.forall(_.storage.locationUri.isDefined))
+  test("getPartitionSummaries(db, table, spec, mask)") {
+    val summaries = client.getPartitionSummaries(
+      "default", "src_part", None, PartitionFieldMask.LocationOnly)
+    assert(testPartitionCount == summaries.size)
+    assert(summaries.forall(_.locationUri.isDefined))
 
-    val partial = client.getPartitionSpecsAndLocations(
-      "default", "src_part", Some(Map("key2" -> "1")))
+    val partial = client.getPartitionSummaries(
+      "default", "src_part", Some(Map("key2" -> "1")), PartitionFieldMask.LocationOnly)
     assert(partial.size == 1)
     assert(partial.head.spec == Map("key1" -> "1", "key2" -> "1"))
-    assert(partial.head.storage.locationUri.isDefined)
+    assert(partial.head.locationUri.isDefined)
   }
 
   test("getPartitionsByFilter") {

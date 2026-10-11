@@ -3185,9 +3185,10 @@ class InsertSuite extends DataSourceTest with SharedSparkSession {
         sql(s"ALTER TABLE t PARTITION (p1 = 1) SET LOCATION '${partDir.toURI}'")
         sql("INSERT OVERWRITE TABLE t PARTITION (p1 = 1) VALUES (20)")
         checkAnswer(spark.table("t"), Row(20, 1))
-        val parts = spark.sessionState.catalog.listPartitionSpecsAndLocations(TableIdentifier("t"))
+        val parts = spark.sessionState.catalog.listPartitionSummaries(TableIdentifier("t"))
         assert(parts.length == 1)
         assert(parts.head.spec == Map("p1" -> "1"))
+        assert(parts.head.locationUri.isDefined)
       }
     }
   }

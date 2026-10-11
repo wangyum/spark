@@ -286,17 +286,24 @@ trait ExternalCatalog {
       partialSpec: Option[TablePartitionSpec] = None): Seq[CatalogTablePartition]
 
   /**
-   * List partition specs and locations for the specified table.
+   * List partition summaries for the specified table, retrieving only the fields requested by
+   * the partition field mask.
    *
    * @param db database name
    * @param table table name
    * @param partialSpec partition spec
+   * @param mask projection mask indicating which fields to retrieve
    */
-  def listPartitionSpecsAndLocations(
+  def listPartitionSummaries(
       db: String,
       table: String,
-      partialSpec: Option[TablePartitionSpec] = None): Seq[CatalogTablePartition] = {
-    listPartitions(db, table, partialSpec)
+      partialSpec: Option[TablePartitionSpec] = None,
+      mask: PartitionFieldMask = PartitionFieldMask.LocationOnly): Seq[TablePartitionSummary] = {
+    listPartitions(db, table, partialSpec).map { p =>
+      TablePartitionSummary(
+        spec = p.spec,
+        locationUri = if (mask.includeLocation) p.storage.locationUri else None)
+    }
   }
 
   /**

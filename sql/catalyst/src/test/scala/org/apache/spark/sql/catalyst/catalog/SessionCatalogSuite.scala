@@ -1601,16 +1601,21 @@ abstract class SessionCatalogSuite extends AnalysisTest with Eventually {
     }
   }
 
-  test("list partition specs and locations") {
+  test("list partition summaries") {
     withBasicCatalog { catalog =>
-      assert(catalogPartitionsEqual(
-        catalog.listPartitionSpecsAndLocations(TableIdentifier("tbl2", Some("db2"))), part1, part2))
+      val summaries = catalog.listPartitionSummaries(TableIdentifier("tbl2", Some("db2")))
+      assert(summaries.map(_.spec).toSet == Set(part1.spec, part2.spec))
+      assert(summaries.forall(_.locationUri.isDefined))
+
       catalog.setCurrentDatabase("db2")
-      assert(catalogPartitionsEqual(
-        catalog.listPartitionSpecsAndLocations(TableIdentifier("tbl2")), part1, part2))
-      assert(catalogPartitionsEqual(
-        catalog.listPartitionSpecsAndLocations(
-          TableIdentifier("tbl2", Some("db2")), Some(Map("a" -> "1"))), part1))
+      val summaries2 = catalog.listPartitionSummaries(TableIdentifier("tbl2"))
+      assert(summaries2.map(_.spec).toSet == Set(part1.spec, part2.spec))
+
+      val filtered = catalog.listPartitionSummaries(
+        TableIdentifier("tbl2", Some("db2")), Some(Map("a" -> "1")))
+      assert(filtered.length == 1)
+      assert(filtered.head.spec == part1.spec)
+      assert(filtered.head.locationUri.isDefined)
     }
   }
 

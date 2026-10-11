@@ -148,10 +148,11 @@ private[client] sealed abstract class Shim {
       table: Table,
       partSpec: JMap[String, String]): Seq[Partition]
 
-  def getPartitionSpecsAndLocations(
+  def getPartitionSummaries(
       hive: Hive,
       table: Table,
-      partSpec: JMap[String, String]): Seq[CatalogTablePartition]
+      partSpec: JMap[String, String],
+      mask: PartitionFieldMask): Seq[TablePartitionSummary]
 
   def getPartitionNames(
       hive: Hive,
@@ -998,15 +999,25 @@ private[client] class Shim_v2_0 extends Shim with Logging {
     hive.getPartitions(table, partSpec).asScala.toSeq
   }
 
-  override def getPartitionSpecsAndLocations(
+  override def getPartitionSummaries(
       hive: Hive,
       table: Table,
-      partSpec: JMap[String, String]): Seq[CatalogTablePartition] = {
+      partSpec: JMap[String, String],
+      mask: PartitionFieldMask): Seq[TablePartitionSummary] = {
     if (!table.isPartitioned) {
       Seq.empty
     } else {
       recordHiveCall()
-      getPartitions(hive, table, partSpec).map(HiveClientImpl.fromHivePartition)
+      getPartitions(hive, table, partSpec).map { p =>
+        TablePartitionSummary(
+          spec = Option(p.getSpec).map(_.asScala.toMap).getOrElse(Map.empty),
+          locationUri = if (mask.includeLocation) {
+            Option(p.getTPartition.getSd).map(_.getLocation).map(CatalogUtils.stringToURI)
+          } else {
+            None
+          }
+        )
+      }
     }
   }
 
@@ -1593,28 +1604,38 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
     renamePartitionMethod.invoke(hive, table, oldPartSpec, newPart, writeIdInLoadTableOrPartition)
   }
 
-  override def getPartitionSpecsAndLocations(
+  override def getPartitionSummaries(
       hive: Hive,
       table: Table,
-      partSpec: JMap[String, String]): Seq[CatalogTablePartition] = {
+      partSpec: JMap[String, String],
+      mask: PartitionFieldMask): Seq[TablePartitionSummary] = {
     if (!table.isPartitioned) {
       return Seq.empty
     }
-    if (!SQLConf.get.metastorePartitionProjectionEnabled) {
-      return super.getPartitionSpecsAndLocations(hive, table, partSpec)
+    if (!SQLConf.get.metastorePartitionProjectionEnabled || mask.isFull) {
+      return super.getPartitionSummaries(hive, table, partSpec, mask)
     }
     try {
       val projSpec = clazzGetProjectionsSpec.getConstructor().newInstance()
+      val fieldList = if (mask.includeLocation) {
+        java.util.Arrays.asList("values", "sd.location")
+      } else {
+        java.util.Collections.singletonList("values")
+      }
       clazzGetProjectionsSpec
         .getMethod("setFieldList", classOf[JList[String]])
-        .invoke(projSpec, java.util.Arrays.asList("values", "sd.location"))
+        .invoke(projSpec, fieldList)
 
-      val partCols = table.getPartCols.asScala.map(_.getName).toSeq
+      val partColNames = table.getPartCols.asScala.map(_.getName.toLowerCase(Locale.ROOT)).toSeq
       val lowerPartSpec = partSpec.asScala.map { case (k, v) =>
         k.toLowerCase(Locale.ROOT) -> v
       }
-      val pvals = partCols.map(col => lowerPartSpec.getOrElse(col.toLowerCase(Locale.ROOT), ""))
-      val filterSpec = if (pvals.exists(_.nonEmpty)) {
+      val specKeys = lowerPartSpec.keySet
+      // Only push down BY_VALUES filter when the specified partition keys form a strict prefix
+      // of partition columns; otherwise fetch projected partitions and filter on client side.
+      val isPrefix = specKeys.nonEmpty && partColNames.take(specKeys.size).toSet == specKeys
+      val filterSpec = if (isPrefix) {
+        val pvals = partColNames.take(specKeys.size).map(lowerPartSpec.apply)
         val fs = clazzGetPartitionsFilterSpec.getConstructor().newInstance()
         val byValues = clazzPartitionFilterMode.getEnumConstants
           .find(_.toString == "BY_VALUES").get
@@ -1658,6 +1679,7 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
       if (partitionSpecs == null || partitionSpecs.isEmpty) {
         Seq.empty
       } else {
+        val origPartColNames = table.getPartCols.asScala.map(_.getName).toSeq
         val baseTableLocation = Option(table.getSd).map(_.getLocation).orNull
         partitionSpecs.asScala.toSeq.flatMap { pSpec =>
           val sharedSD = pSpec.getClass.getMethod("getSharedSDPartitionSpec").invoke(pSpec)
@@ -1672,18 +1694,21 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
               parts.asScala.map { p =>
                 val values = p.getClass.getMethod("getValues").invoke(p)
                   .asInstanceOf[JList[String]].asScala.toSeq
-                val spec = partCols.zip(values).toMap
-                val relPath = p.getClass.getMethod("getRelativePath").invoke(p)
-                  .asInstanceOf[String]
-                val loc = if (relPath != null && relPath.nonEmpty) {
-                  if (rootPath != null) rootPath + relPath else relPath
+                val spec = origPartColNames.zip(values).toMap
+                val locationUri = if (mask.includeLocation) {
+                  val relPath = p.getClass.getMethod("getRelativePath").invoke(p)
+                    .asInstanceOf[String]
+                  val locPath = if (relPath != null && relPath.nonEmpty) {
+                    if (rootPath != null) new Path(rootPath, relPath.stripPrefix("/")).toString
+                    else relPath
+                  } else {
+                    rootPath
+                  }
+                  Option(locPath).map(CatalogUtils.stringToURI)
                 } else {
-                  rootPath
+                  None
                 }
-                CatalogTablePartition(
-                  spec = spec,
-                  storage = CatalogStorageFormat.empty.copy(
-                    locationUri = Option(loc).map(CatalogUtils.stringToURI)))
+                TablePartitionSummary(spec = spec, locationUri = locationUri)
               }
             } else {
               Seq.empty
@@ -1695,17 +1720,19 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
               parts.asScala.map { p =>
                 val values = p.getClass.getMethod("getValues").invoke(p)
                   .asInstanceOf[JList[String]].asScala.toSeq
-                val spec = partCols.zip(values).toMap
-                val sd = p.getClass.getMethod("getSd").invoke(p)
-                val loc = if (sd != null) {
-                  sd.getClass.getMethod("getLocation").invoke(sd).asInstanceOf[String]
+                val spec = origPartColNames.zip(values).toMap
+                val locationUri = if (mask.includeLocation) {
+                  val sd = p.getClass.getMethod("getSd").invoke(p)
+                  val loc = if (sd != null) {
+                    sd.getClass.getMethod("getLocation").invoke(sd).asInstanceOf[String]
+                  } else {
+                    null
+                  }
+                  Option(loc).map(CatalogUtils.stringToURI)
                 } else {
-                  null
+                  None
                 }
-                CatalogTablePartition(
-                  spec = spec,
-                  storage = CatalogStorageFormat.empty.copy(
-                    locationUri = Option(loc).map(CatalogUtils.stringToURI)))
+                TablePartitionSummary(spec = spec, locationUri = locationUri)
               }
             } else {
               Seq.empty
@@ -1719,7 +1746,7 @@ private[client] class Shim_v4_0 extends Shim_v3_1 {
       case e @ (_: Exception | _: LinkageError) =>
         logWarning("Failed to get partition specs with projection from Hive Metastore, " +
           "falling back to getPartitions", e)
-        super.getPartitionSpecsAndLocations(hive, table, partSpec)
+        super.getPartitionSummaries(hive, table, partSpec, mask)
     }
   }
 }

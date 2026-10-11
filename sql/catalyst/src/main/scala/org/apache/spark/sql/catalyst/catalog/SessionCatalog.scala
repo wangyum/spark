@@ -1613,11 +1613,12 @@ class SessionCatalog(
   }
 
   /**
-   * List partition specs and locations that belong to the specified table, assuming it exists.
+   * List partition summaries that belong to the specified table, assuming it exists.
    */
-  def listPartitionSpecsAndLocations(
+  def listPartitionSummaries(
       tableName: TableIdentifier,
-      partialSpec: Option[TablePartitionSpec] = None): Seq[CatalogTablePartition] = {
+      partialSpec: Option[TablePartitionSpec] = None,
+      mask: PartitionFieldMask = PartitionFieldMask.LocationOnly): Seq[TablePartitionSummary] = {
     val qualifiedIdent = qualifyIdentifier(tableName)
     val db = qualifiedIdent.database.get
     requireDbExists(db)
@@ -1626,7 +1627,7 @@ class SessionCatalog(
       requirePartialMatchedPartitionSpec(Seq(spec), getTableMetadata(qualifiedIdent))
       requireNonEmptyValueInPartitionSpec(Seq(spec))
     }
-    externalCatalog.listPartitionSpecsAndLocations(db, qualifiedIdent.table, partialSpec)
+    externalCatalog.listPartitionSummaries(db, qualifiedIdent.table, partialSpec, mask)
   }
 
   /**
