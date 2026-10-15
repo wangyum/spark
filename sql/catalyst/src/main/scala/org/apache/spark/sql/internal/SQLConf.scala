@@ -5038,6 +5038,30 @@ object SQLConf {
       .version("4.1.0")
       .fallbackConf(SHUFFLE_SPILL_MAX_SIZE_FORCE_SPILL_THRESHOLD)
 
+  val SORT_MERGE_JOIN_EXEC_RANGE_RESIDUAL_MIN_MATCH_SIZE =
+    buildConf("spark.sql.sortMergeJoinExec.rangeResidual.minMatchSize")
+      .internal()
+      .doc("Minimum buffered match group size before an inner sort merge join builds an " +
+        "interval index for a point-in-range or interval-overlap residual condition (the " +
+        "part of the condition beyond the equi-join keys), instead of scanning the group " +
+        "linearly. Only applies to the interpreted execution path; whole-stage codegen is " +
+        "unaffected. See spark.sql.sortMergeJoinExec.rangeResidual.enabled.")
+      .version("4.4.0")
+      .intConf
+      .createWithDefault(64)
+
+  val SORT_MERGE_JOIN_EXEC_RANGE_RESIDUAL_ENABLED =
+    buildConf("spark.sql.sortMergeJoinExec.rangeResidual.enabled")
+      .internal()
+      .doc("When true, an inner sort merge join whose residual condition is a point-in-range " +
+        "or interval-overlap predicate probes an interval index over a sufficiently large " +
+        "buffered match group instead of scanning it linearly. See " +
+        "spark.sql.sortMergeJoinExec.rangeResidual.minMatchSize. Only applies to the " +
+        "interpreted execution path; whole-stage codegen is unaffected.")
+      .version("4.4.0")
+      .booleanConf
+      .createWithDefault(true)
+
   val CARTESIAN_PRODUCT_EXEC_BUFFER_IN_MEMORY_THRESHOLD =
     buildConf("spark.sql.cartesianProductExec.buffer.in.memory.threshold")
       .internal()
@@ -9610,6 +9634,12 @@ class SQLConf extends Serializable with Logging with SqlApiConf {
 
   def sortMergeJoinExecBufferSpillSizeThreshold: Long =
     getConf(SORT_MERGE_JOIN_EXEC_BUFFER_SIZE_SPILL_THRESHOLD)
+
+  def sortMergeJoinExecRangeResidualEnabled: Boolean =
+    getConf(SORT_MERGE_JOIN_EXEC_RANGE_RESIDUAL_ENABLED)
+
+  def sortMergeJoinExecRangeResidualMinMatchSize: Int =
+    getConf(SORT_MERGE_JOIN_EXEC_RANGE_RESIDUAL_MIN_MATCH_SIZE)
 
   def cartesianProductExecBufferInMemoryThreshold: Int =
     getConf(CARTESIAN_PRODUCT_EXEC_BUFFER_IN_MEMORY_THRESHOLD)

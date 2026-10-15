@@ -153,7 +153,9 @@ case class SortMergeJoinExec(
       spillSize,
       onlyBufferFirstMatchedRow,
       streamedOnlyCondition,
-      restCondition
+      restCondition,
+      conf.sortMergeJoinExecRangeResidualEnabled,
+      conf.sortMergeJoinExecRangeResidualMinMatchSize
     )
     if (conf.usePartitionEvaluator) {
       left.execute().zipPartitionsWithEvaluator(right.execute(), evaluatorFactory)
@@ -1179,6 +1181,12 @@ private[joins] class SortMergeJoinScanner(
    * The join key for the rows buffered in `bufferedMatches`, or null if `bufferedMatches` is empty
    */
   private[this] var matchJoinKey: InternalRow = _
+  /**
+   * Bumped each time [[bufferMatchingRows]] actually (re)builds `bufferedMatches`. Since
+   * `bufferedMatches` is a single object cleared and refilled in place, this lets callers detect
+   * a genuinely new buffered group without relying on its reference identity.
+   */
+  private[this] var matchGeneration: Int = 0
   /** Buffered rows from the buffered side of the join. This is empty if there are no matches. */
   private[this] val bufferedMatches: ExternalAppendOnlyUnsafeRowArray =
     new ExternalAppendOnlyUnsafeRowArray(
@@ -1202,6 +1210,9 @@ private[joins] class SortMergeJoinScanner(
   def getStreamedRow: InternalRow = streamedRow
 
   def getBufferedMatches: ExternalAppendOnlyUnsafeRowArray = bufferedMatches
+
+  /** The generation of `bufferedMatches` last produced by [[bufferMatchingRows]]. */
+  def getMatchGeneration: Int = matchGeneration
 
   /**
    * Advances both input iterators, stopping when we have found rows with matching join keys. If no
@@ -1350,6 +1361,7 @@ private[joins] class SortMergeJoinScanner(
     assert(keyOrdering.compare(streamedRowKey, bufferedRowKey) == 0)
     // This join key may have been produced by a mutable projection, so we need to make a copy:
     matchJoinKey = streamedRowKey.copy()
+    matchGeneration += 1
     bufferedMatches.clear()
     do {
       if (!onlyBufferFirstMatch || bufferedMatches.isEmpty) {

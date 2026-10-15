@@ -19,7 +19,7 @@ package org.apache.spark.sql.execution.joins
 
 import org.apache.spark.{PartitionEvaluator, PartitionEvaluatorFactory}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, JoinedRow, Predicate, Projection, RowOrdering, UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BindReferences, Expression, GenericInternalRow, JoinedRow, Predicate, Projection, RowOrdering, UnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.{ExistenceJoin, FullOuter, InnerLike, JoinType, LeftAnti, LeftOuter, LeftSemi, RightOuter}
 import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, RowIterator, SparkPlan}
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -39,7 +39,9 @@ class SortMergeJoinEvaluatorFactory(
     spillSize: SQLMetric,
     onlyBufferFirstMatchedRow: Boolean,
     streamedOnlyCondition: Option[Expression] = None,
-    restCondition: Option[Expression] = None)
+    restCondition: Option[Expression] = None,
+    rangeResidualEnabled: Boolean = true,
+    rangeResidualMinMatchSize: Int = 64)
     extends PartitionEvaluatorFactory[InternalRow, InternalRow] {
   override def createEvaluator(): PartitionEvaluator[InternalRow, InternalRow] =
     new SortMergeJoinEvaluator
@@ -76,10 +78,27 @@ class SortMergeJoinEvaluatorFactory(
 
       joinType match {
         case _: InnerLike =>
+          // A residual range predicate (point-in-range or interval-overlap) lets a large
+          // buffered match group be probed via an interval index instead of a linear scan.
+          // The index only narrows candidates; `boundCondition` is still evaluated on each one.
+          val rangeResidual: Option[RangeResidualKeys] = if (rangeResidualEnabled) {
+            condition.flatMap(SortMergeJoinRangeResidual.extract(_, left.output, right.output))
+          } else {
+            None
+          }
+          val boundProbeKeys: Seq[Expression] = rangeResidual.map { keys =>
+            BindReferences.bindReferences(keys.probeKeys, left.output)
+          }.orNull
+          val boundBuildKeys: Seq[Expression] = rangeResidual.map { keys =>
+            BindReferences.bindReferences(keys.buildKeys, right.output)
+          }.orNull
+
           new RowIterator {
             private[this] var currentLeftRow: InternalRow = _
             private[this] var currentRightMatches: ExternalAppendOnlyUnsafeRowArray = _
-            private[this] var rightMatchesIterator: Iterator[UnsafeRow] = null
+            private[this] var rightMatchesIterator: Iterator[InternalRow] = null
+            private[this] var rangeIndex: IntervalIndex = null
+            private[this] var rangeIndexGeneration: Int = -1
             private[this] val smjScanner = new SortMergeJoinScanner(
               createLeftKeyGenerator(),
               createRightKeyGenerator(),
@@ -93,25 +112,55 @@ class SortMergeJoinEvaluatorFactory(
               cleanupResources)
             private[this] val joinRow = new JoinedRow
 
-            if (smjScanner.findNextInnerJoinRows()) {
+            private def refreshMatches(): Unit = {
               currentRightMatches = smjScanner.getBufferedMatches
               currentLeftRow = smjScanner.getStreamedRow
-              rightMatchesIterator = currentRightMatches.generateIterator()
+              if (boundBuildKeys != null) {
+                val generation = smjScanner.getMatchGeneration
+                if (generation != rangeIndexGeneration) {
+                  rangeIndexGeneration = generation
+                  rangeIndex = if (currentRightMatches.length >= rangeResidualMinMatchSize) {
+                    IntervalIndex.build(
+                      boundBuildKeys.head.dataType,
+                      boundBuildKeys,
+                      currentRightMatches.generateIterator(),
+                      Some(currentRightMatches.length))
+                  } else {
+                    null
+                  }
+                }
+              }
+              rightMatchesIterator = if (rangeIndex != null) {
+                val low = boundProbeKeys.head.eval(currentLeftRow)
+                val high =
+                  if (boundProbeKeys.length == 1) low else boundProbeKeys(1).eval(currentLeftRow)
+                rangeIndex.overlapping(low, high)
+              } else {
+                currentRightMatches.generateIterator()
+              }
+            }
+
+            if (smjScanner.findNextInnerJoinRows()) {
+              refreshMatches()
             }
 
             override def advanceNext(): Boolean = {
               while (rightMatchesIterator != null) {
-                if (!rightMatchesIterator.hasNext) {
+                // A linear scan of a non-empty buffered group is always non-empty, but an
+                // index-narrowed probe (see refreshMatches()) can legitimately come back empty
+                // (e.g. a probe key that overlaps no build row), so re-check after each refresh
+                // instead of assuming one refresh is enough.
+                while (rightMatchesIterator != null && !rightMatchesIterator.hasNext) {
                   if (smjScanner.findNextInnerJoinRows()) {
-                    currentRightMatches = smjScanner.getBufferedMatches
-                    currentLeftRow = smjScanner.getStreamedRow
-                    rightMatchesIterator = currentRightMatches.generateIterator()
+                    refreshMatches()
                   } else {
                     currentRightMatches = null
                     currentLeftRow = null
                     rightMatchesIterator = null
-                    return false
                   }
+                }
+                if (rightMatchesIterator == null) {
+                  return false
                 }
                 joinRow(currentLeftRow, rightMatchesIterator.next())
                 if (boundCondition(joinRow)) {
