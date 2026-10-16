@@ -2297,6 +2297,21 @@ object SQLConf {
       .booleanConf
       .createWithDefault(false)
 
+  val HIVE_METASTORE_PARTITION_PROJECTION_ENABLED =
+    buildConf("spark.sql.hive.metastorePartitionProjection.enabled")
+      .doc("When true and the Hive Metastore version is 4.0 or higher, Spark uses partition " +
+        "projection to retrieve only requested fields (e.g. partition spec and location), " +
+        "reducing metastore payload and client deserialization overhead. Note that for the " +
+        "Hive versions Spark ships shims for (4.0-4.2) the 'get_partitions_with_specs' RPC " +
+        "performs none of the metastore-side checks and events of the regular partition " +
+        "listing RPC: the 'hive.metastore.limit.partition.request' limit, the partition " +
+        "metadata authorization step ('authorizeTableForPartitionMetadata'), " +
+        "MetaStoreFilterHook partition filtering, and the PreReadTableEvent pre-read event. " +
+        "Set this to false if deployments rely on those checks or events.")
+      .version("4.4.0")
+      .booleanConf
+      .createWithDefault(true)
+
   val HIVE_MANAGE_FILESOURCE_PARTITIONS =
     buildConf("spark.sql.hive.manageFilesourcePartitions")
       .doc("When true, enable metastore partition management for file source tables as well. " +
@@ -9345,6 +9360,9 @@ class SQLConf extends Serializable with Logging with SqlApiConf {
 
   def metastorePartitionPruningFastFallback: Boolean =
     getConf(HIVE_METASTORE_PARTITION_PRUNING_FAST_FALLBACK)
+
+  def metastorePartitionProjectionEnabled: Boolean =
+    getConf(HIVE_METASTORE_PARTITION_PROJECTION_ENABLED)
 
   def manageFilesourcePartitions: Boolean = getConf(HIVE_MANAGE_FILESOURCE_PARTITIONS)
 
