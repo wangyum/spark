@@ -286,6 +286,34 @@ trait ExternalCatalog {
       partialSpec: Option[TablePartitionSpec] = None): Seq[CatalogTablePartition]
 
   /**
+   * List projected partition metadata for the specified table. Only the requested
+   * [[PartitionField]]s are populated in the returned [[TablePartitionSummary]].
+   *
+   * @param db database name
+   * @param table table name
+   * @param partialSpec partition spec
+   * @param fields partition fields to project, which must include [[PartitionField.Spec]]
+   */
+  def listPartitionsByProjection(
+      db: String,
+      table: String,
+      partialSpec: Option[TablePartitionSpec],
+      fields: Seq[PartitionField]): Seq[TablePartitionSummary] = {
+    require(fields.nonEmpty, "partition projection requires at least one field")
+    require(fields.contains(PartitionField.Spec),
+      s"partition projection requires ${PartitionField.Spec}, got: $fields")
+    listPartitions(db, table, partialSpec).map { p =>
+      TablePartitionSummary(
+        spec = p.spec,
+        locationUri = if (fields.contains(PartitionField.Location)) {
+          p.storage.locationUri
+        } else {
+          None
+        })
+    }
+  }
+
+  /**
    * List the metadata of partitions that belong to the specified table, assuming it exists, that
    * satisfy the given partition-pruning predicate expressions.
    *

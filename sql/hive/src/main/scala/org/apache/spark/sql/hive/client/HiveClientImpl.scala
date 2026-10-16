@@ -837,6 +837,35 @@ private[hive] class HiveClientImpl(
     parts
   }
 
+  override def getPartitionsByProjection(
+      db: String,
+      table: String,
+      spec: Option[TablePartitionSpec],
+      fields: Seq[PartitionField]): Seq[TablePartitionSummary] = {
+    val hiveTable = withHiveState {
+      getRawTableOption(db, table).getOrElse(throw new NoSuchTableException(db, table))
+    }
+    getPartitionsByProjection(hiveTable, spec, fields)
+  }
+
+  private def getPartitionsByProjection(
+      hiveTable: HiveTable,
+      spec: Option[TablePartitionSpec],
+      fields: Seq[PartitionField]): Seq[TablePartitionSummary] = withHiveState {
+    assert(fields.nonEmpty, "partition projection requires at least one field")
+    assert(fields.contains(PartitionField.Spec),
+      s"partition projection requires the ${PartitionField.Spec} field, got: $fields")
+    val partSpec = spec match {
+      case None => CatalogTypes.emptyTablePartitionSpec
+      case Some(s) =>
+        assert(s.values.forall(_.nonEmpty), s"partition spec '$s' is invalid")
+        s
+    }
+    val parts = shim.getPartitionsByProjection(client, hiveTable, partSpec.asJava, fields)
+    HiveCatalogMetrics.incrementFetchedPartitions(parts.length)
+    parts
+  }
+
   override def getPartitionsByFilter(
       rawHiveTable: RawHiveTable,
       predicates: Seq[Expression]): Seq[CatalogTablePartition] = withHiveState {

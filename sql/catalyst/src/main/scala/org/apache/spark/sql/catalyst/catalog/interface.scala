@@ -268,6 +268,65 @@ case class CatalogTablePartition(
 }
 
 /**
+ * A field of partition metadata that a caller may request through partition projection
+ * when listing partitions. The available fields are the union of all fields the
+ * underlying catalog implementations support; implementations project only the
+ * requested fields into the returned [[TablePartitionSummary]].
+ */
+sealed trait PartitionField
+
+object PartitionField {
+  /**
+   * The partition spec: values of the partition columns identifying the partition.
+   * Every partition listing requires this field.
+   */
+  case object Spec extends PartitionField
+
+  /** The partition location URI, projected from the partition storage descriptor. */
+  case object Location extends PartitionField
+}
+
+/**
+ * A partition's projected metadata, populated only for the requested
+ * [[PartitionField]]s, avoiding the memory and RPC overhead of instantiating a
+ * full [[CatalogTablePartition]].
+ *
+ * @param spec partition spec values mapping partition column names to string values
+ * @param locationUri optional partition location URI, present only when the location
+ *                    field was requested and the metastore reports one
+ */
+case class TablePartitionSummary(
+    spec: CatalogTypes.TablePartitionSpec,
+    locationUri: Option[URI] = None) extends MetadataMapSupport {
+
+  def toJsonLinkedHashMap: mutable.LinkedHashMap[String, JValue] = {
+    val map = mutable.LinkedHashMap[String, JValue]()
+    val specJson = JObject(spec.map { case (k, v) => k -> JString(v) }.toList)
+    map += ("Partition Values" -> specJson)
+    map
+  }
+
+  override def toString: String = {
+    toLinkedHashMap.map { case (key, value) =>
+      if (value.isEmpty) key else s"$key: $value"
+    }.mkString("TablePartitionSummary(\n\t", "\n\t", ")")
+  }
+
+  /** Readable string representation for the TablePartitionSummary. */
+  def simpleString: String = {
+    toLinkedHashMap.map { case (key, value) =>
+      if (value.isEmpty) key else s"$key: $value"
+    }.mkString("", "\n", "")
+  }
+
+  /** Return the partition location, assuming it is specified. */
+  def location: URI = locationUri.getOrElse {
+    val specString = spec.map { case (k, v) => s"$k=$v" }.mkString(", ")
+    throw QueryCompilationErrors.partitionNotSpecifyLocationUriError(specString)
+  }
+}
+
+/**
  * A container for clustering information.
  *
  * @param columnNames the names of the columns used for clustering.

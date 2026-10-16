@@ -1613,6 +1613,26 @@ class SessionCatalog(
   }
 
   /**
+   * List projected partition metadata that belongs to the specified table, assuming it
+   * exists. Only the requested [[PartitionField]]s are populated in the returned
+   * [[TablePartitionSummary]].
+   */
+  def listPartitionsByProjection(
+      tableName: TableIdentifier,
+      partialSpec: Option[TablePartitionSpec],
+      fields: Seq[PartitionField]): Seq[TablePartitionSummary] = {
+    val qualifiedIdent = qualifyIdentifier(tableName)
+    val db = qualifiedIdent.database.get
+    requireDbExists(db)
+    requireTableExists(qualifiedIdent)
+    partialSpec.foreach { spec =>
+      requirePartialMatchedPartitionSpec(Seq(spec), getTableMetadata(qualifiedIdent))
+      requireNonEmptyValueInPartitionSpec(Seq(spec))
+    }
+    externalCatalog.listPartitionsByProjection(db, qualifiedIdent.table, partialSpec, fields)
+  }
+
+  /**
    * List the metadata of partitions that belong to the specified table, assuming it exists, that
    * satisfy the given partition-pruning predicate expressions.
    */

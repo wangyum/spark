@@ -255,6 +255,17 @@ private[hive] trait HiveClient {
       table: String,
       partialSpec: Option[TablePartitionSpec]): Seq[CatalogTablePartition]
 
+  /**
+   * Returns the projected partition metadata for the given table that matches the
+   * supplied partition spec. Only the requested [[PartitionField]]s are populated
+   * in the returned [[TablePartitionSummary]].
+   */
+  def getPartitionsByProjection(
+      db: String,
+      table: String,
+      partialSpec: Option[TablePartitionSpec],
+      fields: Seq[PartitionField]): Seq[TablePartitionSummary]
+
   /** Returns partitions filtered by predicates for the given table. */
   def getPartitionsByFilter(
       catalogTable: RawHiveTable,

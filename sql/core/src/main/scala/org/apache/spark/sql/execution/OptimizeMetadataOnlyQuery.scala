@@ -21,7 +21,7 @@ import java.util.Locale
 
 import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.catalog.{HiveTableRelation, SessionCatalog}
+import org.apache.spark.sql.catalyst.catalog.{HiveTableRelation, PartitionField, SessionCatalog}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
@@ -133,19 +133,23 @@ case class OptimizeMetadataOnlyQuery(catalog: SessionCatalog) extends Rule[Logic
               CaseInsensitiveMap(relation.tableMeta.storage.properties)
             val timeZoneId = caseInsensitiveProperties.get(DateTimeUtils.TIMEZONE_OPTION)
               .getOrElse(conf.sessionLocalTimeZone)
-            val partitions = relation.prunedPartitions match {
+            val partitionSpecs = relation.prunedPartitions match {
               // for the case where partitions have already been pruned by PruneHiveTablePartitions
-              case Some(parts) => parts
+              case Some(parts) => parts.map(_.spec)
+              // A metadata-only query needs nothing but partition specs: request the spec field
+              // only, so projection skips fetching storage descriptors entirely.
               case None => if (partFilters.nonEmpty) {
-                catalog.listPartitionsByFilter(relation.tableMeta.identifier, normalizedFilters)
+                catalog.listPartitionsByFilter(
+                  relation.tableMeta.identifier, normalizedFilters).map(_.spec)
               } else {
-                catalog.listPartitions(relation.tableMeta.identifier)
+                catalog.listPartitionsByProjection(
+                  relation.tableMeta.identifier, None, Seq(PartitionField.Spec)).map(_.spec)
               }
             }
 
-            val partitionData = partitions.map { p =>
+            val partitionData = partitionSpecs.map { spec =>
               InternalRow.fromSeq(partAttrs.map { attr =>
-                Cast(Literal(p.spec(attr.name)), attr.dataType, Option(timeZoneId)).eval()
+                Cast(Literal(spec(attr.name)), attr.dataType, Option(timeZoneId)).eval()
               })
             }
             LocalRelation(partAttrs, partitionData)

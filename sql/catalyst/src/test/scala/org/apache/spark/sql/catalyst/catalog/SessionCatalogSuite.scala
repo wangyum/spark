@@ -1601,6 +1601,28 @@ abstract class SessionCatalogSuite extends AnalysisTest with Eventually {
     }
   }
 
+  test("list partitions by projection") {
+    withBasicCatalog { catalog =>
+      val partitions = catalog.listPartitionsByProjection(
+        TableIdentifier("tbl2", Some("db2")), None,
+        Seq(PartitionField.Spec, PartitionField.Location))
+      assert(partitions.map(_.spec).toSet == Set(part1.spec, part2.spec))
+      assert(partitions.forall(_.locationUri.isDefined))
+
+      catalog.setCurrentDatabase("db2")
+      val partitions2 = catalog.listPartitionsByProjection(
+        TableIdentifier("tbl2"), None, Seq(PartitionField.Spec, PartitionField.Location))
+      assert(partitions2.map(_.spec).toSet == Set(part1.spec, part2.spec))
+
+      val filtered = catalog.listPartitionsByProjection(
+        TableIdentifier("tbl2", Some("db2")), Some(Map("a" -> "1")),
+        Seq(PartitionField.Spec, PartitionField.Location))
+      assert(filtered.length == 1)
+      assert(filtered.head.spec == part1.spec)
+      assert(filtered.head.locationUri.isDefined)
+    }
+  }
+
   test("list partitions with invalid partial partition spec") {
     withBasicCatalog { catalog =>
       checkError(

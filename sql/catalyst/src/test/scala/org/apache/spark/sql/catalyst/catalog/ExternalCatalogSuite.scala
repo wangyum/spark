@@ -478,6 +478,34 @@ abstract class ExternalCatalogSuite extends SparkFunSuite {
     assert(catalog.listPartitions("db2", "tbl2", Some(Map("a" -> "unknown"))).isEmpty)
   }
 
+  test("list partitions by projection") {
+    val catalog = newBasicCatalog()
+    val partitions = catalog.listPartitionsByProjection(
+      "db2", "tbl2", None, Seq(PartitionField.Spec, PartitionField.Location))
+    assert(partitions.map(_.spec).toSet == Set(part1.spec, part2.spec))
+    assert(partitions.forall(_.locationUri.isDefined))
+
+    val filtered = catalog.listPartitionsByProjection(
+      "db2", "tbl2", Some(Map("a" -> "1")), Seq(PartitionField.Spec, PartitionField.Location))
+    assert(filtered.length == 1)
+    assert(filtered.head.spec == part1.spec)
+    assert(filtered.head.locationUri.isDefined)
+
+    // Requesting only the spec field reports no locations
+    val specsOnly = catalog.listPartitionsByProjection(
+      "db2", "tbl2", None, Seq(PartitionField.Spec))
+    assert(specsOnly.map(_.spec).toSet == Set(part1.spec, part2.spec))
+    assert(specsOnly.forall(_.locationUri.isEmpty))
+
+    assert(catalog.listPartitionsByProjection(
+      "db2", "tbl2", Some(Map("a" -> "unknown")), Seq(PartitionField.Spec)).isEmpty)
+
+    // The spec field is mandatory
+    intercept[IllegalArgumentException] {
+      catalog.listPartitionsByProjection("db2", "tbl2", None, Seq(PartitionField.Location))
+    }
+  }
+
   test("SPARK-45054: list partitions should restore stats") {
     val catalog = newBasicCatalog()
     val stats = Some(CatalogStatistics(sizeInBytes = 1))
