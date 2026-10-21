@@ -112,9 +112,9 @@ class RangeJoinCorrectnessSuite
       (p, a, _) => (a, p, p("p") >= a("aLo") && p("p") <= a("aHi"))),
     Shape("overlap", IntervalOverlapJoin,
       (p, a, b) => (a, b, a("aLo") < b("bHi") && b("bLo") < a("aHi"))),
-    Shape("partial-less", LessPartialRangeJoin,
+    Shape("partial-less", LessPartialRangeJoin(strict = true),
       (p, a, b) => (a, b, a("aLo") < b("bHi"))),
-    Shape("partial-greater", GreaterPartialRangeJoin,
+    Shape("partial-greater", GreaterPartialRangeJoin(strict = true),
       (p, a, b) => (a, b, a("aLo") > b("bHi"))))
 
   /** Every build side the operator accepts for `joinType`. */

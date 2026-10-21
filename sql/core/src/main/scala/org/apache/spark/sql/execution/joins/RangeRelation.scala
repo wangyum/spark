@@ -222,8 +222,10 @@ private[joins] object RowSlice {
  * parallel arrays sorted by low bound, with a row array in the same order
  * feeding the scan path and `maxHighIdx(mid)` indexing the maximum high
  * bound in the span rooted at mid. Each key and row object is owned once:
- * the tree holds one reference per value plus the single row array, so a
- * serialized index keeps the same object count it was built with.
+ * the tree holds one reference per value plus the single row array. Java
+ * serialization keeps these aliases; Kryo's reference resolver does not
+ * track primitive wrappers, so a key shared by `lows` and `highs`, such as
+ * the one key of a degenerate build, can deserialize as two objects.
  * Subtrees whose max high is below the probe window, or whose low starts
  * after it, are pruned during search, and a window covering every interval
  * skips the walk entirely.
@@ -241,10 +243,11 @@ private[joins] class IntervalIndex private (
 
   def keyType: DataType = _keyType
 
-  // All-covering window bounds. `lows` is sorted, so the last entry bounds
-  // every low from below, and coreHigh is the minimum high. A window covers
-  // every stored interval exactly when it holds probeLow <= coreHigh and
-  // probeHigh >= coreLow, whether or not the intervals share a common core.
+  // All-covering window bounds. `lows` is sorted, so the last entry is the
+  // largest low: it bounds every low from above, and coreHigh is the minimum
+  // high, which bounds every high from below. A window covers every stored
+  // interval exactly when it holds probeLow <= coreHigh and probeHigh >= coreLow,
+  // whether or not the intervals share a common core.
   // Recomputed in `read` too, since `lows`/`highs` are reassigned there.
   private[this] var coreLow: Any = IntervalIndex.coreLow(lows)
   private[this] var coreHigh: Any = IntervalIndex.coreHigh(highs, ordering)
@@ -547,6 +550,19 @@ private[joins] class PointIndex private (
   def from(value: Any): Iterator[InternalRow] =
     if (value == null) Iterator.empty else slice(searchBound(value, skipEquals = false), length)
 
+  /**
+   * Points whose key is strictly less than `value`. For a strict partial-range
+   * predicate the original condition rejects keys equal to the probe value,
+   * so the scan can skip them: a build heavy in duplicated keys would only
+   * hand the join rows that all fail.
+   */
+  def upToExclusive(value: Any): Iterator[InternalRow] =
+    if (value == null) Iterator.empty else slice(0, searchBound(value, skipEquals = false))
+
+  /** Points whose key is strictly greater than `value`. */
+  def fromExclusive(value: Any): Iterator[InternalRow] =
+    if (value == null) Iterator.empty else slice(searchBound(value, skipEquals = true), length)
+
   private def searchBound(value: Any, skipEquals: Boolean): Int = {
     val ord = ordering
     var lo = 0
@@ -686,10 +702,11 @@ private[joins] class LongIntervalIndex private (
 
   def keyType: DataType = _keyType
 
-  // All-covering window bounds on raw keys: `lows` is sorted, so the last
-  // entry bounds every low from below, and coreHigh is the minimum high.
-  // A window covers every stored interval exactly when it holds probeLow <=
-  // coreHigh and probeHigh >= coreLow, whether or not a common core exists.
+  // All-covering window bounds on raw keys: `lows` is sorted, so the last entry
+  // is the largest low, bounding every low from above, and coreHigh is the
+  // minimum high, bounding every high from below. A window covers every
+  // stored interval exactly when it holds probeLow <= coreHigh and
+  // probeHigh >= coreLow, whether or not a common core exists.
   // Recomputed in `read` too, since `lows`/`highs` are reassigned there.
   private[this] var coreLow: Long = LongIntervalIndex.coreLow(lows)
   private[this] var coreHigh: Long = LongIntervalIndex.coreHigh(highs)
@@ -956,6 +973,18 @@ private[joins] class LongPointIndex private (
   /** Points whose key is greater than or equal to `value`. */
   def from(value: Long): Iterator[InternalRow] =
     new RowSlice(rows, searchBound(value, skipEquals = false), length)
+
+  /**
+   * Points whose key is strictly less than `value`. For a strict partial-range
+   * predicate the original condition rejects keys equal to the probe value,
+   * so the scan can skip them; see [[PointIndex.upToExclusive]].
+   */
+  def upToExclusive(value: Long): Iterator[InternalRow] =
+    new RowSlice(rows, 0, searchBound(value, skipEquals = false))
+
+  /** Points whose key is strictly greater than `value`. */
+  def fromExclusive(value: Long): Iterator[InternalRow] =
+    new RowSlice(rows, searchBound(value, skipEquals = true), length)
 
   // java.util.Arrays.binarySearch returns an arbitrary hit; a bound scan needs
   // the first or last position, so lower and upper bounds are hand-rolled.

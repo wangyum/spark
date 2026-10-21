@@ -109,6 +109,19 @@ case class BroadcastRangeJoinExec(
     partial.leftIsLower == (buildSide == BuildLeft)
 
   /**
+   * A partial-range join scans from one sorted end. The scan direction and
+   * its exclusivity are fixed with the plan: direction by which side holds
+   * the lower bound, and a strict inequality (`<`, `>`) skips build keys
+   * equal to the probe value, which the original condition would reject.
+   */
+  private def pointScan: (Boolean, Boolean) = rangeJoin match {
+    case partial: PartialRangeJoin => (buildHoldsLowerBound(partial), partial.strict)
+    case other =>
+      throw new IllegalStateException(
+        s"Point index is only built for a partial range, got $other.")
+  }
+
+  /**
    * Candidates for one streamed row. A null bound is unknown: the index
    * returns an empty iterator, and the original condition is not evaluated.
    * A point probe has one key. Pass it as both ends so it is evaluated once.
@@ -133,28 +146,34 @@ case class BroadcastRangeJoinExec(
         if (low == null) {
           Iterator.empty
         } else {
-          rangeJoin match {
-            case partial: PartialRangeJoin if buildHoldsLowerBound(partial) =>
-              points.upTo(points.toLong(low))
-            case _: PartialRangeJoin =>
-              points.from(points.toLong(low))
-            case _ =>
-              throw new IllegalStateException(
-                s"Point index is only built for a partial range, got $rangeJoin.")
+          pointScan match {
+            case (lower, strict) =>
+              if (lower) {
+                if (strict) points.upToExclusive(points.toLong(low))
+                else points.upTo(points.toLong(low))
+              } else {
+                if (strict) points.fromExclusive(points.toLong(low))
+                else points.from(points.toLong(low))
+              }
           }
         }
       case intervals: IntervalIndex =>
         val high = if (boundStreamKeys.length == 1) low else boundStreamKeys(1).eval(streamRow)
         intervals.overlapping(low, high)
       case points: PointIndex =>
-        rangeJoin match {
-          case partial: PartialRangeJoin if buildHoldsLowerBound(partial) =>
-            points.upTo(low)
-          case _: PartialRangeJoin =>
-            points.from(low)
-          case _ =>
-            throw new IllegalStateException(
-              s"Point index is only built for a partial range, got $rangeJoin.")
+        if (low == null) {
+          Iterator.empty
+        } else {
+          pointScan match {
+            case (lower, strict) =>
+              if (lower) {
+                if (strict) points.upToExclusive(low)
+                else points.upTo(low)
+              } else {
+                if (strict) points.fromExclusive(low)
+                else points.from(low)
+              }
+          }
         }
     }
   }
@@ -393,7 +412,14 @@ case class BroadcastRangeJoinExec(
     val call = rangeJoin match {
       case partial: PartialRangeJoin =>
         val points = classOf[PointIndex].getName
-        val scan = if (buildHoldsLowerBound(partial)) "upTo" else "from"
+        // A strict inequality scans the exclusive bound: build keys equal to
+        // the probe value would only fail the original condition.
+        val scan = (buildHoldsLowerBound(partial), partial.strict) match {
+          case (true, false) => "upTo"
+          case (true, true) => "upToExclusive"
+          case (false, false) => "from"
+          case (false, true) => "fromExclusive"
+        }
         s"(($points) $relationTerm).$scan(${keyVars.head})"
       case _ =>
         val intervals = classOf[IntervalIndex].getName
@@ -448,7 +474,13 @@ case class BroadcastRangeJoinExec(
     val call = rangeJoin match {
       case partial: PartialRangeJoin =>
         val points = classOf[LongPointIndex].getName
-        val scan = if (buildHoldsLowerBound(partial)) "upTo" else "from"
+        // A strict inequality scans the exclusive bound; see genCandidateIterator.
+        val scan = (buildHoldsLowerBound(partial), partial.strict) match {
+          case (true, false) => "upTo"
+          case (true, true) => "upToExclusive"
+          case (false, false) => "from"
+          case (false, true) => "fromExclusive"
+        }
         s"(($points) $relationTerm).$scan(${keyVars.head})"
       case _ =>
         val intervals = classOf[LongIntervalIndex].getName

@@ -244,7 +244,7 @@ class RangeJoinSuite extends QueryTest with SharedSparkSession {
       }, expected)
     }
     check(
-      LessPartialRangeJoin,
+      LessPartialRangeJoin(strict = true),
       (left, right) => LessThan(left.output.head, right.output(1)),
       Seq(
         (-1, 0, 1, 3), (-1, 0, 5, 7),
@@ -252,13 +252,13 @@ class RangeJoinSuite extends QueryTest with SharedSparkSession {
         (0, 2, 1, 3), (0, 2, 5, 7),
         (1, 5, 1, 3), (1, 5, 5, 7)).map(Row.fromTuple))
     check(
-      GreaterPartialRangeJoin,
+      GreaterPartialRangeJoin(strict = true),
       (left, right) => GreaterThan(left.output.head, right.output(1)),
       Seq((0, 1, -2, -1), (0, 2, -2, -1), (1, 5, -2, -1)).map(Row.fromTuple))
     // Same join, built from the other side: GreaterPartialRangeJoin + BuildLeft takes the
     // opposite PointIndex scan arm (from, not upTo) from the BuildRight case above.
     check(
-      GreaterPartialRangeJoin,
+      GreaterPartialRangeJoin(strict = true),
       (left, right) => GreaterThan(left.output.head, right.output(1)),
       Seq((0, 1, -2, -1), (0, 2, -2, -1), (1, 5, -2, -1)).map(Row.fromTuple),
       buildSide = BuildLeft)
