@@ -27,18 +27,21 @@ import org.apache.spark.sql.catalyst.catalog.{CatalogTable, ExternalCatalogUtils
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types.StructType
 
-
 /**
  * A [[FileIndex]] for a metastore catalog table.
  *
  * @param sparkSession a [[SparkSession]]
  * @param table the metadata of the table
  * @param sizeInBytes the table's data size in bytes
+ * @param prunedPartitionSpec optional metastore-pruned partition spec, when known
+ * @param metadataOpsTimeNs time taken in nanoseconds for metadata operations
  */
 class CatalogFileIndex(
     sparkSession: SparkSession,
     val table: CatalogTable,
-    override val sizeInBytes: Long) extends FileIndex {
+    override val sizeInBytes: Long,
+    val prunedPartitionSpec: Option[PartitionSpec] = None,
+    override val metadataOpsTimeNs: Option[Long] = None) extends FileIndex {
 
   protected val hadoopConf: Configuration = sparkSession.sessionState.newHadoopConf()
 
@@ -50,9 +53,15 @@ class CatalogFileIndex(
 
   private val baseLocation: Option[URI] = table.storage.locationUri
 
-  override def partitionSchema: StructType = table.partitionSchema
+  override def partitionSchema: StructType =
+    prunedPartitionSpec.map(_.partitionColumns).getOrElse(table.partitionSchema)
 
-  override def rootPaths: Seq[Path] = baseLocation.map(new Path(_)).toSeq
+  override def rootPaths: Seq[Path] = {
+    prunedPartitionSpec match {
+      case Some(spec) => spec.partitions.map(_.path)
+      case None => baseLocation.map(new Path(_)).toSeq
+    }
+  }
 
   override def listFiles(
       partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
@@ -68,19 +77,8 @@ class CatalogFileIndex(
    * @param filters partition-pruning filters
    */
   def filterPartitions(filters: Seq[Expression]): InMemoryFileIndex = {
-    if (table.partitionColumnNames.nonEmpty) {
-      val startTime = System.nanoTime()
-      val selectedPartitions = ExternalCatalogUtils.listPartitionsByFilter(
-        sparkSession.sessionState.conf, sparkSession.sessionState.catalog, table, filters)
-      val partitions = selectedPartitions.map { p =>
-        val path = new Path(p.location)
-        val fs = path.getFileSystem(hadoopConf)
-        PartitionPath(
-          p.toRow(partitionSchema, sparkSession.sessionState.conf.sessionLocalTimeZone),
-          path.makeQualified(fs.getUri, fs.getWorkingDirectory))
-      }
-      val partitionSpec = PartitionSpec(partitionSchema, partitions)
-      val timeNs = System.nanoTime() - startTime
+    if (table.partitionColumnNames.nonEmpty || prunedPartitionSpec.isDefined) {
+      val (partitionSpec, timeNs) = listPartitionSpec(filters)
       new InMemoryFileIndex(sparkSession,
         rootPathsSpecified = partitionSpec.partitions.map(_.path),
         parameters = Map.empty,
@@ -94,15 +92,92 @@ class CatalogFileIndex(
     }
   }
 
+  /**
+   * Returns a [[CatalogFileIndex]] for this table restricted to the subset of partitions
+   * specified by the given partition-pruning filters, without listing physical files on storage.
+   */
+  def filterPartitionsWithoutListing(filters: Seq[Expression]): CatalogFileIndex = {
+    val (spec, timeNs) = listPartitionSpec(filters)
+    new CatalogFileIndex(
+      sparkSession,
+      table,
+      sizeInBytes,
+      prunedPartitionSpec = Some(spec),
+      metadataOpsTimeNs = Some(timeNs))
+  }
+
+  /**
+   * Returns the partition spec matching `filters` along with the metadata operation duration.
+   */
+  def listPartitionSpec(filters: Seq[Expression]): (PartitionSpec, Long) = {
+    val startTime = System.nanoTime()
+    prunedPartitionSpec match {
+      case Some(spec) =>
+        val pruned = prunePartitionSpec(filters, spec)
+        (pruned, System.nanoTime() - startTime)
+      case None if table.partitionColumnNames.nonEmpty =>
+        val selectedPartitions = ExternalCatalogUtils.listPartitionsByFilter(
+          sparkSession.sessionState.conf, sparkSession.sessionState.catalog, table, filters)
+        val partitions = selectedPartitions.map { p =>
+          val path = new Path(p.location)
+          val fs = path.getFileSystem(hadoopConf)
+          PartitionPath(
+            p.toRow(partitionSchema, sparkSession.sessionState.conf.sessionLocalTimeZone),
+            path.makeQualified(fs.getUri, fs.getWorkingDirectory))
+        }
+        (PartitionSpec(partitionSchema, partitions), System.nanoTime() - startTime)
+      case _ =>
+        (PartitionSpec(partitionSchema, Nil), 0L)
+    }
+  }
+
+  private def prunePartitionSpec(
+      filters: Seq[Expression],
+      spec: PartitionSpec): PartitionSpec = {
+    filters.reduceOption(And).map { filter =>
+      val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
+        filter, spec.partitionColumns)
+      val selected = spec.partitions.filter {
+        case PartitionPath(values, _) => boundPredicate.eval(values)
+      }
+      PartitionSpec(spec.partitionColumns, selected)
+    }.getOrElse(spec)
+  }
+
+  /**
+   * Lists physical files on storage for only the given subset of partitions.
+   */
+  def listFilesForPartitions(
+      partitions: Seq[PartitionPath],
+      dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
+    if (partitions.isEmpty) {
+      Nil
+    } else {
+      val spec = PartitionSpec(partitionSchema, partitions)
+      new InMemoryFileIndex(
+        sparkSession,
+        rootPathsSpecified = partitions.map(_.path),
+        parameters = Map.empty,
+        userSpecifiedSchema = Some(partitionSchema),
+        fileStatusCache = fileStatusCache,
+        userSpecifiedPartitionSpec = Some(spec),
+        metadataOpsTimeNs = metadataOpsTimeNs).listFiles(Nil, dataFilters)
+    }
+  }
+
   override def inputFiles: Array[String] = filterPartitions(Nil).inputFiles
 
   // `CatalogFileIndex` may be a member of `HadoopFsRelation`, `HadoopFsRelation` may be a member
   // of `LogicalRelation`, and `LogicalRelation` may be used as the cache key. So we need to
   // implement `equals` and `hashCode` here, to make it work with cache lookup.
   override def equals(o: Any): Boolean = o match {
-    case other: CatalogFileIndex => this.table.identifier == other.table.identifier
+    case other: CatalogFileIndex =>
+      this.table.identifier == other.table.identifier &&
+        this.prunedPartitionSpec == other.prunedPartitionSpec
     case _ => false
   }
 
-  override def hashCode(): Int = table.identifier.hashCode()
+  override def hashCode(): Int = {
+    31 * table.identifier.hashCode() + prunedPartitionSpec.hashCode()
+  }
 }

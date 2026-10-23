@@ -338,7 +338,8 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
    * `selectedPartitions`, so it must not be evaluated before the scan's file listing is available.
    */
   lazy val useSingleTaskExecution: Boolean = {
-    if (!markedForSingleTaskExecution || bucketedScan) {
+    if (!markedForSingleTaskExecution || bucketedScan ||
+        partitionFilters.exists(isDynamicPruningFilter)) {
       false
     } else {
       val sqlConf = getSqlConf(relation.sparkSession)
@@ -407,8 +408,18 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
     // they can be used to do pruning at the planning phase.
     val staticDataFilters = dataFilters.filterNot(isDynamicPruningFilter)
     val staticPartitionFilters = partitionFilters.filterNot(isDynamicPruningFilter)
-    val partitionDirectories = relation.location.listFiles(
-      staticPartitionFilters, staticDataFilters)
+    val partitionDirectories: Seq[PartitionDirectory] = relation.location match {
+      case _: CatalogFileIndex
+          if partitionFilters.exists(isDynamicPruningFilter) && !bucketedScan =>
+        // A dynamic partition filter (a subquery on partition columns) is still outstanding
+        // and this is not a bucketed scan, so nothing at planning time needs the files.
+        // Nothing is statically selected: report zero files and keep the listing deferred.
+        // `dynamicallySelectedPartitions` lists only the final surviving partitions once the
+        // subquery values are known at execution time.
+        Nil
+      case other =>
+        other.listFiles(staticPartitionFilters, staticDataFilters)
+    }
     val fileListing = GenericScanFileListing(partitionDirectories.toArray)
     setFilesNumAndSizeMetric(fileListing, static = true)
     val timeTakenMs = NANOSECONDS.toMillis(
@@ -426,20 +437,27 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
 
     if (dynamicPartitionFilters.nonEmpty) {
       val startTime = System.nanoTime()
-      // call the file index for the files matching all filters except dynamic partition filters
-      val predicate = dynamicPartitionFilters.reduce(And)
-      val partitionColumns = relation.partitionSchema
-      val boundPredicate = Predicate.create(predicate.transform {
-        case a: AttributeReference =>
-          val index = partitionColumns.indexWhere(a.name == _.name)
-          BoundReference(index, partitionColumns(index).dataType, nullable = true)
-      }, Nil)
-      val returnedFiles = selectedPartitions.filterAndPruneFiles(
-          boundPredicate, dynamicDataFilters)
-      setFilesNumAndSizeMetric(returnedFiles, false)
+      val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
+        dynamicPartitionFilters.reduce(And), relation.partitionSchema)
+
+      val fileListing: ScanFileListing = relation.location match {
+        case catalogIndex: CatalogFileIndex =>
+          val staticPartitionFilters = partitionFilters.filterNot(isDynamicPruningFilter)
+          val (candidateSpec, _) = catalogIndex.listPartitionSpec(staticPartitionFilters)
+          val survivingPartitions = candidateSpec.partitions.filter {
+            case PartitionPath(values, _) => boundPredicate.eval(values)
+          }
+          val partitionDirs =
+            catalogIndex.listFilesForPartitions(survivingPartitions, dataFilters)
+          GenericScanFileListing(partitionDirs.toArray)
+        case _ =>
+          // Call the file index for the files matching all filters except dynamic partition filters
+          selectedPartitions.filterAndPruneFiles(boundPredicate, dynamicDataFilters)
+      }
+      setFilesNumAndSizeMetric(fileListing, false)
       val timeTakenMs = NANOSECONDS.toMillis(System.nanoTime() - startTime)
       driverMetrics("pruningTime").set(timeTakenMs)
-      returnedFiles
+      fileListing
     } else {
       selectedPartitions
     }

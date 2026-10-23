@@ -187,26 +187,21 @@ abstract class PartitioningAwareFileIndex(
   private def prunePartitions(
       predicates: Seq[Expression],
       partitionSpec: PartitionSpec): Seq[PartitionPath] = {
-    val PartitionSpec(partitionColumns, partitions) = partitionSpec
-    val partitionColumnNames = partitionColumns.map(_.name).toSet
+    val partitionColumnNames = partitionSpec.partitionColumns.map(_.name).toSet
     val partitionPruningPredicates = predicates.filter {
       _.references.map(_.name).toSet.subsetOf(partitionColumnNames)
     }
 
     if (partitionPruningPredicates.nonEmpty) {
-      val predicate = partitionPruningPredicates.reduce(expressions.And)
+      val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
+        partitionPruningPredicates.reduce(expressions.And),
+        partitionSpec.partitionColumns)
 
-      val boundPredicate = Predicate.createInterpreted(predicate.transform {
-        case a: AttributeReference =>
-          val index = partitionColumns.indexWhere(a.name == _.name)
-          BoundReference(index, partitionColumns(index).dataType, nullable = true)
-      })
-
-      val selected = partitions.filter {
+      val selected = partitionSpec.partitions.filter {
         case PartitionPath(values, _) => boundPredicate.eval(values)
       }
       logInfo {
-        val total = partitions.length
+        val total = partitionSpec.partitions.length
         val selectedSize = selected.length
         val percentPruned = (1 - selectedSize.toDouble / total.toDouble) * 100
         log"Selected ${MDC(COUNT, selectedSize)} partitions out of ${MDC(TOTAL, total)}, " +
@@ -215,7 +210,7 @@ abstract class PartitioningAwareFileIndex(
 
       selected
     } else {
-      partitions
+      partitionSpec.partitions
     }
   }
 
@@ -282,5 +277,25 @@ abstract class PartitioningAwareFileIndex(
     if (name.startsWith("_common_metadata") || name.startsWith("_metadata")) return false
     // For all other names the ignoredPathSegmentRegex regex decides.
     !ignoredPathSegmentRegexPattern.matcher(name).find()
+  }
+}
+
+object PartitioningAwareFileIndex {
+
+  /**
+   * Binds `predicate` to the partition values of `partitionColumns` by attribute name, so it
+   * can be evaluated against the `InternalRow` of a [[PartitionPath]]. Subquery expressions
+   * are left as opaque nodes and are evaluated with whatever values they carry, so a physical
+   * subquery expression (e.g. `InSubqueryExec` whose references include the subquery output)
+   * is not silently dropped the way a references-based partition-column filter would drop it.
+   */
+  private[sql] def bindPartitionPredicate(
+      predicate: Expression,
+      partitionColumns: StructType): BasePredicate = {
+    Predicate.createInterpreted(predicate.transform {
+      case a: AttributeReference =>
+        val index = partitionColumns.indexWhere(a.name == _.name)
+        BoundReference(index, partitionColumns(index).dataType, nullable = true)
+    })
   }
 }

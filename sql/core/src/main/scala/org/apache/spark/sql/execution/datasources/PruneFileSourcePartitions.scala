@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical.{Filter, LeafNode, LogicalPlan, Project}
 import org.apache.spark.sql.catalyst.plans.logical.statsEstimation.FilterEstimation
 import org.apache.spark.sql.catalyst.rules.Rule
+import org.apache.spark.sql.types.StructType
 
 /**
  * Prune the partitions of file source based table using partition filters. Currently, this rule
@@ -31,6 +32,10 @@ import org.apache.spark.sql.catalyst.rules.Rule
  * For [[HadoopFsRelation]], the location will be replaced by pruned file index, and corresponding
  * statistics will be updated. And the partition filters will be kept in the filters of returned
  * logical plan.
+ *
+ * When partition filters include subqueries on partition columns, the catalog partition spec
+ * is pruned without listing physical files on storage. The storage file listing is deferred to
+ * physical execution time in [[FileSourceScanLike.dynamicallySelectedPartitions]].
  */
 private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
 
@@ -47,32 +52,75 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
     Project(projects, withFilter)
   }
 
+  /**
+   * Whether `filters` contains a deterministic subquery filter on partition columns. Such a
+   * filter is only evaluated at execution time, so the partition set can still narrow after
+   * this rule ran, which is what makes deferring the file listing worthwhile.
+   */
+  private[sql] def hasSubqueryPartitionFilters(
+      filters: Seq[Expression],
+      logicalRelation: LogicalRelation,
+      partitionSchema: StructType): Boolean = {
+    val normalizedSubqueryFilters = DataSourceStrategy.normalizeExprs(
+      filters.filter { f =>
+        f.deterministic &&
+          SubqueryExpression.hasSubquery(f) &&
+          // Python UDFs might exist because this rule is applied before `ExtractPythonUDFs`.
+          !f.exists(_.isInstanceOf[PythonUDF])
+      },
+      logicalRelation.output)
+    val (subqueryPartitionKeyFilters, _) = DataSourceUtils
+      .getPartitionFiltersAndDataFilters(partitionSchema, normalizedSubqueryFilters)
+    subqueryPartitionKeyFilters.nonEmpty
+  }
+
   override def apply(plan: LogicalPlan): LogicalPlan = plan transformDown {
     case op @ PhysicalOperation(projects, filters,
         logicalRelation @ LogicalRelationWithTable(
           fsRelation @
             HadoopFsRelation(
-            catalogFileIndex: CatalogFileIndex,
-            partitionSchema,
-            _,
-            _,
-            _,
-            _),
-          _)
-        )
+              catalogFileIndex: CatalogFileIndex,
+              partitionSchema,
+              _,
+              _,
+              _,
+              _),
+          _))
         if filters.nonEmpty && fsRelation.partitionSchema.nonEmpty =>
       val normalizedFilters = DataSourceStrategy.normalizeExprs(
         filters.filter { f =>
           f.deterministic &&
             !SubqueryExpression.hasSubquery(f) &&
-            // Python UDFs might exist because this rule is applied before ``ExtractPythonUDFs``.
+            // Python UDFs might exist because this rule is applied before `ExtractPythonUDFs`.
             !f.exists(_.isInstanceOf[PythonUDF])
         },
         logicalRelation.output)
       val (partitionKeyFilters, _) = DataSourceUtils
         .getPartitionFiltersAndDataFilters(partitionSchema, normalizedFilters)
 
-      if (partitionKeyFilters.nonEmpty) {
+      val hasSubquery = hasSubqueryPartitionFilters(filters, logicalRelation, partitionSchema)
+      if (hasSubquery) {
+        if (partitionKeyFilters.nonEmpty) {
+          if (catalogFileIndex.prunedPartitionSpec.isDefined) {
+            op
+          } else {
+            val prunedFileIndex =
+              catalogFileIndex.filterPartitionsWithoutListing(partitionKeyFilters)
+            val prunedFsRelation =
+              fsRelation.copy(location = prunedFileIndex)(fsRelation.sparkSession)
+            val newStats = logicalRelation.catalogTable.map(_.stats match {
+              case Some(stats) => stats.copy(sizeInBytes = BigInt(prunedFileIndex.sizeInBytes))
+              case _ => CatalogStatistics(sizeInBytes = BigInt(prunedFileIndex.sizeInBytes))
+            })
+            val withStats = logicalRelation.catalogTable.map(_.copy(stats = newStats))
+            val prunedLogicalRelation = logicalRelation.copy(
+              relation = prunedFsRelation, catalogTable = withStats)
+            rebuildPhysicalOperation(projects, filters, prunedLogicalRelation)
+          }
+        } else {
+          op
+        }
+      } else if (partitionKeyFilters.nonEmpty) {
         val prunedFileIndex = catalogFileIndex.filterPartitions(partitionKeyFilters)
         val prunedFsRelation =
           fsRelation.copy(location = prunedFileIndex)(fsRelation.sparkSession)
@@ -89,7 +137,8 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
             colStats = colStats.getOrElse(Map.empty)))))
         val prunedLogicalRelation = logicalRelation.copy(
           relation = prunedFsRelation, catalogTable = withStats)
-        // Keep partition-pruning predicates so that they are visible in physical planning
+        // Keep partition-pruning predicates so that they are visible and can be pushed into
+        // files (e.g. parquet columns)
         rebuildPhysicalOperation(projects, filters, prunedLogicalRelation)
       } else {
         op
