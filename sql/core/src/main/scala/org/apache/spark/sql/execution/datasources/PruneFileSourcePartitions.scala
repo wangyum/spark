@@ -32,6 +32,11 @@ import org.apache.spark.sql.types.StructType
  * For [[HadoopFsRelation]], the location will be replaced by pruned file index, and corresponding
  * statistics will be updated. And the partition filters will be kept in the filters of returned
  * logical plan.
+ *
+ * When the partition filters include a subquery on partition columns, nothing is replaced: the
+ * location stays the [[CatalogFileIndex]] and the file listing is deferred to physical
+ * execution time, when the subquery values are known and can be pushed to the metastore; see
+ * [[FileSourceScanLike.dynamicallySelectedPartitions]].
  */
 private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
 
@@ -49,9 +54,11 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
   }
 
   /**
-   * Whether `filters` contains a deterministic subquery filter on partition columns.
+   * Whether `filters` contains a deterministic subquery filter on partition columns. Such a
+   * filter is only evaluated at execution time, so the partition set can still narrow after
+   * this rule ran.
    */
-  private[sql] def hasSubqueryPartitionFilters(
+  private def hasSubqueryPartitionFilters(
       filters: Seq[Expression],
       logicalRelation: LogicalRelation,
       partitionSchema: StructType): Boolean = {
@@ -91,26 +98,10 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
         logicalRelation.output)
       val (partitionKeyFilters, _) = DataSourceUtils
         .getPartitionFiltersAndDataFilters(partitionSchema, normalizedFilters)
-      val hasSubquery = hasSubqueryPartitionFilters(filters, logicalRelation, partitionSchema)
-      if (hasSubquery) {
-        // When dynamic partition filters (subqueries) are present:
-        // 1. If selective static partition filters also exist (not just `IsNotNull` inferred from
-        //    the subquery), prune partition specs via metastore now without listing physical
-        //    storage files (`filterPartitionsWithoutListing`).
-        // 2. If no selective static partition filters exist, keep the original CatalogFileIndex
-        //    as-is. At runtime, the materialized dynamic filter will be pushed to metastore.
-        val selectiveStaticFilters = partitionKeyFilters.filterNot(_.isInstanceOf[IsNotNull])
-        if (selectiveStaticFilters.nonEmpty && catalogFileIndex.prunedPartitionSpec.isEmpty) {
-          val prunedFileIndex =
-            catalogFileIndex.filterPartitionsWithoutListing(partitionKeyFilters)
-          val prunedFsRelation =
-            fsRelation.copy(location = prunedFileIndex)(fsRelation.sparkSession)
-          val prunedLogicalRelation = logicalRelation.copy(relation = prunedFsRelation)
-          rebuildPhysicalOperation(projects, filters, prunedLogicalRelation)
-        } else {
-          op
-        }
-      } else if (partitionKeyFilters.nonEmpty) {
+      if (partitionKeyFilters.nonEmpty &&
+          !hasSubqueryPartitionFilters(filters, logicalRelation, partitionSchema)) {
+        // The static filters decide the final partition set, so list the files now: join
+        // reordering runs after this rule and uses the resulting file size.
         val prunedFileIndex = catalogFileIndex.filterPartitions(partitionKeyFilters)
         val prunedFsRelation =
           fsRelation.copy(location = prunedFileIndex)(fsRelation.sparkSession)
@@ -131,6 +122,9 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
         // files (e.g. parquet columns)
         rebuildPhysicalOperation(projects, filters, prunedLogicalRelation)
       } else {
+        // A subquery on partition columns can narrow the partition set at execution time,
+        // so keep the [[CatalogFileIndex]] and defer the file listing: the physical scan
+        // lists only the surviving partitions once the subquery values are known.
         op
       }
   }

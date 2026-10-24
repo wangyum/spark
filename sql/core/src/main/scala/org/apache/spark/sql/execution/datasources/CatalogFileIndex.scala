@@ -22,7 +22,6 @@ import java.net.URI
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, ExternalCatalogUtils}
 import org.apache.spark.sql.catalyst.expressions._
@@ -35,15 +34,11 @@ import org.apache.spark.sql.types.StructType
  * @param sparkSession a [[SparkSession]]
  * @param table the metadata of the table
  * @param sizeInBytes the table's data size in bytes
- * @param prunedPartitionSpec optional metastore-pruned partition spec, when known
- * @param metadataOpsTimeNs time taken in nanoseconds for metadata operations
  */
 class CatalogFileIndex(
     sparkSession: SparkSession,
     val table: CatalogTable,
-    override val sizeInBytes: Long,
-    val prunedPartitionSpec: Option[PartitionSpec] = None,
-    override val metadataOpsTimeNs: Option[Long] = None) extends FileIndex with Logging {
+    override val sizeInBytes: Long) extends FileIndex {
 
   protected val hadoopConf: Configuration = sparkSession.sessionState.newHadoopConf()
 
@@ -55,15 +50,9 @@ class CatalogFileIndex(
 
   private val baseLocation: Option[URI] = table.storage.locationUri
 
-  override def partitionSchema: StructType =
-    prunedPartitionSpec.map(_.partitionColumns).getOrElse(table.partitionSchema)
+  override def partitionSchema: StructType = table.partitionSchema
 
-  override def rootPaths: Seq[Path] = {
-    prunedPartitionSpec match {
-      case Some(spec) => spec.partitions.map(_.path)
-      case None => baseLocation.map(new Path(_)).toSeq
-    }
-  }
+  override def rootPaths: Seq[Path] = baseLocation.map(new Path(_)).toSeq
 
   override def listFiles(
       partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
@@ -79,7 +68,7 @@ class CatalogFileIndex(
    * @param filters partition-pruning filters
    */
   def filterPartitions(filters: Seq[Expression]): InMemoryFileIndex = {
-    if (table.partitionColumnNames.nonEmpty || prunedPartitionSpec.isDefined) {
+    if (table.partitionColumnNames.nonEmpty) {
       val (partitionSpec, timeNs) = listPartitionSpec(filters)
       new InMemoryFileIndex(sparkSession,
         rootPathsSpecified = partitionSpec.partitions.map(_.path),
@@ -95,61 +84,47 @@ class CatalogFileIndex(
   }
 
   /**
-   * Returns a [[CatalogFileIndex]] for this table restricted to the subset of partitions
-   * specified by the given partition-pruning filters, without listing physical files on storage.
-   */
-  def filterPartitionsWithoutListing(filters: Seq[Expression]): CatalogFileIndex = {
-    val (spec, timeNs) = listPartitionSpec(filters)
-    new CatalogFileIndex(
-      sparkSession,
-      table,
-      sizeInBytes,
-      prunedPartitionSpec = Some(spec),
-      metadataOpsTimeNs = Some(timeNs))
-  }
-
-  /**
    * Returns the partition spec matching `filters` along with the metadata operation duration.
+   * Subquery expressions that already carry their result are first turned into literals, so
+   * they can be pushed to the metastore together with the static filters; those that do not
+   * (not yet executed, or an IN list too large to push) are evaluated against the returned
+   * partitions instead.
    */
   def listPartitionSpec(filters: Seq[Expression]): (PartitionSpec, Long) = {
     val startTime = System.nanoTime()
-    prunedPartitionSpec match {
-      case Some(spec) =>
-        val pruned = PartitioningAwareFileIndex.prunePartitionSpec(filters, spec)
-        (pruned, System.nanoTime() - startTime)
-      case None if table.partitionColumnNames.nonEmpty =>
-        val materializedFilters = materializeDynamicFilters(filters)
-        val (pushableFilters, postFilters) = splitPartitionFilters(materializedFilters)
-        val selectedPartitions = ExternalCatalogUtils.listPartitionsByFilter(
-          sparkSession.sessionState.conf, sparkSession.sessionState.catalog, table, pushableFilters)
-        val timeZone = sparkSession.sessionState.conf.sessionLocalTimeZone
-        val filtered = if (postFilters.nonEmpty) {
-          val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
-            postFilters.reduce(And), partitionSchema)
-          selectedPartitions.flatMap { p =>
-            val row = p.toRow(partitionSchema, timeZone)
-            if (boundPredicate.eval(row)) Some((row, p)) else None
-          }
+    if (table.partitionColumnNames.nonEmpty) {
+      val materializedFilters = materializeDynamicFilters(filters)
+      val (pushableFilters, postFilters) = splitPartitionFilters(materializedFilters)
+      val selectedPartitions = ExternalCatalogUtils.listPartitionsByFilter(
+        sparkSession.sessionState.conf, sparkSession.sessionState.catalog, table, pushableFilters)
+      val timeZone = sparkSession.sessionState.conf.sessionLocalTimeZone
+      val filtered = if (postFilters.nonEmpty) {
+        val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
+          postFilters.reduce(And), partitionSchema)
+        selectedPartitions.flatMap { p =>
+          val row = p.toRow(partitionSchema, timeZone)
+          if (boundPredicate.eval(row)) Some((row, p)) else None
+        }
+      } else {
+        selectedPartitions.map(p => (p.toRow(partitionSchema, timeZone), p))
+      }
+      var cachedFs: FileSystem = null
+      val partitions = filtered.map { case (row, p) =>
+        val path = new Path(p.location)
+        val uri = path.toUri
+        val fs = if (cachedFs != null &&
+            (uri.getScheme == null || uri.getScheme == cachedFs.getScheme) &&
+            (uri.getAuthority == null || uri.getAuthority == cachedFs.getUri.getAuthority)) {
+          cachedFs
         } else {
-          selectedPartitions.map(p => (p.toRow(partitionSchema, timeZone), p))
+          cachedFs = path.getFileSystem(hadoopConf)
+          cachedFs
         }
-        var cachedFs: FileSystem = null
-        val partitions = filtered.map { case (row, p) =>
-          val path = new Path(p.location)
-          val uri = path.toUri
-          val fs = if (cachedFs != null &&
-              (uri.getScheme == null || uri.getScheme == cachedFs.getScheme) &&
-              (uri.getAuthority == null || uri.getAuthority == cachedFs.getUri.getAuthority)) {
-            cachedFs
-          } else {
-            cachedFs = path.getFileSystem(hadoopConf)
-            cachedFs
-          }
-          PartitionPath(row, path.makeQualified(fs.getUri, fs.getWorkingDirectory))
-        }
-        (PartitionSpec(partitionSchema, partitions), System.nanoTime() - startTime)
-      case _ =>
-        (PartitionSpec(partitionSchema, Nil), 0L)
+        PartitionPath(row, path.makeQualified(fs.getUri, fs.getWorkingDirectory))
+      }
+      (PartitionSpec(partitionSchema, partitions), System.nanoTime() - startTime)
+    } else {
+      (PartitionSpec(partitionSchema, Nil), 0L)
     }
   }
 
@@ -230,13 +205,9 @@ class CatalogFileIndex(
   // of `LogicalRelation`, and `LogicalRelation` may be used as the cache key. So we need to
   // implement `equals` and `hashCode` here, to make it work with cache lookup.
   override def equals(o: Any): Boolean = o match {
-    case other: CatalogFileIndex =>
-      this.table.identifier == other.table.identifier &&
-        this.prunedPartitionSpec == other.prunedPartitionSpec
+    case other: CatalogFileIndex => this.table.identifier == other.table.identifier
     case _ => false
   }
 
-  override def hashCode(): Int = {
-    31 * table.identifier.hashCode() + prunedPartitionSpec.hashCode()
-  }
+  override def hashCode(): Int = table.identifier.hashCode()
 }

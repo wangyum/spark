@@ -152,9 +152,10 @@ class LazyFileIndexSuite extends QueryTest with SQLTestUtils with TestHiveSingle
       checkAnswer(sql(sqlStr), Row(9) :: Nil)
 
       val scan = findFileSourceScan(sqlStr, "a")
-      // Both static filter (p <= 1) and subquery filter are present:
-      // Catalog partition spec is pruned statically to 2 partitions, but storage file listing
-      // is deferred to execution time where only the surviving partitions are listed.
+      // Both a static filter (p <= 1) and a subquery filter are present: the listing is
+      // deferred anyway, and at execution time the materialized subquery is pushed to the
+      // metastore together with the static filter, so only the surviving partitions are
+      // listed.
       assert(scan.relation.location.isInstanceOf[CatalogFileIndex])
       assert(scan.selectedPartitions.totalNumberOfFiles == 0)
       assert(listedFilesCount(scan) == 2)
