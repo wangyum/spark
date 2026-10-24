@@ -56,41 +56,26 @@ case class CollectLimitExec(limit: Int = -1, child: SparkPlan, offset: Int = 0) 
   override def outputPartitioning: Partitioning = SinglePartition
   override def executeCollect(): Array[InternalRow] = {
     if (limit >= 0) {
-      val rows = if (canUsePartialFileListing) {
+      val rows = findEligibleScan(child).map { _ =>
         executeCollectWithPartialListing(limit)
-      } else {
-        child.executeTake(limit)
-      }
+      }.getOrElse(child.executeTake(limit))
       if (offset > 0) rows.drop(offset) else rows
     } else {
       child.executeCollect().drop(offset)
     }
   }
 
-  private def canUsePartialFileListing: Boolean = {
-    isSupportedChild(child)
-  }
-
-  private def isSupportedChild(plan: SparkPlan): Boolean = plan match {
-    case scan: FileSourceScanExec => scan.isPartialFileListing
-    case p: ProjectExec => isSupportedChild(p.child)
-    case w: WholeStageCodegenExec => isSupportedChild(w.child)
-    case c: ColumnarToRowExec => isSupportedChild(c.child)
-    case i: InputAdapter => isSupportedChild(i.child)
-    case _ => false
-  }
-
-  private def findPartialScan(plan: SparkPlan): Option[FileSourceScanExec] = plan match {
-    case scan: FileSourceScanExec if scan.isPartialFileListing => Some(scan)
-    case p: ProjectExec => findPartialScan(p.child)
-    case w: WholeStageCodegenExec => findPartialScan(w.child)
-    case c: ColumnarToRowExec => findPartialScan(c.child)
-    case i: InputAdapter => findPartialScan(i.child)
+  private def findEligibleScan(plan: SparkPlan): Option[FileSourceScanExec] = plan match {
+    case scan: FileSourceScanExec if scan.isLimitScanEligible => Some(scan)
+    case p: ProjectExec => findEligibleScan(p.child)
+    case w: WholeStageCodegenExec => findEligibleScan(w.child)
+    case c: ColumnarToRowExec => findEligibleScan(c.child)
+    case i: InputAdapter => findEligibleScan(i.child)
     case _ => None
   }
 
   private def executeCollectWithPartialListing(n: Int): Array[InternalRow] = {
-    val scan = findPartialScan(child).get
+    val scan = findEligibleScan(child).get
     val initialBatchSize = scan.estimateInitialFiles(n)
     val scaleFactor = 4
     val maxBatchSize = 1000
@@ -103,10 +88,10 @@ case class CollectLimitExec(limit: Int = -1, child: SparkPlan, offset: Int = 0) 
     while (buf.length < n && hasMoreFiles) {
       val needed = n - buf.length
       val fastChild = child.transformUp {
-        case s: FileSourceScanExec if s.isPartialFileListing =>
+        case s: FileSourceScanExec if s.isLimitScanEligible =>
           s.partialListingScan(currentBatchSize, seenFiles.toSet)
       }
-      val currentScan = findPartialScan(fastChild).get
+      val currentScan = findEligibleScan(fastChild).get
       val discoveredFiles = currentScan.selectedPartitions.toPartitionArray.map(_.toPath)
 
       if (discoveredFiles.isEmpty) {

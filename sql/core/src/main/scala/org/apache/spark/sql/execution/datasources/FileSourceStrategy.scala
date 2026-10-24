@@ -406,9 +406,7 @@ object FileSourceStrategy extends Strategy with PredicateHelper with Logging {
           table.map(_.identifier),
           markedForSingleTaskExecution =
             l.getTagValue(MarkSingleTaskExecution.markTag).getOrElse(false),
-          storageFilters = storageFilters,
-          markedForPartialFileListing =
-            l.getTagValue(MarkPartialFileListing.markTag).getOrElse(false))
+          storageFilters = storageFilters)
 
       // extra Project node: wrap flat metadata columns to a metadata struct
       val withMetadataProjections = metadataStructOpt.map { metadataStruct =>

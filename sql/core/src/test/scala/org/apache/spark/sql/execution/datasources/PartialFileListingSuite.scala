@@ -18,7 +18,7 @@
 package org.apache.spark.sql.execution.datasources
 
 import org.apache.spark.sql.QueryTest
-import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.{CollectLimitExec, FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
@@ -43,7 +43,7 @@ class PartialFileListingSuite extends QueryTest with SharedSparkSession {
       val df = sql("select id from t limit 5")
       assert(df.collect().length == 5)
       val scan = getSingleFileSourceScan(df.queryExecution.executedPlan)
-      assert(scan.isPartialFileListing, "expected the scan to use partial file listing")
+      assert(scan.isLimitScanEligible, "expected the scan to be eligible for limit scan")
     }
   }
 
@@ -53,7 +53,7 @@ class PartialFileListingSuite extends QueryTest with SharedSparkSession {
       val df = sql("select id from t where id > 0 limit 5")
       assert(df.collect().length == 5)
       val scan = getSingleFileSourceScan(df.queryExecution.executedPlan)
-      assert(!scan.isPartialFileListing,
+      assert(!scan.isLimitScanEligible,
         "a filter above the limit must disqualify partial listing")
     }
   }
@@ -63,8 +63,8 @@ class PartialFileListingSuite extends QueryTest with SharedSparkSession {
       spark.range(0, 100, 1, 10).selectExpr("id").write.saveAsTable("t")
       val df = sql("select id from t order by id limit 5")
       assert(df.collect().map(_.getLong(0)).toSeq == (0 until 5))
-      val scan = getSingleFileSourceScan(df.queryExecution.executedPlan)
-      assert(!scan.isPartialFileListing, "a sort above the limit must disqualify partial listing")
+      assert(!df.queryExecution.executedPlan.isInstanceOf[CollectLimitExec],
+        "a sort above the limit must not plan as CollectLimitExec")
     }
   }
 
@@ -74,7 +74,7 @@ class PartialFileListingSuite extends QueryTest with SharedSparkSession {
       val df = sql("select id from t limit 5")
       assert(df.collect().length == 5)
       val scan = getSingleFileSourceScan(df.queryExecution.executedPlan)
-      assert(!scan.isPartialFileListing, "a bucketed scan must disqualify partial listing")
+      assert(!scan.isLimitScanEligible, "a bucketed scan must disqualify partial listing")
     }
   }
 
@@ -86,7 +86,7 @@ class PartialFileListingSuite extends QueryTest with SharedSparkSession {
       assert(rows.length == 95)
       assert(rows.map(_.getLong(0)).toSet.size == 95)
       val scan = getSingleFileSourceScan(df.queryExecution.executedPlan)
-      assert(scan.isPartialFileListing)
+      assert(scan.isLimitScanEligible)
     }
   }
 
@@ -105,7 +105,7 @@ class PartialFileListingSuite extends QueryTest with SharedSparkSession {
           case other => other
         }
         val scan = getSingleFileSourceScan(plan)
-        assert(scan.isPartialFileListing, "expected partial file listing under adaptive execution")
+        assert(scan.isLimitScanEligible, "expected scan to be eligible under adaptive execution")
       }
     }
   }
@@ -117,7 +117,7 @@ class PartialFileListingSuite extends QueryTest with SharedSparkSession {
       val df = sql("select id from t limit 5")
       assert(df.collect().length == 5)
       val scan = getSingleFileSourceScan(df.queryExecution.executedPlan)
-      assert(scan.isPartialFileListing)
+      assert(scan.isLimitScanEligible)
     }
   }
 
@@ -128,7 +128,7 @@ class PartialFileListingSuite extends QueryTest with SharedSparkSession {
       val rows = df.collect()
       assert(rows.length == 5)
       val scan = getSingleFileSourceScan(df.queryExecution.executedPlan)
-      assert(scan.isPartialFileListing)
+      assert(scan.isLimitScanEligible)
     }
   }
 

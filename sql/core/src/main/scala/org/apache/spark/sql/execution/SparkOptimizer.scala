@@ -23,9 +23,7 @@ import org.apache.spark.sql.catalyst.optimizer._
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.connector.catalog.CatalogManager
-import org.apache.spark.sql.execution.datasources.{MarkPartialFileListing,
-  MarkSingleTaskExecution, PruneFileSourcePartitions, PullOutVariantExtractions,
-  PushVariantIntoScan, SchemaPruning, V1Writes}
+import org.apache.spark.sql.execution.datasources.{MarkSingleTaskExecution, PruneFileSourcePartitions, PullOutVariantExtractions, PushVariantIntoScan, SchemaPruning, V1Writes}
 import org.apache.spark.sql.execution.datasources.v2.{GroupBasedRowLevelOperationScanPlanning, OptimizeMetadataOnlyDeleteFromTable, V2ScanPartitioningAndOrdering, V2ScanRelationPushDown, V2Writes}
 import org.apache.spark.sql.execution.dynamicpruning.{CleanupDynamicPruningFilters, PartitionPruning, RowLevelOperationRuntimeGroupFiltering}
 import org.apache.spark.sql.execution.externalUDF.{ExtractExternalUDFFromWindow, PlanExternalUDFs}
@@ -121,10 +119,7 @@ class SparkOptimizer(
     Batch("Replace CTE with Repartition", Once, ReplaceCTERefWithRepartition),
     // Must run last: it inspects the final plan shape to mark scans that can run in a single task,
     // and no subsequent rule should reshape the plan or copy the marked scan nodes.
-    Batch("MarkSingleTaskExecution", Once, MarkSingleTaskExecution),
-    // Same "must run last" requirement as MarkSingleTaskExecution above, for the same reason;
-    // kept as its own batch since the two rules solve independent problems.
-    Batch("MarkPartialFileListing", Once, MarkPartialFileListing)))
+    Batch("MarkSingleTaskExecution", Once, MarkSingleTaskExecution)))
 
   override def nonExcludableRules: Seq[String] = super.nonExcludableRules ++
     Seq(

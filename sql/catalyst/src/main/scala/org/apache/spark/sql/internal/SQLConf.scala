@@ -2945,7 +2945,7 @@ object SQLConf {
       .transform(_.toLowerCase(Locale.ROOT))
       .createWithDefault("s3a")
 
-·  // Whether to automatically resolve ambiguity in join conditions for self-joins.
+  // Whether to automatically resolve ambiguity in join conditions for self-joins.
   // See SPARK-6231.
   val DATAFRAME_SELF_JOIN_AUTO_RESOLVE_AMBIGUITY =
     buildConf("spark.sql.selfJoinAutoResolveAmbiguity")
