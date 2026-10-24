@@ -146,8 +146,8 @@ class CatalogFileIndex(
         case DynamicPruningExpression(in: InSubqueryExec) =>
           materializeInSubquery(in, in.child, maxInThreshold)
             .getOrElse(DynamicPruningExpression(in))
-        case s: ScalarSubquery =>
-          literalIfSubqueryReady(s)
+        case s: ScalarSubquery if s.hasResult =>
+          s.toLiteral
         case in: InSubqueryExec =>
           materializeInSubquery(in, in.child, maxInThreshold).getOrElse(in)
       }
@@ -173,29 +173,10 @@ class CatalogFileIndex(
     }
   }
 
-  // `toLiteral` throws IllegalArgumentException("... has not finished") before the subquery
-  // runs. Any other failure is a real evaluation error.
-  private def literalIfSubqueryReady(subquery: ScalarSubquery): Expression = {
-    try {
-      subquery.toLiteral
-    } catch {
-      case e: IllegalArgumentException if subqueryHasNotFinished(e) => subquery
-    }
-  }
-
-  private def subqueryHasNotFinished(e: IllegalArgumentException): Boolean = {
-    val message = e.getMessage
-    message != null && message.contains("has not finished")
-  }
-
   private def foldConstantExpressions(expr: Expression): Expression = {
     expr.transform {
       case e if !e.isInstanceOf[Literal] && e.foldable =>
-        try {
-          Literal.create(e.eval(EmptyRow), e.dataType)
-        } catch {
-          case ex: IllegalArgumentException if subqueryHasNotFinished(ex) => e
-        }
+        Literal.create(e.eval(EmptyRow), e.dataType)
     }
   }
 

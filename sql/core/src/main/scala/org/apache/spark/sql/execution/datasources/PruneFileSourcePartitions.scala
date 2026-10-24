@@ -23,7 +23,6 @@ import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical.{Filter, LeafNode, LogicalPlan, Project}
 import org.apache.spark.sql.catalyst.plans.logical.statsEstimation.FilterEstimation
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.types.StructType
 
 /**
  * Prune the partitions of file source based table using partition filters. Currently, this rule
@@ -53,53 +52,35 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
     Project(projects, withFilter)
   }
 
-  /**
-   * Whether `filters` contains a deterministic subquery filter on partition columns. Such a
-   * filter is only evaluated at execution time, so the partition set can still narrow after
-   * this rule ran.
-   */
-  private def hasSubqueryPartitionFilters(
-      filters: Seq[Expression],
-      logicalRelation: LogicalRelation,
-      partitionSchema: StructType): Boolean = {
-    val normalizedSubqueryFilters = DataSourceStrategy.normalizeExprs(
-      filters.filter { f =>
-        f.deterministic &&
-          SubqueryExpression.hasSubquery(f) &&
-          // Python UDFs might exist because this rule is applied before `ExtractPythonUDFs`.
-          !f.exists(_.isInstanceOf[PythonUDF])
-      },
-      logicalRelation.output)
-    val (subqueryPartitionKeyFilters, _) = DataSourceUtils
-      .getPartitionFiltersAndDataFilters(partitionSchema, normalizedSubqueryFilters)
-    subqueryPartitionKeyFilters.nonEmpty
-  }
-
   override def apply(plan: LogicalPlan): LogicalPlan = plan transformDown {
     case op @ PhysicalOperation(projects, filters,
         logicalRelation @ LogicalRelationWithTable(
           fsRelation @
             HadoopFsRelation(
-              catalogFileIndex: CatalogFileIndex,
-              partitionSchema,
-              _,
-              _,
-              _,
-              _),
-          _))
+            catalogFileIndex: CatalogFileIndex,
+            partitionSchema,
+            _,
+            _,
+            _,
+            _),
+          _)
+        )
         if filters.nonEmpty && fsRelation.partitionSchema.nonEmpty =>
       val normalizedFilters = DataSourceStrategy.normalizeExprs(
         filters.filter { f =>
           f.deterministic &&
-            !SubqueryExpression.hasSubquery(f) &&
-            // Python UDFs might exist because this rule is applied before `ExtractPythonUDFs`.
+            // Python UDFs might exist because this rule is applied before ``ExtractPythonUDFs``.
             !f.exists(_.isInstanceOf[PythonUDF])
         },
         logicalRelation.output)
+      val (subqueryFilters, staticFilters) =
+        normalizedFilters.partition(SubqueryExpression.hasSubquery)
+      val (subqueryPartitionKeyFilters, _) = DataSourceUtils
+        .getPartitionFiltersAndDataFilters(partitionSchema, subqueryFilters)
       val (partitionKeyFilters, _) = DataSourceUtils
-        .getPartitionFiltersAndDataFilters(partitionSchema, normalizedFilters)
-      if (partitionKeyFilters.nonEmpty &&
-          !hasSubqueryPartitionFilters(filters, logicalRelation, partitionSchema)) {
+        .getPartitionFiltersAndDataFilters(partitionSchema, staticFilters)
+
+      if (partitionKeyFilters.nonEmpty && subqueryPartitionKeyFilters.isEmpty) {
         // The static filters decide the final partition set, so list the files now: join
         // reordering runs after this rule and uses the resulting file size.
         val prunedFileIndex = catalogFileIndex.filterPartitions(partitionKeyFilters)
@@ -118,13 +99,13 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
             colStats = colStats.getOrElse(Map.empty)))))
         val prunedLogicalRelation = logicalRelation.copy(
           relation = prunedFsRelation, catalogTable = withStats)
-        // Keep partition-pruning predicates so that they are visible and can be pushed into
-        // files (e.g. parquet columns)
+        // Keep partition-pruning predicates so that they are visible in physical planning
         rebuildPhysicalOperation(projects, filters, prunedLogicalRelation)
       } else {
-        // A subquery on partition columns can narrow the partition set at execution time,
-        // so keep the [[CatalogFileIndex]] and defer the file listing: the physical scan
-        // lists only the surviving partitions once the subquery values are known.
+        // A subquery on partition columns is only evaluated at execution time, so the
+        // partition set can still narrow after this rule ran: keep the [[CatalogFileIndex]]
+        // and defer the file listing. The physical scan lists only the surviving partitions
+        // once the subquery values are known.
         op
       }
   }

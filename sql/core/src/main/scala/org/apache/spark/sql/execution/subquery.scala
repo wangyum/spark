@@ -105,6 +105,10 @@ case class ScalarSubquery(
     result
   }
 
+  // Whether the subquery has run and `result` holds its value, mirroring the Option-returning
+  // `InSubqueryExec.values()` readiness signal.
+  def hasResult: Boolean = updated
+
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     toLiteral.doGenCode(ctx, ev)
   }
