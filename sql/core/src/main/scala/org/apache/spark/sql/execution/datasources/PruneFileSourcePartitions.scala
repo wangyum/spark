@@ -93,17 +93,19 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
         .getPartitionFiltersAndDataFilters(partitionSchema, normalizedFilters)
       val hasSubquery = hasSubqueryPartitionFilters(filters, logicalRelation, partitionSchema)
       if (hasSubquery) {
-        if (partitionKeyFilters.nonEmpty) {
-          if (catalogFileIndex.prunedPartitionSpec.isDefined) {
-            op
-          } else {
-            val prunedFileIndex =
-              catalogFileIndex.filterPartitionsWithoutListing(partitionKeyFilters)
-            val prunedFsRelation =
-              fsRelation.copy(location = prunedFileIndex)(fsRelation.sparkSession)
-            val prunedLogicalRelation = logicalRelation.copy(relation = prunedFsRelation)
-            rebuildPhysicalOperation(projects, filters, prunedLogicalRelation)
-          }
+        // When dynamic partition filters (subqueries) are present:
+        // 1. If static partition filters also exist, prune partition specs via metastore now
+        //    without listing physical storage files (`filterPartitionsWithoutListing`).
+        // 2. If no static partition filters exist, keep the original CatalogFileIndex as-is.
+        // In both cases, physical file listing is deferred until execution time when subquery
+        // results are available, and table statistics are kept intact so CBO is not misled.
+        if (partitionKeyFilters.nonEmpty && catalogFileIndex.prunedPartitionSpec.isEmpty) {
+          val prunedFileIndex =
+            catalogFileIndex.filterPartitionsWithoutListing(partitionKeyFilters)
+          val prunedFsRelation =
+            fsRelation.copy(location = prunedFileIndex)(fsRelation.sparkSession)
+          val prunedLogicalRelation = logicalRelation.copy(relation = prunedFsRelation)
+          rebuildPhysicalOperation(projects, filters, prunedLogicalRelation)
         } else {
           op
         }

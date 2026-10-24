@@ -329,6 +329,11 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
   // it additionally passes the file count and size thresholds (see `useSingleTaskExecution`).
   def markedForSingleTaskExecution: Boolean
 
+  private def shouldDeferListing: Boolean = {
+    relation.location.isInstanceOf[CatalogFileIndex] &&
+      partitionFilters.exists(isDynamicPruningFilter)
+  }
+
   /**
    * Whether this file scan should run in a single task, reporting a `SinglePartition` output
    * partitioning so that a following shuffle can be elided. This is true when the plan shape was
@@ -338,8 +343,7 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
    * `selectedPartitions`, so it must not be evaluated before the scan's file listing is available.
    */
   lazy val useSingleTaskExecution: Boolean = {
-    if (!markedForSingleTaskExecution || bucketedScan ||
-        relation.location.shouldDeferListing(partitionFilters)) {
+    if (!markedForSingleTaskExecution || bucketedScan || shouldDeferListing) {
       // The file counts are not known during planning: a dynamic partition filter decides
       // them at execution (see `selectedPartitions`). The scan cannot be judged against the
       // count bounds, and not merging into a single task is the price of not listing the
@@ -413,7 +417,7 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
     val staticDataFilters = dataFilters.filterNot(isDynamicPruningFilter)
     val staticPartitionFilters = partitionFilters.filterNot(isDynamicPruningFilter)
     val partitionDirectories: Seq[PartitionDirectory] =
-      if (relation.location.shouldDeferListing(partitionFilters) && !bucketedScan) {
+      if (shouldDeferListing && !bucketedScan) {
         // A dynamic partition filter (a subquery on partition columns) is still outstanding
         // and this is not a bucketed scan, so nothing at planning time needs the files.
         // Nothing is statically selected: report zero files and keep the listing deferred.
@@ -441,14 +445,19 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
     if (dynamicPartitionFilters.nonEmpty) {
       val startTime = System.nanoTime()
       val fileListing: ScanFileListing =
-        if (relation.location.shouldDeferListing(partitionFilters)) {
+        if (shouldDeferListing) {
           val partitionDirectories =
             relation.location.listFiles(partitionFilters, dataFilters)
           GenericScanFileListing(partitionDirectories.toArray)
         } else {
-          val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
-            dynamicPartitionFilters.reduce(And), relation.partitionSchema)
-          // Call the file index for the files matching all filters except dynamic partition filters
+          // call the file index for the files matching all filters except dynamic partition filters
+          val predicate = dynamicPartitionFilters.reduce(And)
+          val partitionColumns = relation.partitionSchema
+          val boundPredicate = Predicate.create(predicate.transform {
+            case a: AttributeReference =>
+              val index = partitionColumns.indexWhere(a.name == _.name)
+              BoundReference(index, partitionColumns(index).dataType, nullable = true)
+          }, Nil)
           selectedPartitions.filterAndPruneFiles(boundPredicate, dynamicDataFilters)
         }
       setFilesNumAndSizeMetric(fileListing, false)

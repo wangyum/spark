@@ -65,26 +65,10 @@ class CatalogFileIndex(
 
   override def listFiles(
       partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
-    val (spec, _) = listPartitionSpec(partitionFilters)
-    if (spec.partitions.isEmpty) {
-      Nil
-    } else {
-      new InMemoryFileIndex(
-        sparkSession,
-        rootPathsSpecified = spec.partitions.map(_.path),
-        parameters = Map.empty,
-        userSpecifiedSchema = Some(partitionSchema),
-        fileStatusCache = fileStatusCache,
-        userSpecifiedPartitionSpec = Some(spec),
-        metadataOpsTimeNs = metadataOpsTimeNs).listFiles(Nil, dataFilters)
-    }
+    filterPartitions(partitionFilters).listFiles(Nil, dataFilters)
   }
 
   override def refresh(): Unit = fileStatusCache.invalidateAll()
-
-  override def shouldDeferListing(partitionFilters: Seq[Expression]): Boolean = {
-    partitionFilters.exists(_.exists(_.isInstanceOf[PlanExpression[_]]))
-  }
 
   /**
    * Returns a [[InMemoryFileIndex]] for this table restricted to the subset of partitions
@@ -129,7 +113,7 @@ class CatalogFileIndex(
     val startTime = System.nanoTime()
     prunedPartitionSpec match {
       case Some(spec) =>
-        val pruned = prunePartitionSpec(filters, spec)
+        val pruned = PartitioningAwareFileIndex.prunePartitions(filters, spec)
         (pruned, System.nanoTime() - startTime)
       case None if table.partitionColumnNames.nonEmpty =>
         val (pushableFilters, postFilters) = splitPartitionFilters(filters)
@@ -152,7 +136,7 @@ class CatalogFileIndex(
             path.makeQualified(fs.getUri, fs.getWorkingDirectory))
         }
         val spec = PartitionSpec(partitionSchema, partitions)
-        val pruned = prunePartitionSpec(postFilters, spec)
+        val pruned = PartitioningAwareFileIndex.prunePartitions(postFilters, spec)
         (pruned, System.nanoTime() - startTime)
       case _ =>
         (PartitionSpec(partitionSchema, Nil), 0L)
@@ -167,12 +151,6 @@ class CatalogFileIndex(
         !f.exists(_.isInstanceOf[PlanExpression[_]]) &&
         !f.exists(_.isInstanceOf[PythonUDF])
     }
-  }
-
-  private def prunePartitionSpec(
-      filters: Seq[Expression],
-      spec: PartitionSpec): PartitionSpec = {
-    PartitioningAwareFileIndex.prunePartitions(filters, spec)
   }
 
   override def inputFiles: Array[String] = filterPartitions(Nil).inputFiles

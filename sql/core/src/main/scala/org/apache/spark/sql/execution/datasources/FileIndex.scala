@@ -165,14 +165,5 @@ trait FileIndex {
    */
   def metadataOpsTimeNs: Option[Long] = None
 
-  /**
-   * Whether to defer file listing during physical planning when dynamic partition filters
-   * (e.g. subqueries on partition columns or dynamic partition pruning expressions) are present.
-   *
-   * When true, physical planning reports zero statically selected files and defers file listing
-   * until execution time when the dynamic filters are evaluated.
-   */
-  def shouldDeferListing(partitionFilters: Seq[Expression]): Boolean = false
-
   override def toString: String = s"${getClass.getName}(${rootPaths.mkString(",")})"
 }
