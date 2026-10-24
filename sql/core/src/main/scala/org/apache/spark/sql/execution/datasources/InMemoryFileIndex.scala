@@ -44,6 +44,10 @@ import org.apache.spark.util.HadoopFSUtils
  * @param parameters as set of options to control discovery
  * @param userSpecifiedSchema an optional user specified schema that will be use to provide
  *                            types for the discovered partitions
+ * @param partialListing when true, caps leaf-file listing at
+ *                        `spark.sql.sources.partialFileListing.initialFileCount` files and
+ *                        bypasses the file status cache, for a limit-only query that may not
+ *                        need every file. See `partialListingCopy`.
  */
 class InMemoryFileIndex(
     sparkSession: SparkSession,
@@ -52,7 +56,8 @@ class InMemoryFileIndex(
     userSpecifiedSchema: Option[StructType],
     fileStatusCache: FileStatusCache = NoopCache,
     userSpecifiedPartitionSpec: Option[PartitionSpec] = None,
-    override val metadataOpsTimeNs: Option[Long] = None)
+    override val metadataOpsTimeNs: Option[Long] = None,
+    val partialListing: Boolean = false)
   extends PartitioningAwareFileIndex(
     sparkSession, parameters, userSpecifiedSchema, fileStatusCache) {
 
@@ -110,6 +115,12 @@ class InMemoryFileIndex(
 
   override def hashCode(): Int = rootPaths.toSet.hashCode()
 
+  /** A copy of this index that lists at most a handful of files. See `partialListing`. */
+  def partialListingCopy(): InMemoryFileIndex = {
+    new InMemoryFileIndex(sparkSession, rootPathsSpecified, parameters, userSpecifiedSchema,
+      fileStatusCache, userSpecifiedPartitionSpec, metadataOpsTimeNs, partialListing = true)
+  }
+
   /**
    * List leaf files of given paths. This method will submit a Spark job to do parallel
    * listing whenever there is a path having more files than the parallel partition discovery
@@ -122,10 +133,13 @@ class InMemoryFileIndex(
     val output = mutable.LinkedHashSet[FileStatus]()
     val pathsToFetch = mutable.ArrayBuffer[Path]()
     // The file status cache is keyed by path only, so cached entries must always hold the
-    // default-filtered listing. Bypass the cache when a non-default ignoredPathSegmentRegex is in
-    // effect, to neither serve nor store listings produced with a different filter.
+    // default-filtered, complete listing. Bypass the cache when a non-default
+    // ignoredPathSegmentRegex is in effect (to neither serve nor store listings produced with a
+    // different filter) or when this is a partial listing (to neither serve a cached complete
+    // listing nor poison the cache with an incomplete one).
     val useFileStatusCache =
-      ignoredPathSegmentRegex == HadoopFSUtils.DEFAULT_IGNORED_PATH_SEGMENT_REGEX
+      ignoredPathSegmentRegex == HadoopFSUtils.DEFAULT_IGNORED_PATH_SEGMENT_REGEX &&
+        !partialListing
     for (path <- paths) {
       val cachedFiles = if (useFileStatusCache) fileStatusCache.getLeafFiles(path) else None
       cachedFiles match {
@@ -137,8 +151,13 @@ class InMemoryFileIndex(
       }
     }
     val filter = FileInputFormat.getInputPathFilter(new JobConf(hadoopConf, this.getClass))
+    val maxLeafFiles = if (partialListing) {
+      sparkSession.sessionState.conf.partialFileListingInitialCount
+    } else {
+      -1
+    }
     val discovered = InMemoryFileIndex.bulkListLeafFiles(
-      pathsToFetch.toSeq, hadoopConf, filter, sparkSession, parameters)
+      pathsToFetch.toSeq, hadoopConf, filter, sparkSession, parameters, maxLeafFiles)
     discovered.foreach { case (path, leafFiles) =>
       HiveCatalogMetrics.incrementFilesDiscovered(leafFiles.size)
       if (useFileStatusCache) {
@@ -159,7 +178,8 @@ object InMemoryFileIndex extends Logging {
       hadoopConf: Configuration,
       filter: PathFilter,
       sparkSession: SparkSession,
-      parameters: Map[String, String] = Map.empty): Seq[(Path, Seq[FileStatus])] = {
+      parameters: Map[String, String] = Map.empty,
+      maxLeafFiles: Int = -1): Seq[(Path, Seq[FileStatus])] = {
     val fileSystemList =
       sparkSession.sessionState.conf.useListFilesFileSystemList.split(",").map(_.trim)
     val fileSourceOptions = new FileSourceOptions(CaseInsensitiveMap(parameters))
@@ -176,7 +196,8 @@ object InMemoryFileIndex extends Logging {
         path = paths.head,
         hadoopConf = hadoopConf,
         filter = new PathFilterWrapper(filter),
-        ignoredPathSegmentRegex = ignoredPathSegmentRegex)
+        ignoredPathSegmentRegex = ignoredPathSegmentRegex,
+        maxLeafFiles = maxLeafFiles)
     } else {
       HadoopFSUtils.parallelListLeafFiles(
         sc = sparkSession.sparkContext,
@@ -187,7 +208,8 @@ object InMemoryFileIndex extends Logging {
         ignoredPathSegmentRegex = ignoredPathSegmentRegex,
         ignoreLocality = sparkSession.sessionState.conf.ignoreDataLocality,
         parallelismThreshold = sparkSession.sessionState.conf.parallelPartitionDiscoveryThreshold,
-        parallelismMax = sparkSession.sessionState.conf.parallelPartitionDiscoveryParallelism)
+        parallelismMax = sparkSession.sessionState.conf.parallelPartitionDiscoveryParallelism,
+        maxLeafFiles = maxLeafFiles)
     }
   }
 

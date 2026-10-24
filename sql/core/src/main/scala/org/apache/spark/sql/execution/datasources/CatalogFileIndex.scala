@@ -34,11 +34,14 @@ import org.apache.spark.sql.types.StructType
  * @param sparkSession a [[SparkSession]]
  * @param table the metadata of the table
  * @param sizeInBytes the table's data size in bytes
+ * @param partialListing when true, the [[InMemoryFileIndex]] built by `filterPartitions` caps its
+ *                        leaf-file listing. See `InMemoryFileIndex.partialListing`.
  */
 class CatalogFileIndex(
     sparkSession: SparkSession,
     val table: CatalogTable,
-    override val sizeInBytes: Long) extends FileIndex {
+    override val sizeInBytes: Long,
+    val partialListing: Boolean = false) extends FileIndex {
 
   protected val hadoopConf: Configuration = sparkSession.sessionState.newHadoopConf()
 
@@ -72,7 +75,12 @@ class CatalogFileIndex(
       val startTime = System.nanoTime()
       val selectedPartitions = ExternalCatalogUtils.listPartitionsByFilter(
         sparkSession.sessionState.conf, sparkSession.sessionState.catalog, table, filters)
-      val partitions = selectedPartitions.map { p =>
+      val partitionsToUse = if (partialListing) {
+        selectedPartitions.take(sparkSession.sessionState.conf.partialFileListingInitialCount)
+      } else {
+        selectedPartitions
+      }
+      val partitions = partitionsToUse.map { p =>
         val path = new Path(p.location)
         val fs = path.getFileSystem(hadoopConf)
         PartitionPath(
@@ -87,12 +95,18 @@ class CatalogFileIndex(
         userSpecifiedSchema = Some(partitionSpec.partitionColumns),
         fileStatusCache = fileStatusCache,
         userSpecifiedPartitionSpec = Some(partitionSpec),
-        metadataOpsTimeNs = Some(timeNs))
+        metadataOpsTimeNs = Some(timeNs),
+        partialListing = partialListing)
     } else {
       new InMemoryFileIndex(sparkSession, rootPaths, parameters = table.storage.properties,
-        userSpecifiedSchema = None, fileStatusCache = fileStatusCache)
+        userSpecifiedSchema = None, fileStatusCache = fileStatusCache,
+        partialListing = partialListing)
     }
   }
+
+  /** A copy of this index whose `filterPartitions` caps leaf-file listing. */
+  def partialListingCopy(): CatalogFileIndex =
+    new CatalogFileIndex(sparkSession, table, sizeInBytes, partialListing = true)
 
   override def inputFiles: Array[String] = filterPartitions(Nil).inputFiles
 

@@ -863,6 +863,26 @@ class FileIndexSuite extends SharedSparkSession {
     }
   }
 
+  test("InMemoryFileIndex: partialListingCopy caps files and bypasses the FileStatusCache") {
+    withTempDir { dir =>
+      (1 to 10).foreach(i => stringToFile(new File(dir, s"data$i.txt"), "data"))
+      val path = new Path(dir.getCanonicalPath)
+      val fileStatusCache = FileStatusCache.getOrCreate(spark)
+
+      // Populate the cache with the full listing.
+      val fullIndex = new InMemoryFileIndex(spark, Seq(path), Map.empty, None, fileStatusCache)
+      assert(fullIndex.allFiles().length === 10)
+
+      withSQLConf(SQLConf.PARTIAL_FILE_LISTING_INITIAL_COUNT.key -> "3") {
+        val partialIndex = new InMemoryFileIndex(
+          spark, Seq(path), Map.empty, None, fileStatusCache).partialListingCopy()
+        // Even though the cache already holds all 10 files, the partial copy caps its own
+        // listing instead of serving the cached full result.
+        assert(partialIndex.allFiles().length === 3)
+      }
+    }
+  }
+
   test("InMemoryFileIndex: metadata summary files are never data paths regardless of " +
     "ignoredPathSegmentRegex") {
     withTempDir { dir =>

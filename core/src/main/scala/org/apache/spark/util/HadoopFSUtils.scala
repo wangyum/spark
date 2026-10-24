@@ -72,7 +72,12 @@ private[spark] object HadoopFSUtils extends Logging {
    *                             sequential listing.
    * @param parallelismMax The maximum parallelism for listing. If the number of input paths is
    *                       larger than this value, parallelism will be throttled to this value
+   * @param parallelismMax The maximum parallelism for listing. If the number of input paths is
+   *                       larger than this value, parallelism will be throttled to this value
    *                       to avoid generating too many tasks.
+   * @param maxLeafFiles Caps the number of files returned per input path; a negative value means
+   *                     no cap. Listing stops descending into further directories once a path's
+   *                     share of the cap is met.
    * @return for each input path, the set of discovered files for the path
    */
   def parallelListLeafFiles(
@@ -84,10 +89,11 @@ private[spark] object HadoopFSUtils extends Logging {
     ignoredPathSegmentRegex: Pattern,
     ignoreLocality: Boolean,
     parallelismThreshold: Int,
-    parallelismMax: Int): Seq[(Path, Seq[FileStatus])] = {
+    parallelismMax: Int,
+    maxLeafFiles: Int = -1): Seq[(Path, Seq[FileStatus])] = {
     parallelListLeafFilesInternal(sc, paths, hadoopConf, filter, isRootLevel = true,
       ignoreMissingFiles, ignoredPathSegmentRegex, ignoreLocality, parallelismThreshold,
-      parallelismMax)
+      parallelismMax, maxLeafFiles)
   }
 
   /**
@@ -102,26 +108,32 @@ private[spark] object HadoopFSUtils extends Logging {
    * @param ignoredPathSegmentRegex Regex evaluated with find semantics against each directory and
    *                           file name below `path`; matching names are skipped. See
    *                           `shouldFilterOutPathName` for the carve-outs that always apply.
+   * @param maxLeafFiles Caps the number of files returned; a negative value means no cap.
    * @return  the set of discovered files for the path
    */
   def listFiles(
       path: Path,
       hadoopConf: Configuration,
       filter: PathFilter,
-      ignoredPathSegmentRegex: Pattern = defaultIgnoredPathSegmentRegexPattern)
+      ignoredPathSegmentRegex: Pattern = defaultIgnoredPathSegmentRegexPattern,
+      maxLeafFiles: Int = -1)
       : Seq[(Path, Seq[FileStatus])] = {
     logInfo(log"Listing ${MDC(PATH, path)} with listFiles API")
     try {
       val prefixLength = path.toString.length
       val remoteIter = path.getFileSystem(hadoopConf).listFiles(path, true)
-      val statues = new Iterator[LocatedFileStatus]() {
+      val baseIter = new Iterator[LocatedFileStatus]() {
         def next(): LocatedFileStatus = remoteIter.next
         def hasNext: Boolean = remoteIter.hasNext
       }.filterNot(status =>
         shouldFilterOutPath(
           status.getPath.toString.substring(prefixLength), ignoredPathSegmentRegex))
         .filter(f => filter.accept(f.getPath))
-        .toArray
+      val statues = if (maxLeafFiles >= 0) {
+        baseIter.take(maxLeafFiles).toArray
+      } else {
+        baseIter.toArray
+      }
       Seq((path, statues.toImmutableArraySeq))
     } catch {
       case _: FileNotFoundException =>
@@ -141,22 +153,31 @@ private[spark] object HadoopFSUtils extends Logging {
       ignoredPathSegmentRegex: Pattern,
       ignoreLocality: Boolean,
       parallelismThreshold: Int,
-      parallelismMax: Int): Seq[(Path, Seq[FileStatus])] = {
+      parallelismMax: Int,
+      maxLeafFiles: Int = -1): Seq[(Path, Seq[FileStatus])] = {
 
     // Short-circuits parallel listing when serial listing is likely to be faster.
     if (paths.size <= parallelismThreshold) {
+      var remaining = maxLeafFiles
       return paths.map { path =>
-        val leafFiles = listLeafFiles(
-          path,
-          hadoopConf,
-          filter,
-          Some(sc),
-          ignoreMissingFiles = ignoreMissingFiles,
-          ignoredPathSegmentRegex = ignoredPathSegmentRegex,
-          ignoreLocality = ignoreLocality,
-          isRootPath = isRootLevel,
-          parallelismThreshold = parallelismThreshold,
-          parallelismMax = parallelismMax)
+        val leafFiles = if (maxLeafFiles >= 0 && remaining <= 0) {
+          Seq.empty[FileStatus]
+        } else {
+          val files = listLeafFiles(
+            path,
+            hadoopConf,
+            filter,
+            Some(sc),
+            ignoreMissingFiles = ignoreMissingFiles,
+            ignoredPathSegmentRegex = ignoredPathSegmentRegex,
+            ignoreLocality = ignoreLocality,
+            isRootPath = isRootLevel,
+            parallelismThreshold = parallelismThreshold,
+            parallelismMax = parallelismMax,
+            maxLeafFiles = remaining)
+          if (maxLeafFiles >= 0) remaining -= files.length
+          files
+        }
         (path, leafFiles)
       }
     }
@@ -197,7 +218,8 @@ private[spark] object HadoopFSUtils extends Logging {
               ignoreLocality = ignoreLocality,
               isRootPath = isRootLevel,
               parallelismThreshold = Int.MaxValue,
-              parallelismMax = 0)
+              parallelismMax = 0,
+              maxLeafFiles = maxLeafFiles)
             (path, leafFiles)
           }
         }.collect().toImmutableArraySeq
@@ -213,6 +235,8 @@ private[spark] object HadoopFSUtils extends Logging {
    *
    * If sessionOpt is None, this may be called on executors.
    *
+   * @param maxLeafFiles Caps the number of files returned from this path; a negative value means
+   *                     no cap. Once the cap is met, no further subdirectories are listed.
    * @return all children of path that match the specified filter.
    */
   private def listLeafFiles(
@@ -225,7 +249,8 @@ private[spark] object HadoopFSUtils extends Logging {
       ignoreLocality: Boolean,
       isRootPath: Boolean,
       parallelismThreshold: Int,
-      parallelismMax: Int): Seq[FileStatus] = {
+      parallelismMax: Int,
+      maxLeafFiles: Int = -1): Seq[FileStatus] = {
 
     logTrace(s"Listing $path")
     val fs = path.getFileSystem(hadoopConf)
@@ -285,40 +310,61 @@ private[spark] object HadoopFSUtils extends Logging {
 
     val allLeafStatuses = {
       val (dirs, topLevelFiles) = filteredStatuses.partition(_.isDirectory)
-      val filteredNestedFiles: Seq[FileStatus] = contextOpt match {
-        case Some(context) if dirs.length > parallelismThreshold =>
-          parallelListLeafFilesInternal(
-            context,
-            dirs.map(_.getPath).toImmutableArraySeq,
-            hadoopConf = hadoopConf,
-            filter = filter,
-            isRootLevel = false,
-            ignoreMissingFiles = ignoreMissingFiles,
-            ignoredPathSegmentRegex = ignoredPathSegmentRegex,
-            ignoreLocality = ignoreLocality,
-            parallelismThreshold = parallelismThreshold,
-            parallelismMax = parallelismMax
-          ).flatMap(_._2)
-        case _ =>
-          dirs.flatMap { dir =>
-            listLeafFiles(
-              path = dir.getPath,
-              hadoopConf = hadoopConf,
-              filter = filter,
-              contextOpt = contextOpt,
-              ignoreMissingFiles = ignoreMissingFiles,
-              ignoredPathSegmentRegex = ignoredPathSegmentRegex,
-              ignoreLocality = ignoreLocality,
-              isRootPath = false,
-              parallelismThreshold = parallelismThreshold,
-              parallelismMax = parallelismMax)
-          }.toImmutableArraySeq
-      }
-      val filteredTopLevelFiles = if (filter != null) {
+      val filteredTopLevelFilesAll = if (filter != null) {
         topLevelFiles.filter(f => filter.accept(f.getPath))
       } else {
         topLevelFiles
       }
+      val filteredTopLevelFiles = if (maxLeafFiles >= 0) {
+        filteredTopLevelFilesAll.take(maxLeafFiles)
+      } else {
+        filteredTopLevelFilesAll
+      }
+      val remainingAfterTopLevel =
+        if (maxLeafFiles < 0) -1 else maxLeafFiles - filteredTopLevelFiles.length
+      val filteredNestedFiles: Seq[FileStatus] =
+        if (maxLeafFiles >= 0 && remainingAfterTopLevel <= 0) {
+          Seq.empty
+        } else {
+          contextOpt match {
+            case Some(context) if dirs.length > parallelismThreshold =>
+              parallelListLeafFilesInternal(
+                context,
+                dirs.map(_.getPath).toImmutableArraySeq,
+                hadoopConf = hadoopConf,
+                filter = filter,
+                isRootLevel = false,
+                ignoreMissingFiles = ignoreMissingFiles,
+                ignoredPathSegmentRegex = ignoredPathSegmentRegex,
+                ignoreLocality = ignoreLocality,
+                parallelismThreshold = parallelismThreshold,
+                parallelismMax = parallelismMax,
+                maxLeafFiles = remainingAfterTopLevel
+              ).flatMap(_._2)
+            case _ =>
+              var remaining = remainingAfterTopLevel
+              dirs.toSeq.flatMap { dir =>
+                if (maxLeafFiles >= 0 && remaining <= 0) {
+                  Seq.empty[FileStatus]
+                } else {
+                  val found = listLeafFiles(
+                    path = dir.getPath,
+                    hadoopConf = hadoopConf,
+                    filter = filter,
+                    contextOpt = contextOpt,
+                    ignoreMissingFiles = ignoreMissingFiles,
+                    ignoredPathSegmentRegex = ignoredPathSegmentRegex,
+                    ignoreLocality = ignoreLocality,
+                    isRootPath = false,
+                    parallelismThreshold = parallelismThreshold,
+                    parallelismMax = parallelismMax,
+                    maxLeafFiles = remaining)
+                  if (maxLeafFiles >= 0) remaining -= found.length
+                  found
+                }
+              }
+          }
+        }
       filteredTopLevelFiles ++ filteredNestedFiles
     }
 

@@ -188,6 +188,56 @@ class HadoopFSUtilsSuite extends SparkFunSuite {
       }
     }
   }
+
+  test("parallelListLeafFiles - maxLeafFiles caps the number of files returned") {
+    withTempDir { root =>
+      (1 to 10).foreach { i =>
+        Files.write(new File(root, s"file$i.parquet").toPath, "content".getBytes)
+      }
+      val hadoopConf = new Configuration()
+      withSpark(new SparkContext("local", "HadoopFSUtilsSuite")) { sc =>
+        val listing = HadoopFSUtils.parallelListLeafFiles(
+          sc,
+          Seq(new Path(root.getCanonicalPath)),
+          hadoopConf,
+          acceptAllFilter,
+          ignoreMissingFiles = false,
+          ignoredPathSegmentRegex = HadoopFSUtils.defaultIgnoredPathSegmentRegexPattern,
+          ignoreLocality = true,
+          // Large threshold so the serial short-circuit path is exercised.
+          parallelismThreshold = Int.MaxValue,
+          parallelismMax = 1,
+          maxLeafFiles = 3)
+        assert(leafFileNames(listing).size === 3)
+      }
+    }
+  }
+
+  test("parallelListLeafFiles - maxLeafFiles is shared across sibling directories") {
+    withTempDir { root =>
+      val dir1 = new File(root, "dir1")
+      val dir2 = new File(root, "dir2")
+      assert(dir1.mkdir() && dir2.mkdir())
+      (1 to 5).foreach(i => Files.write(new File(dir1, s"a$i.parquet").toPath, "x".getBytes))
+      (1 to 5).foreach(i => Files.write(new File(dir2, s"b$i.parquet").toPath, "x".getBytes))
+      val hadoopConf = new Configuration()
+      withSpark(new SparkContext("local", "HadoopFSUtilsSuite")) { sc =>
+        val listing = HadoopFSUtils.parallelListLeafFiles(
+          sc,
+          Seq(new Path(root.getCanonicalPath)),
+          hadoopConf,
+          acceptAllFilter,
+          ignoreMissingFiles = false,
+          ignoredPathSegmentRegex = HadoopFSUtils.defaultIgnoredPathSegmentRegexPattern,
+          ignoreLocality = true,
+          parallelismThreshold = Int.MaxValue,
+          parallelismMax = 1,
+          maxLeafFiles = 7)
+        // The cap is honored across both sibling directories combined, not per directory.
+        assert(leafFileNames(listing).size === 7)
+      }
+    }
+  }
 }
 
 private object AcceptAllPathFilter extends PathFilter with Serializable {

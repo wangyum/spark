@@ -18,6 +18,7 @@
 package org.apache.spark.sql.execution
 
 import org.apache.spark.TaskContext
+import org.apache.spark.internal.LogKeys.{COUNT, NUM_ROWS}
 import org.apache.spark.rdd.{ParallelCollectionRDD, RDD}
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.InternalRow
@@ -52,13 +53,43 @@ case class CollectLimitExec(limit: Int = -1, child: SparkPlan, offset: Int = 0) 
   override def outputPartitioning: Partitioning = SinglePartition
   override def executeCollect(): Array[InternalRow] = {
     if (limit >= 0) {
-      if (offset > 0) {
-        child.executeTake(limit).drop(offset)
+      val rows = if (canUsePartialFileListing) {
+        executeCollectWithPartialListing(limit)
       } else {
         child.executeTake(limit)
       }
+      if (offset > 0) rows.drop(offset) else rows
     } else {
       child.executeCollect().drop(offset)
+    }
+  }
+
+  private def canUsePartialFileListing: Boolean = {
+    conf.partialFileListingEnabled && isSupportedChild(child)
+  }
+
+  private def isSupportedChild(plan: SparkPlan): Boolean = plan match {
+    case scan: FileSourceScanExec => scan.isPartialFileListing
+    case p: ProjectExec => isSupportedChild(p.child)
+    case w: WholeStageCodegenExec => isSupportedChild(w.child)
+    case c: ColumnarToRowExec => isSupportedChild(c.child)
+    case i: InputAdapter => isSupportedChild(i.child)
+    case _ => false
+  }
+
+  private def executeCollectWithPartialListing(n: Int): Array[InternalRow] = {
+    val fastChild = child.transformUp {
+      case scan: FileSourceScanExec if scan.isPartialFileListing =>
+        scan.partialListingScan
+    }
+    val fastRows = fastChild.executeTake(n)
+    if (fastRows.length >= n) {
+      fastRows
+    } else {
+      logInfo(log"Partial file listing collected ${MDC(COUNT, fastRows.length)} " +
+        log"rows, which is less than requested limit ${MDC(NUM_ROWS, n)}. " +
+        log"Falling back to full execution.")
+      child.executeTake(n)
     }
   }
   private val serializer: Serializer = new UnsafeRowSerializer(child.output.size)

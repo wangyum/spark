@@ -329,16 +329,32 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
   // it additionally passes the file count and size thresholds (see `useSingleTaskExecution`).
   def markedForSingleTaskExecution: Boolean
 
+  // When true, the `MarkPartialFileListing` optimizer rule has marked this scan's plan shape as a
+  // candidate for partial file listing. See `isPartialFileListing`.
+  def markedForPartialFileListing: Boolean
+
+  /**
+   * Whether this scan can list only a small number of files up front instead of every file under
+   * the table for a limit-only query.
+   */
+  // exposed for testing
+  lazy val isPartialFileListing: Boolean = {
+    markedForPartialFileListing && !bucketedScan && partitionFilters.isEmpty &&
+      dataFilters.isEmpty
+  }
+
   /**
    * Whether this file scan should run in a single task, reporting a `SinglePartition` output
    * partitioning so that a following shuffle can be elided. This is true when the plan shape was
    * marked eligible by the optimizer and the statically-selected files fall within the configured
    * count and size bounds. Bucketed scans are excluded: they report a `HashPartitioning` over the
-   * bucket columns, which coalescing to a single partition would invalidate. It relies on
-   * `selectedPartitions`, so it must not be evaluated before the scan's file listing is available.
+   * bucket columns, which coalescing to a single partition would invalidate. A scan using partial
+   * file listing is also excluded: single-task execution needs an accurate file count, which a
+   * capped listing does not have. It relies on `selectedPartitions`, so it must not be evaluated
+   * before the scan's file listing is available.
    */
   lazy val useSingleTaskExecution: Boolean = {
-    if (!markedForSingleTaskExecution || bucketedScan) {
+    if (!markedForSingleTaskExecution || bucketedScan || isPartialFileListing) {
       false
     } else {
       val sqlConf = getSqlConf(relation.sparkSession)
@@ -744,7 +760,8 @@ case class FileSourceScanExec(
     override val tableIdentifier: Option[TableIdentifier],
     override val disableBucketedScan: Boolean = false,
     override val markedForSingleTaskExecution: Boolean = false,
-    override val storageFilters: Seq[Expression] = Nil)
+    override val storageFilters: Seq[Expression] = Nil,
+    override val markedForPartialFileListing: Boolean = false)
   extends FileSourceScanLike {
 
   // Note that some vals referring the file-based relation are lazy intentionally
@@ -1000,6 +1017,17 @@ case class FileSourceScanExec(
       new FileSourceOptions(CaseInsensitiveMap(relation.options)))
   }
 
+  /** Creates a copy of this scan whose file index caps its listing for partial file listing. */
+  def partialListingScan: FileSourceScanExec = {
+    val partialLocation = relation.location match {
+      case c: CatalogFileIndex => c.partialListingCopy()
+      case i: InMemoryFileIndex => i.partialListingCopy()
+      case other => other
+    }
+    val partialRelation = relation.copy(location = partialLocation)(relation.sparkSession)
+    copy(relation = partialRelation)
+  }
+
   // Filters unused DynamicPruningExpression expressions - one which has been replaced
   // with DynamicPruningExpression(Literal.TrueLiteral) during Physical Planning
   private def filterUnusedDynamicPruningExpressions(
@@ -1023,7 +1051,8 @@ case class FileSourceScanExec(
       None,
       disableBucketedScan,
       markedForSingleTaskExecution,
-      QueryPlan.normalizePredicates(storageFilters, output))
+      QueryPlan.normalizePredicates(storageFilters, output),
+      markedForPartialFileListing)
   }
 
   override def getStream: Option[SparkDataStream] = stream
