@@ -119,8 +119,19 @@ class CatalogFileIndex(
         val (pushableFilters, postFilters) = splitPartitionFilters(filters)
         val selectedPartitions = ExternalCatalogUtils.listPartitionsByFilter(
           sparkSession.sessionState.conf, sparkSession.sessionState.catalog, table, pushableFilters)
+        val timeZone = sparkSession.sessionState.conf.sessionLocalTimeZone
+        val filtered = if (postFilters.nonEmpty) {
+          val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
+            postFilters.reduce(And), partitionSchema)
+          selectedPartitions.flatMap { p =>
+            val row = p.toRow(partitionSchema, timeZone)
+            if (boundPredicate.eval(row)) Some((row, p)) else None
+          }
+        } else {
+          selectedPartitions.map(p => (p.toRow(partitionSchema, timeZone), p))
+        }
         var cachedFs: FileSystem = null
-        val partitions = selectedPartitions.map { p =>
+        val partitions = filtered.map { case (row, p) =>
           val path = new Path(p.location)
           val uri = path.toUri
           val fs = if (cachedFs != null &&
@@ -131,13 +142,9 @@ class CatalogFileIndex(
             cachedFs = path.getFileSystem(hadoopConf)
             cachedFs
           }
-          PartitionPath(
-            p.toRow(partitionSchema, sparkSession.sessionState.conf.sessionLocalTimeZone),
-            path.makeQualified(fs.getUri, fs.getWorkingDirectory))
+          PartitionPath(row, path.makeQualified(fs.getUri, fs.getWorkingDirectory))
         }
-        val spec = PartitionSpec(partitionSchema, partitions)
-        val pruned = PartitioningAwareFileIndex.prunePartitions(postFilters, spec)
-        (pruned, System.nanoTime() - startTime)
+        (PartitionSpec(partitionSchema, partitions), System.nanoTime() - startTime)
       case _ =>
         (PartitionSpec(partitionSchema, Nil), 0L)
     }
