@@ -20,7 +20,7 @@ package org.apache.spark.sql.hive.execution
 import org.apache.spark.sql.{QueryTest, Row}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
-import org.apache.spark.sql.execution.datasources.CatalogFileIndex
+import org.apache.spark.sql.execution.datasources.{CatalogFileIndex, InMemoryFileIndex}
 import org.apache.spark.sql.hive.test.TestHiveSingleton
 import org.apache.spark.sql.test.SQLTestUtils
 
@@ -138,7 +138,7 @@ class LazyFileIndexSuite extends QueryTest with SQLTestUtils with TestHiveSingle
       val scan = findFileSourceScan(sqlStr, "a")
       // The subquery is folded into a literal during optimization, so the filter is static
       // and it is eagerly materialized as an InMemoryFileIndex.
-      assert(scan.relation.location.isInstanceOf[org.apache.spark.sql.execution.datasources.InMemoryFileIndex])
+      assert(scan.relation.location.isInstanceOf[InMemoryFileIndex])
       assert(listedFilesCount(scan) == 1)
     }
   }

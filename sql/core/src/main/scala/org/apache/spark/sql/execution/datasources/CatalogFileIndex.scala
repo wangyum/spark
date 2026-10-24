@@ -65,7 +65,19 @@ class CatalogFileIndex(
 
   override def listFiles(
       partitionFilters: Seq[Expression], dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
-    filterPartitions(partitionFilters).listFiles(Nil, dataFilters)
+    val (spec, _) = listPartitionSpec(partitionFilters)
+    if (spec.partitions.isEmpty) {
+      Nil
+    } else {
+      new InMemoryFileIndex(
+        sparkSession,
+        rootPathsSpecified = spec.partitions.map(_.path),
+        parameters = Map.empty,
+        userSpecifiedSchema = Some(partitionSchema),
+        fileStatusCache = fileStatusCache,
+        userSpecifiedPartitionSpec = Some(spec),
+        metadataOpsTimeNs = metadataOpsTimeNs).listFiles(Nil, dataFilters)
+    }
   }
 
   override def refresh(): Unit = fileStatusCache.invalidateAll()
@@ -116,8 +128,9 @@ class CatalogFileIndex(
         val pruned = prunePartitionSpec(filters, spec)
         (pruned, System.nanoTime() - startTime)
       case None if table.partitionColumnNames.nonEmpty =>
+        val (pushableFilters, postFilters) = splitPartitionFilters(filters)
         val selectedPartitions = ExternalCatalogUtils.listPartitionsByFilter(
-          sparkSession.sessionState.conf, sparkSession.sessionState.catalog, table, filters)
+          sparkSession.sessionState.conf, sparkSession.sessionState.catalog, table, pushableFilters)
         val partitions = selectedPartitions.map { p =>
           val path = new Path(p.location)
           val fs = path.getFileSystem(hadoopConf)
@@ -125,43 +138,36 @@ class CatalogFileIndex(
             p.toRow(partitionSchema, sparkSession.sessionState.conf.sessionLocalTimeZone),
             path.makeQualified(fs.getUri, fs.getWorkingDirectory))
         }
-        (PartitionSpec(partitionSchema, partitions), System.nanoTime() - startTime)
+        val spec = PartitionSpec(partitionSchema, partitions)
+        val pruned = prunePartitionSpec(postFilters, spec)
+        (pruned, System.nanoTime() - startTime)
       case _ =>
         (PartitionSpec(partitionSchema, Nil), 0L)
+    }
+  }
+
+  private def splitPartitionFilters(
+      filters: Seq[Expression]): (Seq[Expression], Seq[Expression]) = {
+    filters.partition { f =>
+      f.deterministic &&
+        !SubqueryExpression.hasSubquery(f) &&
+        !f.exists(_.isInstanceOf[PlanExpression[_]]) &&
+        !f.exists(_.isInstanceOf[PythonUDF])
     }
   }
 
   private def prunePartitionSpec(
       filters: Seq[Expression],
       spec: PartitionSpec): PartitionSpec = {
-    filters.reduceOption(And).map { filter =>
+    if (filters.isEmpty || spec.partitions.isEmpty) {
+      spec
+    } else {
       val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
-        filter, spec.partitionColumns)
+        filters.reduce(And), spec.partitionColumns)
       val selected = spec.partitions.filter {
         case PartitionPath(values, _) => boundPredicate.eval(values)
       }
       PartitionSpec(spec.partitionColumns, selected)
-    }.getOrElse(spec)
-  }
-
-  /**
-   * Lists physical files on storage for only the given subset of partitions.
-   */
-  def listFilesForPartitions(
-      partitions: Seq[PartitionPath],
-      dataFilters: Seq[Expression]): Seq[PartitionDirectory] = {
-    if (partitions.isEmpty) {
-      Nil
-    } else {
-      val spec = PartitionSpec(partitionSchema, partitions)
-      new InMemoryFileIndex(
-        sparkSession,
-        rootPathsSpecified = partitions.map(_.path),
-        parameters = Map.empty,
-        userSpecifiedSchema = Some(partitionSchema),
-        fileStatusCache = fileStatusCache,
-        userSpecifiedPartitionSpec = Some(spec),
-        metadataOpsTimeNs = metadataOpsTimeNs).listFiles(Nil, dataFilters)
     }
   }
 

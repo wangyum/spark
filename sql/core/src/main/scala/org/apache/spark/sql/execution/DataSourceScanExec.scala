@@ -338,8 +338,14 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
    * `selectedPartitions`, so it must not be evaluated before the scan's file listing is available.
    */
   lazy val useSingleTaskExecution: Boolean = {
-    if (!markedForSingleTaskExecution || bucketedScan ||
+    if (!markedForSingleTaskExecution || bucketedScan) {
+      false
+    } else if (relation.location.isInstanceOf[CatalogFileIndex] &&
         partitionFilters.exists(isDynamicPruningFilter)) {
+      // The file counts are not known during planning: a dynamic partition filter decides
+      // them at execution (see `selectedPartitions`). The scan cannot be judged against the
+      // count bounds, and not merging into a single task is the price of not listing the
+      // partitions that the filter later discards.
       false
     } else {
       val sqlConf = getSqlConf(relation.sparkSession)
@@ -437,20 +443,14 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
 
     if (dynamicPartitionFilters.nonEmpty) {
       val startTime = System.nanoTime()
-      val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
-        dynamicPartitionFilters.reduce(And), relation.partitionSchema)
-
       val fileListing: ScanFileListing = relation.location match {
         case catalogIndex: CatalogFileIndex =>
-          val staticPartitionFilters = partitionFilters.filterNot(isDynamicPruningFilter)
-          val (candidateSpec, _) = catalogIndex.listPartitionSpec(staticPartitionFilters)
-          val survivingPartitions = candidateSpec.partitions.filter {
-            case PartitionPath(values, _) => boundPredicate.eval(values)
-          }
-          val partitionDirs =
-            catalogIndex.listFilesForPartitions(survivingPartitions, dataFilters)
-          GenericScanFileListing(partitionDirs.toArray)
+          val partitionDirectories =
+            catalogIndex.listFiles(partitionFilters, dataFilters)
+          GenericScanFileListing(partitionDirectories.toArray)
         case _ =>
+          val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
+            dynamicPartitionFilters.reduce(And), relation.partitionSchema)
           // Call the file index for the files matching all filters except dynamic partition filters
           selectedPartitions.filterAndPruneFiles(boundPredicate, dynamicDataFilters)
       }

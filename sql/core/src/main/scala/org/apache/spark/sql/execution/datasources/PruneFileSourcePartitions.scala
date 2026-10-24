@@ -32,10 +32,6 @@ import org.apache.spark.sql.types.StructType
  * For [[HadoopFsRelation]], the location will be replaced by pruned file index, and corresponding
  * statistics will be updated. And the partition filters will be kept in the filters of returned
  * logical plan.
- *
- * When partition filters include subqueries on partition columns, the catalog partition spec
- * is pruned without listing physical files on storage. The storage file listing is deferred to
- * physical execution time in [[FileSourceScanLike.dynamicallySelectedPartitions]].
  */
 private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
 
@@ -53,9 +49,7 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
   }
 
   /**
-   * Whether `filters` contains a deterministic subquery filter on partition columns. Such a
-   * filter is only evaluated at execution time, so the partition set can still narrow after
-   * this rule ran, which is what makes deferring the file listing worthwhile.
+   * Whether `filters` contains a deterministic subquery filter on partition columns.
    */
   private[sql] def hasSubqueryPartitionFilters(
       filters: Seq[Expression],
@@ -97,7 +91,6 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
         logicalRelation.output)
       val (partitionKeyFilters, _) = DataSourceUtils
         .getPartitionFiltersAndDataFilters(partitionSchema, normalizedFilters)
-
       val hasSubquery = hasSubqueryPartitionFilters(filters, logicalRelation, partitionSchema)
       if (hasSubquery) {
         if (partitionKeyFilters.nonEmpty) {
@@ -108,13 +101,7 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
               catalogFileIndex.filterPartitionsWithoutListing(partitionKeyFilters)
             val prunedFsRelation =
               fsRelation.copy(location = prunedFileIndex)(fsRelation.sparkSession)
-            val newStats = logicalRelation.catalogTable.map(_.stats match {
-              case Some(stats) => stats.copy(sizeInBytes = BigInt(prunedFileIndex.sizeInBytes))
-              case _ => CatalogStatistics(sizeInBytes = BigInt(prunedFileIndex.sizeInBytes))
-            })
-            val withStats = logicalRelation.catalogTable.map(_.copy(stats = newStats))
-            val prunedLogicalRelation = logicalRelation.copy(
-              relation = prunedFsRelation, catalogTable = withStats)
+            val prunedLogicalRelation = logicalRelation.copy(relation = prunedFsRelation)
             rebuildPhysicalOperation(projects, filters, prunedLogicalRelation)
           }
         } else {
