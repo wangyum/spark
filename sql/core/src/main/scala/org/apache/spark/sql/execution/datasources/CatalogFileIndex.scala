@@ -20,7 +20,7 @@ package org.apache.spark.sql.execution.datasources
 import java.net.URI
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.{FileSystem, Path}
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, ExternalCatalogUtils}
@@ -82,6 +82,10 @@ class CatalogFileIndex(
 
   override def refresh(): Unit = fileStatusCache.invalidateAll()
 
+  override def shouldDeferListing(partitionFilters: Seq[Expression]): Boolean = {
+    partitionFilters.exists(_.exists(_.isInstanceOf[PlanExpression[_]]))
+  }
+
   /**
    * Returns a [[InMemoryFileIndex]] for this table restricted to the subset of partitions
    * specified by the given partition-pruning filters.
@@ -131,9 +135,18 @@ class CatalogFileIndex(
         val (pushableFilters, postFilters) = splitPartitionFilters(filters)
         val selectedPartitions = ExternalCatalogUtils.listPartitionsByFilter(
           sparkSession.sessionState.conf, sparkSession.sessionState.catalog, table, pushableFilters)
+        var cachedFs: FileSystem = null
         val partitions = selectedPartitions.map { p =>
           val path = new Path(p.location)
-          val fs = path.getFileSystem(hadoopConf)
+          val uri = path.toUri
+          val fs = if (cachedFs != null &&
+              (uri.getScheme == null || uri.getScheme == cachedFs.getScheme) &&
+              (uri.getAuthority == null || uri.getAuthority == cachedFs.getUri.getAuthority)) {
+            cachedFs
+          } else {
+            cachedFs = path.getFileSystem(hadoopConf)
+            cachedFs
+          }
           PartitionPath(
             p.toRow(partitionSchema, sparkSession.sessionState.conf.sessionLocalTimeZone),
             path.makeQualified(fs.getUri, fs.getWorkingDirectory))
@@ -159,16 +172,7 @@ class CatalogFileIndex(
   private def prunePartitionSpec(
       filters: Seq[Expression],
       spec: PartitionSpec): PartitionSpec = {
-    if (filters.isEmpty || spec.partitions.isEmpty) {
-      spec
-    } else {
-      val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
-        filters.reduce(And), spec.partitionColumns)
-      val selected = spec.partitions.filter {
-        case PartitionPath(values, _) => boundPredicate.eval(values)
-      }
-      PartitionSpec(spec.partitionColumns, selected)
-    }
+    PartitioningAwareFileIndex.prunePartitions(filters, spec)
   }
 
   override def inputFiles: Array[String] = filterPartitions(Nil).inputFiles

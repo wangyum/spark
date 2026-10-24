@@ -191,27 +191,7 @@ abstract class PartitioningAwareFileIndex(
     val partitionPruningPredicates = predicates.filter {
       _.references.map(_.name).toSet.subsetOf(partitionColumnNames)
     }
-
-    if (partitionPruningPredicates.nonEmpty) {
-      val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
-        partitionPruningPredicates.reduce(expressions.And),
-        partitionSpec.partitionColumns)
-
-      val selected = partitionSpec.partitions.filter {
-        case PartitionPath(values, _) => boundPredicate.eval(values)
-      }
-      logInfo {
-        val total = partitionSpec.partitions.length
-        val selectedSize = selected.length
-        val percentPruned = (1 - selectedSize.toDouble / total.toDouble) * 100
-        log"Selected ${MDC(COUNT, selectedSize)} partitions out of ${MDC(TOTAL, total)}, " +
-          log"pruned ${MDC(PERCENT, if (total == 0) "0" else percentPruned)} partitions."
-      }
-
-      selected
-    } else {
-      partitionSpec.partitions
-    }
+    PartitioningAwareFileIndex.prunePartitions(partitionPruningPredicates, partitionSpec).partitions
   }
 
   /**
@@ -280,7 +260,7 @@ abstract class PartitioningAwareFileIndex(
   }
 }
 
-object PartitioningAwareFileIndex {
+object PartitioningAwareFileIndex extends Logging {
 
   /**
    * Binds `predicate` to the partition values of `partitionColumns` by attribute name, so it
@@ -297,5 +277,31 @@ object PartitioningAwareFileIndex {
         val index = partitionColumns.indexWhere(a.name == _.name)
         BoundReference(index, partitionColumns(index).dataType, nullable = true)
     })
+  }
+
+  /**
+   * Evaluates partition predicates against `partitionSpec.partitions` in memory and returns
+   * the pruned [[PartitionSpec]].
+   */
+  private[sql] def prunePartitions(
+      predicates: Seq[Expression],
+      partitionSpec: PartitionSpec): PartitionSpec = {
+    if (predicates.isEmpty || partitionSpec.partitions.isEmpty) {
+      partitionSpec
+    } else {
+      val boundPredicate = bindPartitionPredicate(
+        predicates.reduce(expressions.And), partitionSpec.partitionColumns)
+      val selected = partitionSpec.partitions.filter {
+        case PartitionPath(values, _) => boundPredicate.eval(values)
+      }
+      logInfo {
+        val total = partitionSpec.partitions.length
+        val selectedSize = selected.length
+        val percentPruned = (1 - selectedSize.toDouble / total.toDouble) * 100
+        log"Selected ${MDC(COUNT, selectedSize)} partitions out of ${MDC(TOTAL, total)}, " +
+          log"pruned ${MDC(PERCENT, if (total == 0) "0" else percentPruned)} partitions."
+      }
+      PartitionSpec(partitionSpec.partitionColumns, selected)
+    }
   }
 }
