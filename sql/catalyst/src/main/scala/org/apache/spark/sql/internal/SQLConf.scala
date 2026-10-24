@@ -2945,27 +2945,7 @@ object SQLConf {
       .transform(_.toLowerCase(Locale.ROOT))
       .createWithDefault("s3a")
 
-  val PARTIAL_FILE_LISTING_ENABLED =
-    buildConf("spark.sql.sources.partialFileListing.enabled")
-      .doc("When true, a limit-only query (a LIMIT with no filter, sort, or aggregation above " +
-        "an unbucketed file-based scan) lists only a small number of files up front instead of " +
-        "every file under the table, listing more only if the limit is not already satisfied.")
-      .version("5.0.0")
-      .internal()
-      .booleanConf
-      .createWithDefault(false)
-
-  val PARTIAL_FILE_LISTING_INITIAL_COUNT =
-    buildConf("spark.sql.sources.partialFileListing.initialFileCount")
-      .doc("The number of files to list up front for a limit-only query when " +
-        s"${PARTIAL_FILE_LISTING_ENABLED.key} is true.")
-      .version("5.0.0")
-      .internal()
-      .intConf
-      .checkValue(_ > 0, "The initial file count for partial file listing must be positive")
-      .createWithDefault(5)
-
-  // Whether to automatically resolve ambiguity in join conditions for self-joins.
+·  // Whether to automatically resolve ambiguity in join conditions for self-joins.
   // See SPARK-6231.
   val DATAFRAME_SELF_JOIN_AUTO_RESOLVE_AMBIGUITY =
     buildConf("spark.sql.selfJoinAutoResolveAmbiguity")
@@ -9805,10 +9785,6 @@ class SQLConf extends Serializable with Logging with SqlApiConf {
 
   def parallelPartitionDiscoveryParallelism: Int =
     getConf(SQLConf.PARALLEL_PARTITION_DISCOVERY_PARALLELISM)
-
-  def partialFileListingEnabled: Boolean = getConf(SQLConf.PARTIAL_FILE_LISTING_ENABLED)
-
-  def partialFileListingInitialCount: Int = getConf(SQLConf.PARTIAL_FILE_LISTING_INITIAL_COUNT)
 
   def bucketingEnabled: Boolean = getConf(SQLConf.BUCKETING_ENABLED)
 

@@ -17,8 +17,11 @@
 
 package org.apache.spark.sql.execution
 
+import scala.collection.mutable
+
+import org.apache.hadoop.fs.Path
+
 import org.apache.spark.TaskContext
-import org.apache.spark.internal.LogKeys.{COUNT, NUM_ROWS}
 import org.apache.spark.rdd.{ParallelCollectionRDD, RDD}
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.InternalRow
@@ -65,7 +68,7 @@ case class CollectLimitExec(limit: Int = -1, child: SparkPlan, offset: Int = 0) 
   }
 
   private def canUsePartialFileListing: Boolean = {
-    conf.partialFileListingEnabled && isSupportedChild(child)
+    isSupportedChild(child)
   }
 
   private def isSupportedChild(plan: SparkPlan): Boolean = plan match {
@@ -77,20 +80,50 @@ case class CollectLimitExec(limit: Int = -1, child: SparkPlan, offset: Int = 0) 
     case _ => false
   }
 
+  private def findPartialScan(plan: SparkPlan): Option[FileSourceScanExec] = plan match {
+    case scan: FileSourceScanExec if scan.isPartialFileListing => Some(scan)
+    case p: ProjectExec => findPartialScan(p.child)
+    case w: WholeStageCodegenExec => findPartialScan(w.child)
+    case c: ColumnarToRowExec => findPartialScan(c.child)
+    case i: InputAdapter => findPartialScan(i.child)
+    case _ => None
+  }
+
   private def executeCollectWithPartialListing(n: Int): Array[InternalRow] = {
-    val fastChild = child.transformUp {
-      case scan: FileSourceScanExec if scan.isPartialFileListing =>
-        scan.partialListingScan
+    val scan = findPartialScan(child).get
+    val initialBatchSize = scan.estimateInitialFiles(n)
+    val scaleFactor = 4
+    val maxBatchSize = 1000
+
+    val buf = new mutable.ArrayBuffer[InternalRow]()
+    val seenFiles = new mutable.HashSet[Path]()
+    var currentBatchSize = initialBatchSize
+    var hasMoreFiles = true
+
+    while (buf.length < n && hasMoreFiles) {
+      val needed = n - buf.length
+      val fastChild = child.transformUp {
+        case s: FileSourceScanExec if s.isPartialFileListing =>
+          s.partialListingScan(currentBatchSize, seenFiles.toSet)
+      }
+      val currentScan = findPartialScan(fastChild).get
+      val discoveredFiles = currentScan.selectedPartitions.toPartitionArray.map(_.toPath)
+
+      if (discoveredFiles.isEmpty) {
+        hasMoreFiles = false
+      } else {
+        seenFiles ++= discoveredFiles
+        val batchRows = fastChild.executeTake(needed)
+        buf ++= batchRows
+        if (discoveredFiles.length < currentBatchSize) {
+          hasMoreFiles = false
+        } else {
+          currentBatchSize = Math.min(currentBatchSize * scaleFactor, maxBatchSize)
+        }
+      }
     }
-    val fastRows = fastChild.executeTake(n)
-    if (fastRows.length >= n) {
-      fastRows
-    } else {
-      logInfo(log"Partial file listing collected ${MDC(COUNT, fastRows.length)} " +
-        log"rows, which is less than requested limit ${MDC(NUM_ROWS, n)}. " +
-        log"Falling back to full execution.")
-      child.executeTake(n)
-    }
+
+    buf.toArray
   }
   private val serializer: Serializer = new UnsafeRowSerializer(child.output.size)
   private lazy val writeMetrics =

@@ -41,7 +41,9 @@ class CatalogFileIndex(
     sparkSession: SparkSession,
     val table: CatalogTable,
     override val sizeInBytes: Long,
-    val partialListing: Boolean = false) extends FileIndex {
+    val partialListing: Boolean = false,
+    val maxListingFiles: Int = -1,
+    val excludeFiles: Set[Path] = Set.empty) extends FileIndex {
 
   protected val hadoopConf: Configuration = sparkSession.sessionState.newHadoopConf()
 
@@ -76,7 +78,8 @@ class CatalogFileIndex(
       val selectedPartitions = ExternalCatalogUtils.listPartitionsByFilter(
         sparkSession.sessionState.conf, sparkSession.sessionState.catalog, table, filters)
       val partitionsToUse = if (partialListing) {
-        selectedPartitions.take(sparkSession.sessionState.conf.partialFileListingInitialCount)
+        val initialCount = if (maxListingFiles > 0) maxListingFiles else 2
+        selectedPartitions.take(initialCount)
       } else {
         selectedPartitions
       }
@@ -96,17 +99,26 @@ class CatalogFileIndex(
         fileStatusCache = fileStatusCache,
         userSpecifiedPartitionSpec = Some(partitionSpec),
         metadataOpsTimeNs = Some(timeNs),
-        partialListing = partialListing)
+        partialListing = partialListing,
+        maxListingFiles = maxListingFiles,
+        excludeFiles = excludeFiles)
     } else {
       new InMemoryFileIndex(sparkSession, rootPaths, parameters = table.storage.properties,
         userSpecifiedSchema = None, fileStatusCache = fileStatusCache,
-        partialListing = partialListing)
+        partialListing = partialListing,
+        maxListingFiles = maxListingFiles,
+        excludeFiles = excludeFiles)
     }
   }
 
   /** A copy of this index whose `filterPartitions` caps leaf-file listing. */
-  def partialListingCopy(): CatalogFileIndex =
-    new CatalogFileIndex(sparkSession, table, sizeInBytes, partialListing = true)
+  def partialListingCopy(
+      maxFiles: Int = -1,
+      exclude: Set[Path] = Set.empty): CatalogFileIndex = {
+    val count = if (maxFiles > 0) maxFiles else 2
+    new CatalogFileIndex(sparkSession, table, sizeInBytes,
+      partialListing = true, maxListingFiles = count, excludeFiles = exclude)
+  }
 
   override def inputFiles: Array[String] = filterPartitions(Nil).inputFiles
 

@@ -1017,11 +1017,37 @@ case class FileSourceScanExec(
       new FileSourceOptions(CaseInsensitiveMap(relation.options)))
   }
 
+  /**
+   * Estimates an adaptive initial file count for a limit query based on table statistics,
+   * falling back to a default count of 2 if statistics are not available.
+   */
+  def estimateInitialFiles(limit: Int): Int = {
+    val conf = relation.sparkSession.sessionState.conf
+    val defaultCount = 2
+    val stats = relation.location match {
+      case c: CatalogFileIndex => c.table.stats
+      case _ => None
+    }
+    if (stats.isDefined && stats.get.rowCount.isDefined && stats.get.rowCount.get > 0) {
+      val rowCount = stats.get.rowCount.get.toDouble
+      val totalBytes = stats.get.sizeInBytes.toDouble
+      val avgRowBytes = Math.max(1.0, totalBytes / rowCount)
+      val neededBytes = limit * avgRowBytes * 1.5
+      val splitBytes = conf.filesMaxPartitionBytes.toDouble
+      val estimatedFiles = Math.ceil(neededBytes / splitBytes).toInt
+      Math.max(1, Math.min(estimatedFiles, 50))
+    } else {
+      defaultCount
+    }
+  }
+
   /** Creates a copy of this scan whose file index caps its listing for partial file listing. */
-  def partialListingScan: FileSourceScanExec = {
+  def partialListingScan(
+      maxFiles: Int = -1,
+      exclude: Set[Path] = Set.empty): FileSourceScanExec = {
     val partialLocation = relation.location match {
-      case c: CatalogFileIndex => c.partialListingCopy()
-      case i: InMemoryFileIndex => i.partialListingCopy()
+      case c: CatalogFileIndex => c.partialListingCopy(maxFiles, exclude)
+      case i: InMemoryFileIndex => i.partialListingCopy(maxFiles, exclude)
       case other => other
     }
     val partialRelation = relation.copy(location = partialLocation)(relation.sparkSession)
