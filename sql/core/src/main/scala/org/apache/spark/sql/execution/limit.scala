@@ -17,10 +17,6 @@
 
 package org.apache.spark.sql.execution
 
-import scala.collection.mutable
-
-import org.apache.hadoop.fs.Path
-
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.{ParallelCollectionRDD, RDD}
 import org.apache.spark.serializer.Serializer
@@ -56,8 +52,8 @@ case class CollectLimitExec(limit: Int = -1, child: SparkPlan, offset: Int = 0) 
   override def outputPartitioning: Partitioning = SinglePartition
   override def executeCollect(): Array[InternalRow] = {
     if (limit >= 0) {
-      val rows = findEligibleScan(child).map { _ =>
-        executeCollectWithPartialListing(limit)
+      val rows = findEligibleScan(child).map { scan =>
+        executeSpeculativeCollect(scan, limit)
       }.getOrElse(child.executeTake(limit))
       if (offset > 0) rows.drop(offset) else rows
     } else {
@@ -74,41 +70,21 @@ case class CollectLimitExec(limit: Int = -1, child: SparkPlan, offset: Int = 0) 
     case _ => None
   }
 
-  private def executeCollectWithPartialListing(n: Int): Array[InternalRow] = {
-    val scan = findEligibleScan(child).get
-    val initialBatchSize = scan.estimateInitialFiles(n)
-    val scaleFactor = 4
-    val maxBatchSize = 1000
-
-    val buf = new mutable.ArrayBuffer[InternalRow]()
-    val seenFiles = new mutable.HashSet[Path]()
-    var currentBatchSize = initialBatchSize
-    var hasMoreFiles = true
-
-    while (buf.length < n && hasMoreFiles) {
-      val needed = n - buf.length
-      val fastChild = child.transformUp {
-        case s: FileSourceScanExec if s.isLimitScanEligible =>
-          s.partialListingScan(currentBatchSize, seenFiles.toSet)
-      }
-      val currentScan = findEligibleScan(fastChild).get
-      val discoveredFiles = currentScan.selectedPartitions.toPartitionArray.map(_.toPath)
-
-      if (discoveredFiles.isEmpty) {
-        hasMoreFiles = false
-      } else {
-        seenFiles ++= discoveredFiles
-        val batchRows = fastChild.executeTake(needed)
-        buf ++= batchRows
-        if (discoveredFiles.length < currentBatchSize) {
-          hasMoreFiles = false
-        } else {
-          currentBatchSize = Math.min(currentBatchSize * scaleFactor, maxBatchSize)
-        }
-      }
+  private def executeSpeculativeCollect(
+      scan: FileSourceScanExec, n: Int): Array[InternalRow] = {
+    // Phase 1 (Fast-Path): Probe an initial batch of files.
+    val initialFiles = scan.estimateInitialFiles(n)
+    val fastChild = child.transformUp {
+      case s: FileSourceScanExec if s.isLimitScanEligible =>
+        s.partialListingScan(initialFiles)
     }
-
-    buf.toArray
+    val fastRows = fastChild.executeTake(n)
+    if (fastRows.length >= n) {
+      fastRows
+    } else {
+      // Phase 2 (Fallback Slow-Path): In rare cases of empty/tiny files, smoothly fallback.
+      child.executeTake(n)
+    }
   }
   private val serializer: Serializer = new UnsafeRowSerializer(child.output.size)
   private lazy val writeMetrics =

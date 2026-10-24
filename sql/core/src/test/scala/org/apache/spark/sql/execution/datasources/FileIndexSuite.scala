@@ -878,13 +878,6 @@ class FileIndexSuite extends SharedSparkSession {
       // Even though the cache already holds all 10 files, the partial copy caps its own
       // listing instead of serving the cached full result.
       assert(partialIndex.allFiles().length === 3)
-
-      // Exclude the first 3 files and request the next 4 files.
-      val seenPaths = partialIndex.allFiles().map(_.getPath).toSet
-      val nextIndex = fullIndex.partialListingCopy(maxFiles = 4, exclude = seenPaths)
-      val nextFiles = nextIndex.allFiles()
-      assert(nextFiles.length === 4)
-      assert(nextFiles.map(_.getPath).forall(p => !seenPaths.contains(p)))
     }
   }
 

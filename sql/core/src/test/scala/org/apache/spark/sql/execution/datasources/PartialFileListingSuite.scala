@@ -141,14 +141,14 @@ class PartialFileListingSuite extends QueryTest with SharedSparkSession {
     }
   }
 
-  test("progressive multi-round accumulation collects all rows without duplicates") {
+  test("fallback to full scan when speculative probe yields fewer rows than limit") {
     withTable("t") {
       spark.range(0, 50, 1, 50).selectExpr("id").write.saveAsTable("t")
       val df = sql("select id from t limit 45")
       val rows = df.collect()
       assert(rows.length == 45)
       val ids = rows.map(_.getLong(0)).toSeq
-      assert(ids.distinct.length == 45, "all collected rows across rounds must be unique")
+      assert(ids.distinct.length == 45, "all collected rows must be unique")
     }
   }
 }

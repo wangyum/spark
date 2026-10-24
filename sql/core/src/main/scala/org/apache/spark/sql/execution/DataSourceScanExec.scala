@@ -1033,12 +1033,10 @@ case class FileSourceScanExec(
   }
 
   /** Creates a copy of this scan whose file index caps its listing for partial file listing. */
-  def partialListingScan(
-      maxFiles: Int = -1,
-      exclude: Set[Path] = Set.empty): FileSourceScanExec = {
+  def partialListingScan(maxFiles: Int = 2): FileSourceScanExec = {
     val partialLocation = relation.location match {
-      case c: CatalogFileIndex => c.partialListingCopy(maxFiles, exclude)
-      case i: InMemoryFileIndex => i.partialListingCopy(maxFiles, exclude)
+      case c: CatalogFileIndex => c.partialListingCopy(maxFiles)
+      case i: InMemoryFileIndex => i.partialListingCopy(maxFiles)
       case other => other
     }
     val partialRelation = relation.copy(location = partialLocation)(relation.sparkSession)

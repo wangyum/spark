@@ -42,8 +42,7 @@ class CatalogFileIndex(
     val table: CatalogTable,
     override val sizeInBytes: Long,
     val partialListing: Boolean = false,
-    val maxListingFiles: Int = -1,
-    val excludeFiles: Set[Path] = Set.empty) extends FileIndex {
+    val maxListingFiles: Int = -1) extends FileIndex {
 
   protected val hadoopConf: Configuration = sparkSession.sessionState.newHadoopConf()
 
@@ -100,24 +99,19 @@ class CatalogFileIndex(
         userSpecifiedPartitionSpec = Some(partitionSpec),
         metadataOpsTimeNs = Some(timeNs),
         partialListing = partialListing,
-        maxListingFiles = maxListingFiles,
-        excludeFiles = excludeFiles)
+        maxListingFiles = maxListingFiles)
     } else {
       new InMemoryFileIndex(sparkSession, rootPaths, parameters = table.storage.properties,
         userSpecifiedSchema = None, fileStatusCache = fileStatusCache,
         partialListing = partialListing,
-        maxListingFiles = maxListingFiles,
-        excludeFiles = excludeFiles)
+        maxListingFiles = maxListingFiles)
     }
   }
 
   /** A copy of this index whose `filterPartitions` caps leaf-file listing. */
-  def partialListingCopy(
-      maxFiles: Int = -1,
-      exclude: Set[Path] = Set.empty): CatalogFileIndex = {
-    val count = if (maxFiles > 0) maxFiles else 2
+  def partialListingCopy(maxFiles: Int = 2): CatalogFileIndex = {
     new CatalogFileIndex(sparkSession, table, sizeInBytes,
-      partialListing = true, maxListingFiles = count, excludeFiles = exclude)
+      partialListing = true, maxListingFiles = maxFiles)
   }
 
   override def inputFiles: Array[String] = filterPartitions(Nil).inputFiles

@@ -57,8 +57,7 @@ class InMemoryFileIndex(
     userSpecifiedPartitionSpec: Option[PartitionSpec] = None,
     override val metadataOpsTimeNs: Option[Long] = None,
     val partialListing: Boolean = false,
-    val maxListingFiles: Int = -1,
-    val excludeFiles: Set[Path] = Set.empty)
+    val maxListingFiles: Int = -1)
   extends PartitioningAwareFileIndex(
     sparkSession, parameters, userSpecifiedSchema, fileStatusCache) {
 
@@ -112,22 +111,18 @@ class InMemoryFileIndex(
     case hdfs: InMemoryFileIndex if rootPaths.size == hdfs.rootPaths.size =>
       rootPaths.sorted == hdfs.rootPaths.sorted &&
         partialListing == hdfs.partialListing &&
-        maxListingFiles == hdfs.maxListingFiles &&
-        excludeFiles == hdfs.excludeFiles
+        maxListingFiles == hdfs.maxListingFiles
     case _ => false
   }
 
   override def hashCode(): Int =
-    (rootPaths.toSet, partialListing, maxListingFiles, excludeFiles).hashCode()
+    (rootPaths.toSet, partialListing, maxListingFiles).hashCode()
 
   /** A copy of this index that lists at most a handful of files. See `partialListing`. */
-  def partialListingCopy(
-      maxFiles: Int = -1,
-      exclude: Set[Path] = Set.empty): InMemoryFileIndex = {
-    val count = if (maxFiles > 0) maxFiles else 2
+  def partialListingCopy(maxFiles: Int = 2): InMemoryFileIndex = {
     new InMemoryFileIndex(sparkSession, rootPathsSpecified, parameters, userSpecifiedSchema,
       fileStatusCache, userSpecifiedPartitionSpec, metadataOpsTimeNs,
-      partialListing = true, maxListingFiles = count, excludeFiles = exclude)
+      partialListing = true, maxListingFiles = maxFiles)
   }
 
   /**
@@ -160,22 +155,13 @@ class InMemoryFileIndex(
       }
     }
     val filter = FileInputFormat.getInputPathFilter(new JobConf(hadoopConf, this.getClass))
-    val combinedFilter = if (excludeFiles.nonEmpty) {
-      new PathFilter with Serializable {
-        override def accept(path: Path): Boolean = {
-          !excludeFiles.contains(path) && (filter == null || filter.accept(path))
-        }
-      }
-    } else {
-      filter
-    }
     val maxLeafFiles = if (partialListing) {
       if (maxListingFiles > 0) maxListingFiles else 2
     } else {
       -1
     }
     val discovered = InMemoryFileIndex.bulkListLeafFiles(
-      pathsToFetch.toSeq, hadoopConf, combinedFilter, sparkSession, parameters, maxLeafFiles)
+      pathsToFetch.toSeq, hadoopConf, filter, sparkSession, parameters, maxLeafFiles)
     discovered.foreach { case (path, leafFiles) =>
       HiveCatalogMetrics.incrementFilesDiscovered(leafFiles.size)
       if (useFileStatusCache) {
