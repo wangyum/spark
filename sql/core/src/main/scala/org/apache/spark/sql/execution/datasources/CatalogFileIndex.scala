@@ -20,7 +20,7 @@ package org.apache.spark.sql.execution.datasources
 import java.net.URI
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.fs.Path
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, ExternalCatalogUtils}
@@ -109,18 +109,9 @@ class CatalogFileIndex(
       } else {
         selectedPartitions.map(p => (p.toRow(partitionSchema, timeZone), p))
       }
-      var cachedFs: FileSystem = null
       val partitions = filtered.map { case (row, p) =>
         val path = new Path(p.location)
-        val uri = path.toUri
-        val fs = if (cachedFs != null &&
-            (uri.getScheme == null || uri.getScheme == cachedFs.getScheme) &&
-            (uri.getAuthority == null || uri.getAuthority == cachedFs.getUri.getAuthority)) {
-          cachedFs
-        } else {
-          cachedFs = path.getFileSystem(hadoopConf)
-          cachedFs
-        }
+        val fs = path.getFileSystem(hadoopConf)
         PartitionPath(row, path.makeQualified(fs.getUri, fs.getWorkingDirectory))
       }
       (PartitionSpec(partitionSchema, partitions), System.nanoTime() - startTime)
