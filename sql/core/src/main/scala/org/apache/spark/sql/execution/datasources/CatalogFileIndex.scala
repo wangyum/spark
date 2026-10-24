@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.execution.{InSubqueryExec, ScalarSubquery}
 import org.apache.spark.sql.types.StructType
 
+
 /**
  * A [[FileIndex]] for a metastore catalog table.
  *

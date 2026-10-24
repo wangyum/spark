@@ -280,7 +280,7 @@ abstract class PartitioningAwareFileIndex(
   }
 }
 
-object PartitioningAwareFileIndex extends Logging {
+object PartitioningAwareFileIndex {
 
   /**
    * Binds `predicate` to the partition values of `partitionColumns` by attribute name, so it
