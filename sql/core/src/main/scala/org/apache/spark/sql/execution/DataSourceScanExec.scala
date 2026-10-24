@@ -446,8 +446,7 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
       val startTime = System.nanoTime()
       val fileListing: ScanFileListing =
         if (shouldDeferListing) {
-          val partitionDirectories =
-            relation.location.listFiles(partitionFilters, dataFilters)
+          val partitionDirectories = relation.location.listFiles(partitionFilters, dataFilters)
           GenericScanFileListing(partitionDirectories.toArray)
         } else {
           // call the file index for the files matching all filters except dynamic partition filters

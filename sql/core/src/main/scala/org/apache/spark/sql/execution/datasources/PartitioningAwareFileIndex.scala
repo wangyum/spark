@@ -193,8 +193,10 @@ abstract class PartitioningAwareFileIndex(
     }
 
     if (partitionPruningPredicates.nonEmpty) {
+      val predicate = partitionPruningPredicates.reduce(expressions.And)
+
       val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
-        partitionPruningPredicates.reduce(expressions.And),
+        predicate,
         partitionSpec.partitionColumns)
 
       val selected = partitionSpec.partitions.filter {
