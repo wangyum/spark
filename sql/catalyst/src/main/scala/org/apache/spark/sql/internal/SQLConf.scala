@@ -2379,11 +2379,13 @@ object SQLConf {
 
   val HIVE_METASTORE_DEFER_FILE_LISTING =
     buildConf("spark.sql.hive.metastoreDeferFileListing.enabled")
-      .doc("When true, for tables backed by a Hive metastore catalog, defer listing files " +
-        "until execution time when the partition filters include a dynamic partition " +
-        "pruning filter, so that the pruning values can be pushed down to the Hive Metastore " +
-        "instead of eagerly listing every partition that matches the static filters alone. " +
-        "When false, partitions are always listed eagerly at planning time.")
+      .doc("When true, for partitioned tables whose partitions are tracked in the metastore " +
+        "(this includes both datasource and converted Hive tables, see " +
+        "spark.sql.hive.manageFilesourcePartitions), defer listing files until execution " +
+        "time when the partition filters include a dynamic partition pruning filter, so " +
+        "that the pruning values can be pushed down to the Hive Metastore instead of " +
+        "eagerly listing every partition that matches the static filters alone. When false, " +
+        "partitions are always listed eagerly at planning time.")
       .version("4.4.0")
       .booleanConf
       .createWithDefault(true)

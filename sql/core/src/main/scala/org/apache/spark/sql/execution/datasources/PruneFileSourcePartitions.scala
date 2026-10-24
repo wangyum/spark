@@ -115,10 +115,11 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
         // Keep partition-pruning predicates so that they are visible in physical planning
         rebuildPhysicalOperation(projects, filters, prunedLogicalRelation)
       } else {
-        // There is no meaningful static predicate to push yet, and a real subquery-based
-        // partition filter is still pending: defer. Keep the [[CatalogFileIndex]] and let the
+        // There is no meaningful static partition-key predicate to push eagerly. If a real
+        // subquery-based partition filter is pending, keep the [[CatalogFileIndex]] and let the
         // physical scan list only the surviving partitions once the subquery's result is known
-        // (see [[FileSourceScanLike.dynamicallySelectedPartitions]]).
+        // (see [[FileSourceScanLike.dynamicallySelectedPartitions]]); if there is no partition
+        // filter at all, this is simply a no-op.
         op
       }
   }

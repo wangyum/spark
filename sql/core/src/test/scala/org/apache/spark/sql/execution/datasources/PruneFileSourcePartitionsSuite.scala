@@ -19,6 +19,7 @@ package org.apache.spark.sql.execution.datasources
 
 import org.scalatest.matchers.should.Matchers._
 
+import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.dsl.expressions._
 import org.apache.spark.sql.catalyst.dsl.plans._
@@ -160,6 +161,30 @@ class PruneFileSourcePartitionsSuite extends PrunePartitionSuiteBase with Shared
             "(tmp.p = 0)")
         }
       }
+    }
+  }
+
+  test("defer the file listing for a partition filter with a scalar subquery against the " +
+      "in-memory catalog") {
+    // The deferred-listing feature is implemented in `CatalogFileIndex`, which is used for any
+    // catalog table backed by `ExternalCatalog` -- not only the Hive metastore -- so it must
+    // also engage for a plain, non-Hive session catalog table. See
+    // `org.apache.spark.sql.hive.execution.DeferredFileListingSuiteBase` for the equivalent
+    // Hive-backed coverage, including the metastore-pushdown assertions that only apply there.
+    withTable("a", "b") {
+      spark.range(21).selectExpr("id", "id % 5 AS p").write.partitionBy("p").saveAsTable("a")
+      spark.range(5).write.saveAsTable("b")
+      val sqlStr = "SELECT count(*) FROM a WHERE p <= (SELECT MIN(id) + 1 FROM b)"
+      checkAnswer(sql(sqlStr), Row(9) :: Nil)
+
+      // Use `sparkPlan` rather than `executedPlan`: AQE is on by default in this suite, and
+      // `executedPlan` would wrap the plan in an `AdaptiveSparkPlanExec` that `collectFirst`
+      // cannot see through.
+      val scan = sql(sqlStr).queryExecution.sparkPlan.collectFirst {
+        case f: FileSourceScanExec => f
+      }.get
+      assert(scan.relation.location.isInstanceOf[CatalogFileIndex])
+      assert(scan.selectedPartitions.totalNumberOfFiles == 0)
     }
   }
 

@@ -333,7 +333,23 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
     !bucketedScan &&
       getSqlConf(relation.sparkSession).metastoreDeferFileListing &&
       relation.location.isInstanceOf[CatalogFileIndex] &&
-      partitionFilters.exists(isDynamicPruningFilter)
+      partitionFilters.exists(isDeferrableDynamicPruningFilter)
+  }
+
+  // A classic broadcast-join dynamic partition pruning filter -- a `DynamicPruningExpression`
+  // wrapping an `InSubqueryExec`, attached by the separate `PartitionPruning` optimizer rule --
+  // must never defer listing on its own. `PruneFileSourcePartitions` runs before `PartitionPruning`
+  // and so cannot see that filter in time to eagerly prune in response to it; the fact that the
+  // relation's location is still a `CatalogFileIndex` by the time this is evaluated is normally
+  // explained by a genuine, already-visible subquery-based partition filter (e.g. `p <= (SELECT
+  // ...)`), but it can equally mean no static predicate happened to reach the partition column at
+  // all (for instance with `spark.sql.constraintPropagation.enabled=false`, which otherwise
+  // injects the `IsNotNull` that forces eager pruning ahead of a join). Requiring an actual
+  // subquery here, rather than any `PlanExpression`-bearing filter, keeps classic DPP out of
+  // deferral regardless of that incidental side effect; see `DeferredFileListingSuiteBase` for
+  // the regression coverage.
+  private def isDeferrableDynamicPruningFilter(e: Expression): Boolean = {
+    isDynamicPruningFilter(e) && !e.exists(_.isInstanceOf[DynamicPruningExpression])
   }
 
   /**
@@ -448,17 +464,23 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
       val startTime = System.nanoTime()
       val fileListing: ScanFileListing =
         if (shouldDeferListing) {
-          val partitionDirectories = relation.location.listFiles(partitionFilters, dataFilters)
+          // `shouldDeferListing` has already confirmed `relation.location` is a
+          // `CatalogFileIndex`. Materializing a still-pending dynamic partition filter
+          // (`InSubqueryExec`/`ScalarSubquery`) into a pushable predicate is a
+          // `CatalogFileIndex`-specific capability, not part of the generic `FileIndex`
+          // contract, so call it directly on the concrete type instead of routing those raw
+          // physical plan nodes through the public, polymorphic `FileIndex.listFiles` API --
+          // every other call site strips dynamic filters out first, since an arbitrary
+          // `FileIndex` implementation has no way to evaluate them.
+          val catalogFileIndex = relation.location.asInstanceOf[CatalogFileIndex]
+          val partitionDirectories =
+            catalogFileIndex.filterPartitions(partitionFilters).listFiles(Nil, dataFilters)
           GenericScanFileListing(partitionDirectories.toArray)
         } else {
           // call the file index for the files matching all filters except dynamic partition filters
           val predicate = dynamicPartitionFilters.reduce(And)
-          val partitionColumns = relation.partitionSchema
-          val boundPredicate = Predicate.create(predicate.transform {
-            case a: AttributeReference =>
-              val index = partitionColumns.indexWhere(a.name == _.name)
-              BoundReference(index, partitionColumns(index).dataType, nullable = true)
-          }, Nil)
+          val boundPredicate = PartitioningAwareFileIndex.bindPartitionPredicate(
+            predicate, relation.partitionSchema)
           selectedPartitions.filterAndPruneFiles(boundPredicate, dynamicDataFilters)
         }
       setFilesNumAndSizeMetric(fileListing, false)
@@ -586,7 +608,8 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
         "DataFilters" -> seqToString(dataFilters),
         "Location" -> locationDesc) ++
       // Only when there are some, since `simpleString` would render an empty entry too.
-      Option.when(storageFilters.nonEmpty)("StorageFilters" -> seqToString(storageFilters))
+      Option.when(storageFilters.nonEmpty)("StorageFilters" -> seqToString(storageFilters)) ++
+      Option.when(shouldDeferListing)("DeferredFileListing" -> "true")
 
     relation.bucketSpec.map { spec =>
       val bucketedKey = "Bucketed"

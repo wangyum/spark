@@ -23,6 +23,7 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite, QueryStageExec}
 import org.apache.spark.sql.execution.datasources.{CatalogFileIndex, InMemoryFileIndex}
 import org.apache.spark.sql.hive.test.TestHiveSingleton
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SQLTestUtils
 
 abstract class DeferredFileListingSuiteBase
@@ -227,6 +228,116 @@ abstract class DeferredFileListingSuiteBase
     }
   }
 
+  test("the deferral kill switch disables deferred listing") {
+    withSQLConf(SQLConf.HIVE_METASTORE_DEFER_FILE_LISTING.key -> "false") {
+      withTable("a", "b") {
+        spark.range(21).selectExpr("id", "id % 5 AS p").write.partitionBy("p").saveAsTable("a")
+        spark.range(5).write.saveAsTable("b")
+        val sqlStr = "SELECT count(*) FROM a WHERE p <= (SELECT MIN(id) + 1 FROM b)"
+        checkAnswer(sql(sqlStr), Row(9) :: Nil)
+
+        val scan = findFileSourceScan(sqlStr, "a")
+        // With the kill switch off, `shouldDeferListing` never engages even though the location
+        // is still a `CatalogFileIndex` (same as "defer the file listing for a partition filter
+        // with a scalar subquery" above): all 5 partitions are listed eagerly at planning time,
+        // and the subquery's result is applied as a local post-filter at execution time instead
+        // of being pushed to the metastore -- the correct answer is unaffected either way.
+        assert(scan.relation.location.isInstanceOf[CatalogFileIndex])
+        assert(scan.selectedPartitions.totalNumberOfFiles == 5)
+      }
+    }
+  }
+
+  test("an empty materialized DPP IN list short-circuits without a metastore call") {
+    withSQLConf(
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withTable("a", "b") {
+        withSQLConf("hive.exec.dynamic.partition.mode" -> "nonstrict") {
+          sql("CREATE TABLE a (id string) PARTITIONED BY (p int) STORED AS parquet")
+          (0 until 4).foreach(i => sql(s"INSERT INTO a VALUES ('$i', $i)"))
+          // b is intentionally left empty, so the broadcast join key's materialized values are
+          // an empty array. No ANALYZE is run, so the optimizer does not know this ahead of time
+          // and still plans a normal dynamic-pruning-eligible broadcast join.
+          sql("CREATE TABLE b (id int) STORED AS parquet")
+          // A co-present, always-true scalar subquery filter puts a real subquery-based
+          // partition filter on the scan so that `shouldDeferListing` engages; the broadcast
+          // join supplies the classic DPP `InSubqueryExec` under test here. See
+          // `isDeferrableDynamicPruningFilter` for why the DPP filter alone would not do this.
+          val sqlStr =
+            "SELECT /*+ BROADCAST(b) */ count(*) FROM a JOIN b ON a.p = b.id " +
+              "WHERE a.p <= (SELECT MAX(id) + 1000 FROM b)"
+          val df = sql(sqlStr)
+
+          HiveCatalogMetrics.reset()
+          assert(df.collect() === Array(Row(0)))
+          assert(HiveCatalogMetrics.METRIC_PARTITIONS_FETCHED.getCount == 0)
+        }
+      }
+    }
+  }
+
+  test("an oversized materialized DPP IN list is narrowed to a range push with an exact local " +
+      "post-filter") {
+    withSQLConf(
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.HIVE_METASTORE_PARTITION_PRUNING_INSET_THRESHOLD.key -> "1") {
+      withTable("a", "b") {
+        withSQLConf("hive.exec.dynamic.partition.mode" -> "nonstrict") {
+          sql("CREATE TABLE a (id string) PARTITIONED BY (p int) STORED AS parquet")
+          (0 until 4).foreach(i => sql(s"INSERT INTO a VALUES ('$i', $i)"))
+          sql("CREATE TABLE b (id int) STORED AS parquet")
+          sql("INSERT INTO b VALUES (0), (3)")
+          // Same co-present-subquery trick as above, to force deferral while the broadcast join
+          // supplies the DPP IN-list under test.
+          val sqlStr =
+            "SELECT /*+ BROADCAST(b) */ count(*) FROM a JOIN b ON a.p = b.id " +
+              "WHERE a.p <= (SELECT MAX(id) + 100 FROM b)"
+          val df = sql(sqlStr)
+
+          HiveCatalogMetrics.reset()
+          assert(df.collect() === Array(Row(2)))
+          // The materialized IN list has 2 distinct values (0, 3), exceeding the lowered
+          // threshold of 1: the metastore push narrows to the [0, 3] range, which also matches
+          // the non-selected partitions p=1 and p=2, so all 4 come back from the metastore...
+          assert(HiveCatalogMetrics.METRIC_PARTITIONS_FETCHED.getCount == 4)
+          // ...but the exact value set is still applied as a local post-filter on top of that
+          // range (see `CatalogFileIndex.materializeInSubquery`), so the final answer above only
+          // counts the 2 partitions that actually match -- the range narrowing does not leak
+          // extra rows into the result.
+        }
+      }
+    }
+  }
+
+  test("classic broadcast-join dynamic partition pruning never defers listing on its own") {
+    withSQLConf(
+        SQLConf.CONSTRAINT_PROPAGATION_ENABLED.key -> "false",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withTable("a", "b") {
+        spark.range(21).selectExpr("id", "id % 5 AS p").write.partitionBy("p").saveAsTable("a")
+        spark.range(2).write.saveAsTable("b")
+        val sqlStr = "SELECT /*+ BROADCAST(b) */ count(*) FROM a JOIN b ON a.p = b.id"
+        checkAnswer(sql(sqlStr), Row(9) :: Nil)
+
+        val scan = findFileSourceScan(sqlStr, "a")
+        // With constraint propagation disabled, `PruneFileSourcePartitions` has no incidental
+        // `IsNotNull` to force eager pruning ahead of `PartitionPruning` attaching this classic
+        // broadcast-join DPP filter, so the location can still be the original `CatalogFileIndex`
+        // here -- yet the scan must still list every partition eagerly up front and prune
+        // locally, exactly like the pre-existing DPP behavior, rather than deferring on the
+        // strength of this filter alone (see `isDeferrableDynamicPruningFilter`).
+        assert(scan.relation.location.isInstanceOf[CatalogFileIndex])
+        assert(scan.selectedPartitions.totalNumberOfFiles == 5)
+      }
+    }
+  }
+
   // Classic broadcast-join dynamic partition pruning (no subquery involved) is intentionally out
   // of scope for deferred listing: `PruneFileSourcePartitions` cannot see a classic DPP filter at
   // the time it decides whether to prune eagerly -- `PartitionPruning`, the optimizer rule that
@@ -234,14 +345,16 @@ abstract class DeferredFileListingSuiteBase
   // reason to defer for that case regressed the `PartitionPruning` filtering-ratio heuristic
   // (which depends on `PruneFileSourcePartitions` having refreshed `CatalogStatistics` via an
   // eager listing) and the "static scan metrics" contract (`staticFilesNum`/`staticFilesSize`),
-  // which only ever get populated by an eager pre-DPP listing. So this suite only exercises
-  // deferral through a real subquery-based partition filter, and classic broadcast-join DPP
-  // keeps its pre-existing eager-listing behavior, verified separately by
-  // `DynamicPartitionPruningSuite`/`DynamicPartitionPruningHiveScanSuite`.
+  // which only ever get populated by an eager pre-DPP listing. So most of this suite exercises
+  // deferral through a real subquery-based partition filter, and classic broadcast-join DPP keeps
+  // its pre-existing eager-listing behavior -- made explicit above by
+  // `isDeferrableDynamicPruningFilter` rather than resting on that incidental timing alone -- and
+  // is verified more broadly by `DynamicPartitionPruningSuite` /
+  // `DynamicPartitionPruningHiveScanSuite`.
 }
 
-class DeferredFileListingSuite
+class DeferredFileListingSuiteAEOff
   extends DeferredFileListingSuiteBase with DisableAdaptiveExecutionSuite
 
-class DeferredFileListingSuiteAE
+class DeferredFileListingSuiteAEOn
   extends DeferredFileListingSuiteBase with EnableAdaptiveExecutionSuite

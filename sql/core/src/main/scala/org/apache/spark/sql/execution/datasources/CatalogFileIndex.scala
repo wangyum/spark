@@ -107,8 +107,10 @@ class CatalogFileIndex(
    *   - pushed to the metastore as an exact predicate (static filters, small materialized IN
    *     lists, folded scalar subqueries);
    *   - an IN list larger than `metastorePartitionPruningInSetThreshold` is narrowed to a
-   *     `[min, max]` range predicate before being pushed, trading exactness for a bounded
-   *     metastore call;
+   *     `[min, max]` range predicate for the metastore push (a bounded call instead of an
+   *     unbounded IN list), while the exact value set is kept and applied as a local
+   *     post-filter on whatever the metastore returns for that range, so pruning precision is
+   *     unaffected;
    *   - an empty materialized IN list short-circuits to an empty result without calling the
    *     metastore at all;
    *   - not yet executed (a dynamic partition pruning subquery still pending) or otherwise not
@@ -121,13 +123,14 @@ class CatalogFileIndex(
    * lists partitions eagerly and prunes them client-side via `prunePartitions`. Unifying the two
    * paths is a deliberate non-goal of this feature.
    */
-  private[sql] def listPartitionSpec(filters: Seq[Expression]): (PartitionSpec, Long) = {
+  private def listPartitionSpec(filters: Seq[Expression]): (PartitionSpec, Long) = {
     val startTime = System.nanoTime()
     if (table.partitionColumnNames.isEmpty) {
       (PartitionSpec(partitionSchema, Nil), 0L)
     } else {
-      val materializedFilters = materializeDynamicFilters(filters)
-      val (pushableFilters, postFilters) = splitPartitionFilters(materializedFilters)
+      val (materializedFilters, exactFilters) = materializeDynamicFilters(filters)
+      val (pushableFilters, postFilters0) = splitPartitionFilters(materializedFilters)
+      val postFilters = postFilters0 ++ exactFilters
       val partitions = if (pushableFilters.contains(Literal.FalseLiteral)) {
         logDebug(s"Materialized filters for table ${table.identifier} are unsatisfiable; " +
           "skipping the metastore call and returning an empty partition spec.")
@@ -170,30 +173,39 @@ class CatalogFileIndex(
     }
   }
 
+  // Returns the materialized filters alongside any exact predicates that must still be applied
+  // locally to the metastore's returned partitions -- see `materializeInSubquery`.
   private def materializeDynamicFilters(
-      filters: Seq[Expression]): Seq[Expression] = {
+      filters: Seq[Expression]): (Seq[Expression], Seq[Expression]) = {
     val maxInThreshold = sparkSession.sessionState.conf.metastorePartitionPruningInSetThreshold
-    filters.map { filter =>
-      val materialized = filter.transformDown {
+    val exactFilters = scala.collection.mutable.ArrayBuffer.empty[Expression]
+    val materialized = filters.map { filter =>
+      val transformed = filter.transformDown {
         case DynamicPruningExpression(in: InSubqueryExec) =>
-          materializeInSubquery(in, maxInThreshold).getOrElse(DynamicPruningExpression(in))
+          materializeInSubquery(in, maxInThreshold, exactFilters)
+            .getOrElse(DynamicPruningExpression(in))
         case s: ScalarSubquery if s.hasResult =>
           s.toLiteral
         case in: InSubqueryExec =>
-          materializeInSubquery(in, maxInThreshold).getOrElse(in)
+          materializeInSubquery(in, maxInThreshold, exactFilters).getOrElse(in)
       }
-      foldConstantExpressions(materialized)
+      foldConstantExpressions(transformed)
     }
+    (materialized, exactFilters.toSeq)
   }
 
   // `None` only when the subquery has not been executed yet. A failure while building the
   // literal propagates. An IN list larger than `maxInThreshold` is narrowed to a `[min, max]`
-  // range predicate instead of giving up, mirroring `HiveShim`'s own InSet-pushdown convention
-  // for the same threshold: the range is a safe, bounded over-approximation that the metastore
-  // can still push down, trading exactness for avoiding an unbounded IN-list round trip.
+  // range predicate for the metastore push, mirroring `HiveShim`'s own InSet-pushdown convention
+  // for the same threshold -- but unlike a `None`/full-fetch fallback, the range is still a
+  // pushable, bounded over-approximation. The exact value set is not discarded: it is appended to
+  // `exactFilters` so the caller applies it as a local post-filter on whatever the metastore
+  // returns for the range, exactly as `HiveExternalCatalog.listPartitionsByFilter` always
+  // re-applies the original, un-narrowed predicate locally regardless of what was pushed.
   private def materializeInSubquery(
       in: InSubqueryExec,
-      maxInThreshold: Int): Option[Expression] = {
+      maxInThreshold: Int,
+      exactFilters: scala.collection.mutable.ArrayBuffer[Expression]): Option[Expression] = {
     val child = in.child
     in.values().flatMap { arr =>
       val distinctVals = arr.filter(_ != null).distinct
@@ -204,9 +216,11 @@ class CatalogFileIndex(
       } else {
         logDebug(s"Materialized IN list of ${distinctVals.length} values for " +
           s"${table.identifier} exceeds $maxInThreshold; narrowing to a min/max range " +
-          s"predicate on ${child.sql}.")
+          s"predicate on ${child.sql} for the metastore push, and keeping the exact value " +
+          "set as a local post-filter.")
         val ordering = TypeUtils.getInterpretedOrdering(child.dataType)
         val sorted = distinctVals.sorted(ordering)
+        exactFilters += InSet(child, distinctVals.toSet)
         Some(And(
           GreaterThanOrEqual(child, Literal.create(sorted.head, child.dataType)),
           LessThanOrEqual(child, Literal.create(sorted.last, child.dataType))))
