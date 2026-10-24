@@ -184,6 +184,9 @@ abstract class PartitioningAwareFileIndex(
     }
   }
 
+  // Drops a predicate that references anything other than a partition column. A physical
+  // subquery expression fails that test, because its references include the subquery output;
+  // `prunePartitionSpec` evaluates those instead of dropping them.
   private def prunePartitions(
       predicates: Seq[Expression],
       partitionSpec: PartitionSpec): Seq[PartitionPath] = {
@@ -191,7 +194,8 @@ abstract class PartitioningAwareFileIndex(
     val partitionPruningPredicates = predicates.filter {
       _.references.map(_.name).toSet.subsetOf(partitionColumnNames)
     }
-    PartitioningAwareFileIndex.prunePartitions(partitionPruningPredicates, partitionSpec).partitions
+    PartitioningAwareFileIndex.prunePartitionSpec(
+      partitionPruningPredicates, partitionSpec).partitions
   }
 
   /**
@@ -280,10 +284,11 @@ object PartitioningAwareFileIndex extends Logging {
   }
 
   /**
-   * Evaluates partition predicates against `partitionSpec.partitions` in memory and returns
-   * the pruned [[PartitionSpec]].
+   * Evaluates `predicates` against `partitionSpec` in memory, including physical subquery
+   * expressions whose references are not a subset of the partition columns. Nothing is
+   * dropped before evaluation.
    */
-  private[sql] def prunePartitions(
+  private[sql] def prunePartitionSpec(
       predicates: Seq[Expression],
       partitionSpec: PartitionSpec): PartitionSpec = {
     if (predicates.isEmpty || partitionSpec.partitions.isEmpty) {

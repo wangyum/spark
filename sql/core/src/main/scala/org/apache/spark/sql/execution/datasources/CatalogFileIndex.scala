@@ -22,9 +22,11 @@ import java.net.URI
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, ExternalCatalogUtils}
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.execution.{InSubqueryExec, ScalarSubquery}
 import org.apache.spark.sql.types.StructType
 
 /**
@@ -41,7 +43,7 @@ class CatalogFileIndex(
     val table: CatalogTable,
     override val sizeInBytes: Long,
     val prunedPartitionSpec: Option[PartitionSpec] = None,
-    override val metadataOpsTimeNs: Option[Long] = None) extends FileIndex {
+    override val metadataOpsTimeNs: Option[Long] = None) extends FileIndex with Logging {
 
   protected val hadoopConf: Configuration = sparkSession.sessionState.newHadoopConf()
 
@@ -113,10 +115,11 @@ class CatalogFileIndex(
     val startTime = System.nanoTime()
     prunedPartitionSpec match {
       case Some(spec) =>
-        val pruned = PartitioningAwareFileIndex.prunePartitions(filters, spec)
+        val pruned = PartitioningAwareFileIndex.prunePartitionSpec(filters, spec)
         (pruned, System.nanoTime() - startTime)
       case None if table.partitionColumnNames.nonEmpty =>
-        val (pushableFilters, postFilters) = splitPartitionFilters(filters)
+        val materializedFilters = materializeDynamicFilters(filters)
+        val (pushableFilters, postFilters) = splitPartitionFilters(materializedFilters)
         val selectedPartitions = ExternalCatalogUtils.listPartitionsByFilter(
           sparkSession.sessionState.conf, sparkSession.sessionState.catalog, table, pushableFilters)
         val timeZone = sparkSession.sessionState.conf.sessionLocalTimeZone
@@ -157,6 +160,67 @@ class CatalogFileIndex(
         !SubqueryExpression.hasSubquery(f) &&
         !f.exists(_.isInstanceOf[PlanExpression[_]]) &&
         !f.exists(_.isInstanceOf[PythonUDF])
+    }
+  }
+
+  private def materializeDynamicFilters(
+      filters: Seq[Expression]): Seq[Expression] = {
+    val maxInThreshold = sparkSession.sessionState.conf.metastorePartitionPruningInSetThreshold
+    filters.map { filter =>
+      val materialized = filter.transformDown {
+        case DynamicPruningExpression(in: InSubqueryExec) =>
+          materializeInSubquery(in, in.child, maxInThreshold)
+            .getOrElse(DynamicPruningExpression(in))
+        case s: ScalarSubquery =>
+          literalIfSubqueryReady(s)
+        case in: InSubqueryExec =>
+          materializeInSubquery(in, in.child, maxInThreshold).getOrElse(in)
+      }
+      foldConstantExpressions(materialized)
+    }
+  }
+
+  // `None` only when the subquery has not been executed yet, or its literal form is too
+  // large to push into the metastore. A failure while building the literal propagates.
+  private def materializeInSubquery(
+      in: InSubqueryExec,
+      child: Expression,
+      maxInThreshold: Int): Option[Expression] = {
+    in.values().flatMap { arr =>
+      val distinctVals = arr.filter(_ != null).distinct
+      if (distinctVals.isEmpty) {
+        Some(Literal.FalseLiteral)
+      } else if (distinctVals.length <= maxInThreshold) {
+        Some(In(child, distinctVals.toSeq.map(v => Literal.create(v, child.dataType))))
+      } else {
+        None
+      }
+    }
+  }
+
+  // `toLiteral` throws IllegalArgumentException("... has not finished") before the subquery
+  // runs. Any other failure is a real evaluation error.
+  private def literalIfSubqueryReady(subquery: ScalarSubquery): Expression = {
+    try {
+      subquery.toLiteral
+    } catch {
+      case e: IllegalArgumentException if subqueryHasNotFinished(e) => subquery
+    }
+  }
+
+  private def subqueryHasNotFinished(e: IllegalArgumentException): Boolean = {
+    val message = e.getMessage
+    message != null && message.contains("has not finished")
+  }
+
+  private def foldConstantExpressions(expr: Expression): Expression = {
+    expr.transform {
+      case e if !e.isInstanceOf[Literal] && e.foldable =>
+        try {
+          Literal.create(e.eval(EmptyRow), e.dataType)
+        } catch {
+          case ex: IllegalArgumentException if subqueryHasNotFinished(ex) => e
+        }
     }
   }
 

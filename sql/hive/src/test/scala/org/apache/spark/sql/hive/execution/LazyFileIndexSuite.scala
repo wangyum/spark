@@ -17,6 +17,7 @@
 
 package org.apache.spark.sql.hive.execution
 
+import org.apache.spark.metrics.source.HiveCatalogMetrics
 import org.apache.spark.sql.{QueryTest, Row}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
@@ -184,6 +185,26 @@ class LazyFileIndexSuite extends QueryTest with SQLTestUtils with TestHiveSingle
       // The deferred listing still decides the files at execution.
       checkAnswer(df, Row(9) :: Nil)
       assert(listedFilesCount(scan) == 2)
+    }
+  }
+
+  test("push materialized dynamic partition filter down to metastore") {
+    withTable("a", "b") {
+      withSQLConf("hive.exec.dynamic.partition.mode" -> "nonstrict") {
+        sql("CREATE TABLE a (id string) PARTITIONED BY (p int) STORED AS parquet")
+        (0 until 5).foreach { i =>
+          sql(s"INSERT INTO a VALUES ($i, $i)")
+        }
+        spark.range(2).write.saveAsTable("b")
+        val sqlStr = "SELECT count(*) FROM a WHERE p <= (SELECT MIN(id) FROM b)"
+        val df = sql(sqlStr)
+
+        HiveCatalogMetrics.reset()
+        assert(df.collect() === Array(Row(1)))
+        // Materialized dynamic filter (p <= 0) is pushed down to metastore,
+        // so metastore returns only 1 partition rather than all 5!
+        assert(HiveCatalogMetrics.METRIC_PARTITIONS_FETCHED.getCount == 1)
+      }
     }
   }
 }
