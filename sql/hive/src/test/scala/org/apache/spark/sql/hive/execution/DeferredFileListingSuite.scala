@@ -18,14 +18,15 @@
 package org.apache.spark.sql.hive.execution
 
 import org.apache.spark.metrics.source.HiveCatalogMetrics
-import org.apache.spark.sql.{QueryTest, Row}
+import org.apache.spark.sql.{DataFrame, QueryTest, Row}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite, QueryStageExec}
 import org.apache.spark.sql.execution.datasources.{CatalogFileIndex, InMemoryFileIndex}
 import org.apache.spark.sql.hive.test.TestHiveSingleton
 import org.apache.spark.sql.test.SQLTestUtils
 
-class DeferredFileListingSuite extends QueryTest with SQLTestUtils with TestHiveSingleton {
+abstract class DeferredFileListingSuiteBase
+    extends QueryTest with SQLTestUtils with TestHiveSingleton {
 
   // Query stages are leaf nodes wrapping the plans they materialize, so a plain `collect`
   // does not reach the scans they contain.
@@ -36,9 +37,17 @@ class DeferredFileListingSuite extends QueryTest with SQLTestUtils with TestHive
     direct ++ inStages
   }
 
+  // Finds the scan in a fresh execution of `sqlStr`. Since this runs the query again, it must
+  // not be combined with a `HiveCatalogMetrics` assertion on the same test: use
+  // `findFileSourceScanIn` on an already-executed `DataFrame` for that instead, so the query
+  // runs exactly once and the metric reflects that single execution.
   private def findFileSourceScan(sqlStr: String, tableName: String): FileSourceScanExec = {
     val df = sql(sqlStr)
     df.collect()
+    findFileSourceScanIn(df, tableName)
+  }
+
+  private def findFileSourceScanIn(df: DataFrame, tableName: String): FileSourceScanExec = {
     val plan = df.queryExecution.executedPlan match {
       case ae: AdaptiveSparkPlanExec => ae.finalPhysicalPlan
       case other => other
@@ -115,7 +124,7 @@ class DeferredFileListingSuite extends QueryTest with SQLTestUtils with TestHive
     }
   }
 
-  test("an IN subquery that becomes a semi-join keeps the deferral until planning") {
+  test("an IN subquery rewritten to a semi-join does not trigger deferral") {
     withTable("a", "b") {
       spark.range(21).selectExpr("id", "id % 5 AS p").write.partitionBy("p").saveAsTable("a")
       spark.range(3).write.saveAsTable("b")
@@ -123,9 +132,16 @@ class DeferredFileListingSuite extends QueryTest with SQLTestUtils with TestHive
       checkAnswer(sql(sqlStr), Row(13) :: Nil)
 
       val scan = findFileSourceScan(sqlStr, "a")
-      // The IN subquery is rewritten into a semi-join, which leaves no filter above the
-      // scan, so the listing is materialized at planning time with no partition filter to apply.
+      // The IN subquery is rewritten into a semi-join during optimization, which leaves no
+      // filter above the scan at all -- the predicate becomes the join condition instead. With
+      // no filters to inspect, `PruneFileSourcePartitions`'s pattern match does not even fire, so
+      // the location is left completely untouched: still the original `CatalogFileIndex`, not
+      // replaced by an eager `InMemoryFileIndex`. There is also no dynamic partition filter
+      // attached to this scan (the semi-join is evaluated by the join operator, not pushed down
+      // as a scan-level filter), so `shouldDeferListing` does not engage either: the scan simply
+      // lists every partition directly off the still-`CatalogFileIndex` location.
       assert(scan.relation.location.isInstanceOf[CatalogFileIndex])
+      assert(scan.selectedPartitions.totalNumberOfFiles == 5)
       assert(listedFilesCount(scan) == 5)
     }
   }
@@ -144,7 +160,8 @@ class DeferredFileListingSuite extends QueryTest with SQLTestUtils with TestHive
     }
   }
 
-  test("defer listing even when a static partition filter is present with subquery") {
+  test("a static partition filter alongside a subquery is pruned eagerly, the subquery falls " +
+      "back to local filtering") {
     withTable("a", "b") {
       spark.range(21).selectExpr("id", "id % 5 AS p").write.partitionBy("p").saveAsTable("a")
       spark.range(5).write.saveAsTable("b")
@@ -152,12 +169,13 @@ class DeferredFileListingSuite extends QueryTest with SQLTestUtils with TestHive
       checkAnswer(sql(sqlStr), Row(9) :: Nil)
 
       val scan = findFileSourceScan(sqlStr, "a")
-      // Both a static filter (p <= 1) and a subquery filter are present: the listing is
-      // deferred anyway, and at execution time the materialized subquery is pushed to the
-      // metastore together with the static filter, so only the surviving partitions are
-      // listed.
-      assert(scan.relation.location.isInstanceOf[CatalogFileIndex])
-      assert(scan.selectedPartitions.totalNumberOfFiles == 0)
+      // The static filter (p <= 1) is eagerly pruned by `PruneFileSourcePartitions` so that
+      // join reordering sees an accurate size, which replaces the location with an
+      // InMemoryFileIndex. That means the location is no longer a CatalogFileIndex, so the
+      // remaining subquery filter no longer defers: it locally filters the already-listed
+      // partitions at execution time instead, same as before the deferred-listing feature.
+      assert(scan.relation.location.isInstanceOf[InMemoryFileIndex])
+      assert(scan.selectedPartitions.totalNumberOfFiles == 2)
       assert(listedFilesCount(scan) == 2)
     }
   }
@@ -208,4 +226,22 @@ class DeferredFileListingSuite extends QueryTest with SQLTestUtils with TestHive
       }
     }
   }
+
+  // Classic broadcast-join dynamic partition pruning (no subquery involved) is intentionally out
+  // of scope for deferred listing: `PruneFileSourcePartitions` cannot see a classic DPP filter at
+  // the time it decides whether to prune eagerly -- `PartitionPruning`, the optimizer rule that
+  // attaches it, runs in a separate, later batch. Treating "no meaningful static filter yet" as a
+  // reason to defer for that case regressed the `PartitionPruning` filtering-ratio heuristic
+  // (which depends on `PruneFileSourcePartitions` having refreshed `CatalogStatistics` via an
+  // eager listing) and the "static scan metrics" contract (`staticFilesNum`/`staticFilesSize`),
+  // which only ever get populated by an eager pre-DPP listing. So this suite only exercises
+  // deferral through a real subquery-based partition filter, and classic broadcast-join DPP
+  // keeps its pre-existing eager-listing behavior, verified separately by
+  // `DynamicPartitionPruningSuite`/`DynamicPartitionPruningHiveScanSuite`.
 }
+
+class DeferredFileListingSuite
+  extends DeferredFileListingSuiteBase with DisableAdaptiveExecutionSuite
+
+class DeferredFileListingSuiteAE
+  extends DeferredFileListingSuiteBase with EnableAdaptiveExecutionSuite

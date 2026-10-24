@@ -2345,7 +2345,10 @@ object SQLConf {
         "Metastore. When the set size exceeds the threshold, we rewrite the InSet predicate " +
         "to be greater than or equal to the minimum value in set and less than or equal to the " +
         "maximum value in set. Larger values may cause Hive Metastore stack overflow. But for " +
-        "InSet inside Not with values exceeding the threshold, we won't push it to Hive Metastore."
+        "InSet inside Not with values exceeding the threshold, we won't push it to Hive " +
+        "Metastore. This threshold is also used when materializing a dynamic partition " +
+        "pruning subquery's result for deferred file listing (see " +
+        "spark.sql.hive.metastoreDeferFileListing.enabled)."
       )
       .version("3.1.0")
       .internal()
@@ -2373,6 +2376,17 @@ object SQLConf {
       .version("3.3.0")
       .booleanConf
       .createWithDefault(false)
+
+  val HIVE_METASTORE_DEFER_FILE_LISTING =
+    buildConf("spark.sql.hive.metastoreDeferFileListing.enabled")
+      .doc("When true, for tables backed by a Hive metastore catalog, defer listing files " +
+        "until execution time when the partition filters include a dynamic partition " +
+        "pruning filter, so that the pruning values can be pushed down to the Hive Metastore " +
+        "instead of eagerly listing every partition that matches the static filters alone. " +
+        "When false, partitions are always listed eagerly at planning time.")
+      .version("4.4.0")
+      .booleanConf
+      .createWithDefault(true)
 
   val HIVE_MANAGE_FILESOURCE_PARTITIONS =
     buildConf("spark.sql.hive.manageFilesourcePartitions")
@@ -9549,6 +9563,8 @@ class SQLConf extends Serializable with Logging with SqlApiConf {
 
   def metastorePartitionPruningFastFallback: Boolean =
     getConf(HIVE_METASTORE_PARTITION_PRUNING_FAST_FALLBACK)
+
+  def metastoreDeferFileListing: Boolean = getConf(HIVE_METASTORE_DEFER_FILE_LISTING)
 
   def manageFilesourcePartitions: Boolean = getConf(HIVE_MANAGE_FILESOURCE_PARTITIONS)
 

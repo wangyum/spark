@@ -365,7 +365,8 @@ Here is the list of SQL metrics:
 <tr><td> <code>data size</code> </td><td> the size of broadcast/shuffled/collected data of the operator </td><td> BroadcastExchange, ShuffleExchange, Subquery </td></tr>
 <tr><td> <code>time to collect</code> </td><td> the time spent on collecting data </td><td> BroadcastExchange, Subquery </td></tr>
 <tr><td> <code>scan time</code> </td><td> the time spent on scanning data </td><td> ColumnarBatchScan, FileSourceScan </td></tr>
-<tr><td> <code>metadata time</code> </td><td> the time spent on getting metadata like number of partitions, number of files </td><td> FileSourceScan </td></tr>
+<tr><td> <code>metadata time</code> </td><td> the time spent on getting metadata like number of partitions, number of files. When file listing is deferred until a dynamic partition pruning filter's value is known, this metric is near zero and the actual metastore time is reported under <code>dynamic partition pruning time</code> instead </td><td> FileSourceScan </td></tr>
+<tr><td> <code>dynamic partition pruning time</code> </td><td> the time spent evaluating a dynamic partition pruning filter against the partitions, including the metastore round trip when file listing is deferred until the filter's value is known </td><td> FileSourceScan </td></tr>
 <tr><td> <code>shuffle bytes written</code> </td><td> the number of bytes written </td><td> CollectLimit, TakeOrderedAndProject, ShuffleExchange </td></tr>
 <tr><td> <code>shuffle records written</code> </td><td> the number of records written </td><td> CollectLimit, TakeOrderedAndProject, ShuffleExchange </td></tr>
 <tr><td> <code>shuffle write time</code> </td><td> the time spent on shuffle writing </td><td> CollectLimit, TakeOrderedAndProject, ShuffleExchange </td></tr>

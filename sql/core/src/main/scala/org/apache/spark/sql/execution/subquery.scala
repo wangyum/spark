@@ -105,9 +105,10 @@ case class ScalarSubquery(
     result
   }
 
-  // Whether the subquery has run and `result` holds its value, mirroring the Option-returning
-  // `InSubqueryExec.values()` readiness signal.
-  def hasResult: Boolean = updated
+  // Whether the subquery has run and `result` holds its value. The boolean-returning
+  // counterpart of `InSubqueryExec.values()`'s `Option`, with opposite polarity to
+  // `InSubqueryExec.isResultUnavailable`; kept `private[sql]` to match that method's visibility.
+  private[sql] def hasResult: Boolean = updated
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     toLiteral.doGenCode(ctx, ev)

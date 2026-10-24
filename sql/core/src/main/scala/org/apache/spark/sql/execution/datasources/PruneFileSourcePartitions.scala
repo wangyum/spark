@@ -32,10 +32,14 @@ import org.apache.spark.sql.catalyst.rules.Rule
  * statistics will be updated. And the partition filters will be kept in the filters of returned
  * logical plan.
  *
- * When the partition filters include a subquery on partition columns, nothing is replaced: the
- * location stays the [[CatalogFileIndex]] and the file listing is deferred to physical
- * execution time, when the subquery values are known and can be pushed to the metastore; see
- * [[FileSourceScanLike.dynamicallySelectedPartitions]].
+ * When a real subquery-based partition filter is present (e.g. `p <= (SELECT ...)`) and there is
+ * no other, meaningful static predicate to prune on, nothing is replaced: the location stays the
+ * [[CatalogFileIndex]] and the file listing is deferred to physical execution time, when the
+ * subquery's result is known and can be pushed to the metastore; see
+ * [[FileSourceScanLike.dynamicallySelectedPartitions]]. A classic broadcast-join dynamic
+ * partition pruning filter is not visible to this rule -- it is attached later by the separate
+ * `PartitionPruning` batch -- so it never triggers this deferral; that case keeps the eager,
+ * pre-existing pruning behavior below.
  */
 private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
 
@@ -75,12 +79,21 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
         logicalRelation.output)
       val (subqueryFilters, staticFilters) =
         normalizedFilters.partition(SubqueryExpression.hasSubquery)
-      val (subqueryPartitionKeyFilters, _) = DataSourceUtils
-        .getPartitionFiltersAndDataFilters(partitionSchema, subqueryFilters)
       val (partitionKeyFilters, _) = DataSourceUtils
         .getPartitionFiltersAndDataFilters(partitionSchema, staticFilters)
+      val (subqueryPartitionKeyFilters, _) = DataSourceUtils
+        .getPartitionFiltersAndDataFilters(partitionSchema, subqueryFilters)
+      // A bare `IsNotNull` on a partition column is routinely added by constraint inference
+      // alongside any comparison on that column -- including one buried inside a subquery filter
+      // (e.g. `p <= (SELECT ...)`). Its presence alone does not mean there is a real static
+      // predicate to push, so it alone must not force eager pruning while a subquery partition
+      // filter is still pending: doing so would permanently replace the `CatalogFileIndex` before
+      // the subquery gets a chance to defer against it. Only an actual narrowing predicate earns
+      // eager pruning in that case.
+      val hasMeaningfulStaticFilter = partitionKeyFilters.exists(!_.isInstanceOf[IsNotNull])
 
-      if (partitionKeyFilters.nonEmpty && subqueryPartitionKeyFilters.isEmpty) {
+      if (partitionKeyFilters.nonEmpty &&
+          (hasMeaningfulStaticFilter || subqueryPartitionKeyFilters.isEmpty)) {
         // The static filters decide the final partition set, so list the files now: join
         // reordering runs after this rule and uses the resulting file size.
         val prunedFileIndex = catalogFileIndex.filterPartitions(partitionKeyFilters)
@@ -102,10 +115,10 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
         // Keep partition-pruning predicates so that they are visible in physical planning
         rebuildPhysicalOperation(projects, filters, prunedLogicalRelation)
       } else {
-        // A subquery on partition columns is only evaluated at execution time, so the
-        // partition set can still narrow after this rule ran: keep the [[CatalogFileIndex]]
-        // and defer the file listing. The physical scan lists only the surviving partitions
-        // once the subquery values are known.
+        // There is no meaningful static predicate to push yet, and a real subquery-based
+        // partition filter is still pending: defer. Keep the [[CatalogFileIndex]] and let the
+        // physical scan list only the surviving partitions once the subquery's result is known
+        // (see [[FileSourceScanLike.dynamicallySelectedPartitions]]).
         op
       }
   }

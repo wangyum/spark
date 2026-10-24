@@ -330,7 +330,9 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
   def markedForSingleTaskExecution: Boolean
 
   private def shouldDeferListing: Boolean = {
-    relation.location.isInstanceOf[CatalogFileIndex] &&
+    !bucketedScan &&
+      getSqlConf(relation.sparkSession).metastoreDeferFileListing &&
+      relation.location.isInstanceOf[CatalogFileIndex] &&
       partitionFilters.exists(isDynamicPruningFilter)
   }
 
@@ -417,7 +419,7 @@ trait FileSourceScanLike extends DataSourceScanExec with SessionStateHelper {
     val staticDataFilters = dataFilters.filterNot(isDynamicPruningFilter)
     val staticPartitionFilters = partitionFilters.filterNot(isDynamicPruningFilter)
     val partitionDirectories: Seq[PartitionDirectory] =
-      if (shouldDeferListing && !bucketedScan) {
+      if (shouldDeferListing) {
         // A dynamic partition filter (a subquery on partition columns) is still outstanding
         // and this is not a bucketed scan, so nothing at planning time needs the files.
         // Nothing is statically selected: report zero files and keep the listing deferred.
