@@ -1226,11 +1226,22 @@ object SQLConf {
       "or single inequalities) are planned as broadcast range joins instead of broadcast " +
       "nested loop joins if the build side is eligible for broadcast. Supported join types " +
       "include inner, left outer, right outer, left semi, and left anti. Broadcast range joins " +
-      "build an index on the broadcast side to significantly accelerate selective range probes, " +
-      "but perform worse than nested loop joins when most, but not all, of the build intervals " +
-      "overlap each probe: about 0.7X-0.8X on long keys and 0.5X-0.6X on boxed keys. Builds " +
-      "where every interval overlaps each probe run at about parity instead. This is " +
-      "disabled by default.")
+      "build an index on the broadcast side to significantly accelerate selective range " +
+      "probes, but planning does not consult overlap, probe size, or index-size estimates, " +
+      "so three trade-offs apply uniformly. First, a build where most, but not all, " +
+      "intervals overlap each probe runs slower than a nested loop join, and boxed keys " +
+      "(double, string, wide decimal) slow down at far lower overlap than long-specialized " +
+      "keys (boolean, byte, short, int, date, long, timestamp, compact decimal): long keys " +
+      "stay close to parity up to about 10% interleaved overlap and fall to 0.7X-0.8X by " +
+      "50%-90%, while boxed keys reach about parity by 5% and fall to 0.5X-0.6X by 50%-90%. " +
+      "Builds where every interval overlaps each probe run at about parity instead. Second, " +
+      "the broadcast size check charges the index's retained memory, which is larger per " +
+      "row than the raw row bytes charged to a broadcast nested loop join, so a " +
+      "BROADCAST-hinted or raised-threshold build can fail the size check where a nested " +
+      "loop join would not. Third, a hinted or size-eligible build still pays a one-time " +
+      "index build (a projection, key and row copies, a sort) regardless of how small the " +
+      "streamed side is, so a tiny streamed side against a large hinted build can run " +
+      "slower than a nested loop join. This is disabled by default.")
     .version("4.4.0")
     .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
     .booleanConf

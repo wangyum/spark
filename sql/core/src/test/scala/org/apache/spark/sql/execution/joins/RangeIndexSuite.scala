@@ -277,8 +277,9 @@ class RangeIndexSuite extends SparkFunSuite {
   }
 
   test("interval tree is correct under heavy build-side overlap") {
-    // Every interval nests inside the one before it, so a point in the middle
-    // hits about half of the rows. The tree still stores one node per row.
+    // Every interval nests inside the one before it and contains n, so the probe
+    // at n hits all 300 rows; the probe at n/2 hits about half (151), since only
+    // intervals with i <= n/2 reach that far. The tree still stores one node per row.
     val n = 300
     val nested = buildIntervals((0 until n).map(i => span(i, 2 * n - i, i)))
 
