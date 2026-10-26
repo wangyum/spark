@@ -31,6 +31,15 @@ import org.apache.spark.sql.catalyst.rules.Rule
  * For [[HadoopFsRelation]], the location will be replaced by pruned file index, and corresponding
  * statistics will be updated. And the partition filters will be kept in the filters of returned
  * logical plan.
+ *
+ * When a real subquery-based partition filter is present (e.g. `p <= (SELECT ...)`) and there is
+ * no other, meaningful static predicate to prune on, nothing is replaced: the location stays the
+ * [[CatalogFileIndex]] and the file listing is deferred to physical execution time, when the
+ * subquery's result is known and can be pushed to the metastore; see
+ * [[org.apache.spark.sql.execution.FileSourceScanLike.dynamicallySelectedPartitions]]. A classic
+ * broadcast-join dynamic partition pruning filter is not visible to this rule -- it is attached
+ * later by the separate `PartitionPruning` batch -- so it never triggers this deferral on its
+ * own; that case keeps the eager, pre-existing pruning behavior below.
  */
 private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
 
@@ -64,15 +73,29 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
       val normalizedFilters = DataSourceStrategy.normalizeExprs(
         filters.filter { f =>
           f.deterministic &&
-            !SubqueryExpression.hasSubquery(f) &&
             // Python UDFs might exist because this rule is applied before ``ExtractPythonUDFs``.
             !f.exists(_.isInstanceOf[PythonUDF])
         },
         logicalRelation.output)
+      val (subqueryFilters, staticFilters) =
+        normalizedFilters.partition(SubqueryExpression.hasSubquery)
       val (partitionKeyFilters, _) = DataSourceUtils
-        .getPartitionFiltersAndDataFilters(partitionSchema, normalizedFilters)
+        .getPartitionFiltersAndDataFilters(partitionSchema, staticFilters)
+      val (subqueryPartitionKeyFilters, _) = DataSourceUtils
+        .getPartitionFiltersAndDataFilters(partitionSchema, subqueryFilters)
+      // A bare `IsNotNull` on a partition column is routinely added by constraint inference
+      // alongside any comparison on that column -- including one buried inside a subquery filter
+      // (e.g. `p <= (SELECT ...)`). Its presence alone does not mean there is a real static
+      // predicate to push, so it alone must not force eager pruning while a subquery partition
+      // filter is still pending: doing so would permanently replace the `CatalogFileIndex` before
+      // the subquery gets a chance to defer against it. Only an actual narrowing predicate earns
+      // eager pruning in that case.
+      val hasMeaningfulStaticFilter = partitionKeyFilters.exists(!_.isInstanceOf[IsNotNull])
 
-      if (partitionKeyFilters.nonEmpty) {
+      if (partitionKeyFilters.nonEmpty &&
+          (hasMeaningfulStaticFilter || subqueryPartitionKeyFilters.isEmpty)) {
+        // The static filters decide the final partition set, so list the files now: join
+        // reordering runs after this rule and uses the resulting file size.
         val prunedFileIndex = catalogFileIndex.filterPartitions(partitionKeyFilters)
         val prunedFsRelation =
           fsRelation.copy(location = prunedFileIndex)(fsRelation.sparkSession)
@@ -92,6 +115,11 @@ private[sql] object PruneFileSourcePartitions extends Rule[LogicalPlan] {
         // Keep partition-pruning predicates so that they are visible in physical planning
         rebuildPhysicalOperation(projects, filters, prunedLogicalRelation)
       } else {
+        // There is no meaningful static partition-key predicate to push eagerly. If a real
+        // subquery-based partition filter is pending, keep the [[CatalogFileIndex]] and let the
+        // physical scan list only the surviving partitions once the subquery's result is known
+        // (see FileSourceScanLike.dynamicallySelectedPartitions); if there is no partition
+        // filter at all, this is simply a no-op.
         op
       }
   }

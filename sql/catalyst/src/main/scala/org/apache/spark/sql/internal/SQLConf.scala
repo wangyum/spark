@@ -2345,7 +2345,9 @@ object SQLConf {
         "Metastore. When the set size exceeds the threshold, we rewrite the InSet predicate " +
         "to be greater than or equal to the minimum value in set and less than or equal to the " +
         "maximum value in set. Larger values may cause Hive Metastore stack overflow. But for " +
-        "InSet inside Not with values exceeding the threshold, we won't push it to Hive Metastore."
+        "InSet inside Not with values exceeding the threshold, we won't push it to Hive " +
+        "Metastore. This threshold is also used when materializing a dynamic partition " +
+        "pruning subquery's result for deferred file listing."
       )
       .version("3.1.0")
       .internal()

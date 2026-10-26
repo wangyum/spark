@@ -105,6 +105,15 @@ case class ScalarSubquery(
     result
   }
 
+  // Whether the subquery has run and `result` holds its value -- true once `updateResult()` has
+  // executed, including the no-rows case where `result` is null. This is the boolean-returning
+  // counterpart of `InSubqueryExec.values()`'s `Option`, but tracks a different lifecycle stage
+  // than `InSubqueryExec.isResultUnavailable`: that flag is true only once a reused broadcast's
+  // value domain was explicitly marked unavailable after execution, so `hasResult` and
+  // `isResultUnavailable` are not opposites -- both read false before execution has happened at
+  // all. Kept `private[sql]` to match `isResultUnavailable`'s visibility.
+  private[sql] def hasResult: Boolean = updated
+
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     toLiteral.doGenCode(ctx, ev)
   }
