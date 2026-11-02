@@ -677,7 +677,13 @@ object SQLConf {
         "copy of the relation, removing the self-join cross-product. The rewrite fails closed " +
         "unless the self-join sides are proven to read the same repeatable source -- currently " +
         "stock Parquet scans, Range, and local relations -- so it never changes results for " +
-        "non-repeatable inputs. This is experimental and off by default: there is no cost " +
+        "non-repeatable inputs. One known exception: the rewrite always filters out NULL " +
+        "equi-join keys before grouping, mirroring the self-join's own `=` semantics, while the " +
+        "un-rewritten plan only gets an equivalent filter when " +
+        "spark.sql.constraintPropagation.enabled infers one. With that config disabled and ANSI " +
+        "mode on, a query whose un-rewritten plan throws CAST_INVALID_INPUT while evaluating an " +
+        "expression that this filter would otherwise have skipped can instead succeed once this " +
+        "rewrite applies. This is experimental and off by default: there is no cost " +
         "model, and the benefit depends on per-key multiplicity because the eliminated " +
         "self-join can generate quadratically many candidate pairs. A variable-width " +
         "inequality column (STRING or BINARY) raises the break-even multiplicity further, " +

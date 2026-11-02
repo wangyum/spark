@@ -53,9 +53,13 @@ class RewriteSelfJoinInequalityToAggregateSuite extends QueryTest with SharedSpa
 
   private val rewriteConf = SQLConf.REWRITE_SELF_JOIN_INEQUALITY_TO_AGGREGATE_ENABLED.key
 
-  /** Signature aliases produced by the rewrite; presence of both => rule definitely fired. */
-  private val MinNeqAlias = "_rewrite_selfjoin_inequality_min"
-  private val MaxNeqAlias = "_rewrite_selfjoin_inequality_max"
+  /**
+   * Signature aliases produced by the rewrite; presence of both => rule definitely fired. Reused
+   * from the production constants (rather than re-literaled here) so a future rename of the alias
+   * prefix cannot silently desync the two copies.
+   */
+  private val MinNeqAlias = RewriteSelfJoinInequalityToAggregate.MinNeqAliasName
+  private val MaxNeqAlias = RewriteSelfJoinInequalityToAggregate.MaxNeqAliasName
 
   // Descends into subqueries: `QueryPlan.exists` does not, and the rewrite's signature alias lives
   // inside the IN-subquery when the rule runs on an analyzed (not-yet-rewritten) plan.

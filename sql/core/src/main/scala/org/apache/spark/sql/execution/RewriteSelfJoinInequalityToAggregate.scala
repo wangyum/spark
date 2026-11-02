@@ -41,13 +41,20 @@ import org.apache.spark.sql.types._
  * predicate subquery into a semi/anti/existence join, so it only sees the uncorrelated
  * `InSubquery` shape.
  *
+ * Known behavior exception (see `buildAggregateHavingMultipleDistinct`'s `IsNotNull(equiKeys)`):
+ * with ANSI mode on and `spark.sql.constraintPropagation.enabled` off, this rewrite can turn a
+ * baseline plan that throws `CAST_INVALID_INPUT` into one that succeeds, because its NULL-key
+ * filter is unconditional while the baseline's equivalent filter is only inferred when that config
+ * is enabled. See `spark.sql.optimizer.rewriteSelfJoinInequalityToAggregate.enabled`'s doc and
+ * `RewriteSelfJoinInequalityToAggregateSuite`'s "ANSI: NULL equi-key cast outcomes" test.
+ *
  * Controlled by `spark.sql.optimizer.rewriteSelfJoinInequalityToAggregate.enabled`
  * (default false, opt-in).
  */
 object RewriteSelfJoinInequalityToAggregate extends Rule[LogicalPlan] with PredicateHelper {
 
-  private val MinNeqAliasName = "_rewrite_selfjoin_inequality_min"
-  private val MaxNeqAliasName = "_rewrite_selfjoin_inequality_max"
+  private[execution] val MinNeqAliasName = "_rewrite_selfjoin_inequality_min"
+  private[execution] val MaxNeqAliasName = "_rewrite_selfjoin_inequality_max"
 
   override def apply(plan: LogicalPlan): LogicalPlan = {
     if (!conf.getConf(SQLConf.REWRITE_SELF_JOIN_INEQUALITY_TO_AGGREGATE_ENABLED)) {
@@ -79,6 +86,13 @@ object RewriteSelfJoinInequalityToAggregate extends Rule[LogicalPlan] with Predi
    * `NOT IN`. The neq column needs no filter -- MIN/MAX ignore NULL, and a group with fewer than
    * two non-null values has `min = max` (or both NULL, which makes `<>` NULL), so `<>` is never
    * true for it and the group is dropped.
+   *
+   * This filter is unconditional -- unlike the baseline plan's equivalent NULL-key filter, which
+   * only exists when `InferFiltersFromConstraints` infers it (gated by
+   * `spark.sql.constraintPropagation.enabled`) -- so it is not optional for correctness, but it can
+   * skip evaluating an expression downstream of a NULL key before that expression gets a chance to
+   * throw. See this rule's class-level Scaladoc and the conf's doc for the one accepted behavior
+   * difference this causes (ANSI mode + constraintPropagation disabled).
    *
    * Sound only because the rule fires under `InSubquery`: IN / NOT IN membership is insensitive to
    * duplicate rows in the subquery result, and it binds columns by position (`equalsStructurally`),
@@ -229,32 +243,19 @@ object RewriteSelfJoinInequalityToAggregate extends Rule[LogicalPlan] with Predi
       outerJoin: Join): Option[LogicalPlan] = {
     val outerCond = outerJoin.condition.get
 
-    val (selfJoinSide, selfJoinOnRight) =
+    val (selfJoinSide, selfJoinProjectOpt, selfJoin, equiPairs, neqPairs, selfJoinOnRight) =
       tryExtractSelfJoin(outerJoin.right) match {
-        case Some(_) => (outerJoin.right, true)
+        case Some((projectOpt, join, equi, neq)) =>
+          (outerJoin.right, projectOpt, join, equi, neq, true)
         case None =>
           tryExtractSelfJoin(outerJoin.left) match {
-            case Some(_) => (outerJoin.left, false)
+            case Some((projectOpt, join, equi, neq)) =>
+              (outerJoin.left, projectOpt, join, equi, neq, false)
             case None => return None
           }
       }
 
-    val (selfJoinProjectOpt, selfJoin) = selfJoinSide match {
-      case p @ Project(_, j: Join) if j.joinType == Inner && j.condition.isDefined =>
-        (Some(p), j)
-      case j: Join if j.joinType == Inner && j.condition.isDefined =>
-        (None, j)
-      case _ => return None
-    }
-
     val sjLeft = selfJoin.left
-    val sjCond = selfJoin.condition.get
-    if (!isSameBaseRelation(sjLeft, selfJoin.right)) return None
-
-    val parsed = parseSelfJoinCondition(sjCond, sjLeft, selfJoin.right)
-    if (parsed.isEmpty) return None
-    val (equiPairs, neqPairs) = parsed.get
-
     val sjLeftEquiAttrs: Seq[Attribute] = equiPairs.map(_._1)
     val sjLeftNeqAttr: Attribute = neqPairs.head._1
 
@@ -317,17 +318,27 @@ object RewriteSelfJoinInequalityToAggregate extends Rule[LogicalPlan] with Predi
     }
   }
 
-  private def tryExtractSelfJoin(plan: LogicalPlan): Option[Join] = {
-    val join = plan match {
-      case Project(_, j: Join) if j.joinType == Inner && j.condition.isDefined => j
-      case j: Join if j.joinType == Inner && j.condition.isDefined => j
+  /**
+   * Extract and fully validate a self-join side, returning everything the caller needs
+   * (the optional wrapper Project, the Join, and its parsed equi/neq pairs) so a caller never has
+   * to re-derive or re-check any of hint/`isSameBaseRelation`/`parseSelfJoinCondition` by hand --
+   * that duplication previously let the two call sites silently drift apart.
+   */
+  private def tryExtractSelfJoin(
+      plan: LogicalPlan)
+      : Option[(Option[Project], Join, Seq[(Attribute, Attribute)], Seq[(Attribute, Attribute)])] = {
+    val (projectOpt, join) = plan match {
+      case p @ Project(_, j: Join) if j.joinType == Inner && j.condition.isDefined => (Some(p), j)
+      case j: Join if j.joinType == Inner && j.condition.isDefined => (None, j)
       case _ => return None
     }
     // A hinted self-join is not an extraction candidate; see `rewriteDirectSelfJoin`.
     if (!join.hint.isEmpty) return None
     if (!isSameBaseRelation(join.left, join.right)) return None
-    if (parseSelfJoinCondition(join.condition.get, join.left, join.right).isEmpty) return None
-    Some(join)
+    val parsed = parseSelfJoinCondition(join.condition.get, join.left, join.right)
+    if (parsed.isEmpty) return None
+    val (equiPairs, neqPairs) = parsed.get
+    Some((projectOpt, join, equiPairs, neqPairs))
   }
 
   // ============================================================================
@@ -480,7 +491,7 @@ object RewriteSelfJoinInequalityToAggregate extends Rule[LogicalPlan] with Predi
     !plan.isStreaming &&
     plan.subqueriesAll.isEmpty &&
     isRowBagRepeatable(plan) &&
-    hasRepeatableExpressions(plan)
+    allExpressionsRepeatable(plan)
   }
 
   /**
@@ -510,7 +521,7 @@ object RewriteSelfJoinInequalityToAggregate extends Rule[LogicalPlan] with Predi
     case _ => true
   }
 
-  private def hasRepeatableExpressions(plan: LogicalPlan): Boolean = {
+  private def allExpressionsRepeatable(plan: LogicalPlan): Boolean = {
     !plan.exists(node => node.expressions.exists(expr => !isRepeatableExpression(expr)))
   }
 
@@ -533,8 +544,23 @@ object RewriteSelfJoinInequalityToAggregate extends Rule[LogicalPlan] with Predi
     // Cast.needsTimeZone only recurses for matching complex-to-complex casts. For
     // complex-to-string casts, walk the source type tree explicitly so nested
     // zone-sensitive values (for example TIMESTAMP) are rejected as well.
+    //
+    // A nested VariantType is explicitly excluded rather than delegated to
+    // `Cast.needsTimeZone(VariantType, _)`: that blanket rule answers "can casting a VARIANT to
+    // this target ever need the zone", which is a broader question than the one this nested walk
+    // asks ("does rendering this nested VARIANT as part of a complex-to-STRING cast depend on the
+    // zone") -- a Variant's own string rendering is zone-independent regardless of nesting depth,
+    // so without this exclusion every complex-to-string cast containing a nested Variant would be
+    // rejected as a missed (but not incorrect) optimization. A top-level Variant-to-STRING cast is
+    // still caught above by the direct `c.needsTimeZone` check, since `needsTimeZone(VariantType, _)`
+    // is unconditionally true there. TODO(SPARK-60179): once this rule's branch is rebased onto a
+    // tree containing the canonical `Cast.needsTimeZoneToString`, delete this hand-rolled walk and
+    // call that shared helper instead, so this gate stops needing separate upkeep.
     case c: Cast if c.dataType.isInstanceOf[StringType] &&
-        c.child.dataType.existsRecursively(Cast.needsTimeZone(_, c.dataType)) =>
+        c.child.dataType.existsRecursively {
+          case VariantType => false
+          case t => Cast.needsTimeZone(t, c.dataType)
+        } =>
       false
     case _: Alias | _: Cast | _: Add | _: Subtract | _: Multiply | _: Divide | _: Remainder |
         _: And | _: Or | _: Not | _: EqualTo | _: EqualNullSafe | _: LessThan |
