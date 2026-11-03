@@ -272,6 +272,46 @@ abstract class HashedRelationSuite extends SharedSparkSession {
     map2.free()
   }
 
+  test("LongToUnsafeRowMap packs the sparse index before serialization") {
+    // The build-time sparse array keeps extra capacity (load factor <= 0.5, see
+    // LongToUnsafeRowMap.updateIndex) to bound hash-collision probing, but that headroom is
+    // pure zero-padding that should never be shipped over the wire: only the packed (key,
+    // address) pairs carry information. Guard against a regression back to serializing the
+    // padded array verbatim by bounding the serialized size well under what an unpacked
+    // array would need (>= 56 bytes/key here), while leaving headroom above the packed
+    // format's expected cost (~40 bytes/key: 24 bytes/key of page data, 16 bytes/key of
+    // packed index).
+    val unsafeProj = UnsafeProjection.create(Seq(BoundReference(0, LongType, false)))
+    val N = 200000
+    val rand = new Random(0)
+    // Random keys spread across the full Long range keep (maxKey - minKey) far larger than
+    // the index array or 1024, so optimize() cannot switch this map to dense mode.
+    val keys = Array.fill(N)(rand.nextLong())
+
+    val map = new LongToUnsafeRowMap(mm, N)
+    keys.foreach(k => map.append(k, unsafeProj(InternalRow(k))))
+    map.optimize()
+
+    val os = new ByteArrayOutputStream()
+    val out = new ObjectOutputStream(os)
+    map.writeExternal(out)
+    out.flush()
+    map.free()
+
+    val serializedSize = os.toByteArray.length
+    assert(serializedSize < N * 48,
+      s"expected the packed sparse index to serialize under ${N * 48} bytes, got $serializedSize")
+
+    val in = new ObjectInputStream(new ByteArrayInputStream(os.toByteArray))
+    val map2 = new LongToUnsafeRowMap(mm, 1)
+    map2.readExternal(in)
+    val row = unsafeProj(InternalRow(0L)).copy()
+    keys.foreach { k =>
+      assert(map2.getValue(k, row).getLong(0) === k)
+    }
+    map2.free()
+  }
+
   test("SPARK-24257: insert big values into LongToUnsafeRowMap") {
     val unsafeProj = UnsafeProjection.create(Array[DataType](StringType))
     val map = new LongToUnsafeRowMap(mm, 1)

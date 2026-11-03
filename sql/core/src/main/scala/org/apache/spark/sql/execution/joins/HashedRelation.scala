@@ -923,9 +923,30 @@ private[execution] final class LongToUnsafeRowMap(
     writeLong(numKeys)
     writeLong(numValues)
 
-    writeLong(array.size())
-    writeBytes(writeBuffer, array.memoryBlock.getBaseObject, array.memoryBlock.getBaseOffset,
-      Math.toIntExact(array.size()))
+    if (isDense) {
+      writeLong(array.size())
+      writeBytes(writeBuffer, array.memoryBlock.getBaseObject, array.memoryBlock.getBaseOffset,
+        Math.toIntExact(array.size()))
+    } else {
+      // The sparse array's capacity is kept well above numKeys (load factor <= 0.5, see
+      // updateIndex) to bound hash-collision probing, but that headroom is pure zero-padding
+      // with no reason to go over the wire: only the numKeys occupied (key, address) slots
+      // carry information, so pack those into a right-sized buffer and let read() rebuild the
+      // sparse array on the receiving end.
+      val packed = new Array[Long](numKeys.toInt * 2)
+      var i = 0
+      var j = 0
+      while (i < array.size()) {
+        if (array.get(i + 1) != 0) {
+          packed(j) = array.get(i)
+          packed(j + 1) = array.get(i + 1)
+          j += 2
+        }
+        i += 2
+      }
+      writeLong(packed.length)
+      writeBytes(writeBuffer, packed, Platform.LONG_ARRAY_OFFSET, packed.length)
+    }
     val used = ((cursor - page.getBaseOffset) / 8).toInt
     writeLong(used)
     writeBytes(writeBuffer, page.getBaseObject, page.getBaseOffset, used)
@@ -962,14 +983,43 @@ private[execution] final class LongToUnsafeRowMap(
     isDense = readBoolean()
     minKey = readLong()
     maxKey = readLong()
-    numKeys = readLong()
+    val expectedNumKeys = readLong()
     numValues = readLong()
 
     val length = readLong().toInt
-    mask = length - 2
     freeArray(array)
-    array = allocateArray(length)
-    readData(readBuffer, array.memoryBlock.getBaseObject, array.memoryBlock.getBaseOffset, length)
+    if (isDense) {
+      mask = length - 2
+      array = allocateArray(length)
+      readData(readBuffer, array.memoryBlock.getBaseObject, array.memoryBlock.getBaseOffset,
+        length)
+      numKeys = expectedNumKeys
+    } else {
+      // `length` is the packed (key, address) pair count written by write() above; rebuild a
+      // right-sized sparse array (load factor <= 0.5, the same invariant append()/growArray()
+      // maintain) in a single pass instead of carrying the original build-time capacity, and
+      // its padding, over the wire.
+      val packed = new Array[Long](length)
+      readData(readBuffer, packed, Platform.LONG_ARRAY_OFFSET, length)
+      var n = 1
+      while (n < expectedNumKeys * 2) n *= 2
+      // n can reach 1 << 30 at the numKeys ceiling enforced by updateIndex below, so n * 2
+      // must stay in Long arithmetic here (mirrors the newNumWords * 8L / pageLength * 8L
+      // guards elsewhere in this class against Int * Int overflow).
+      val arraySize = n * 2L
+      array = allocateArray(arraySize)
+      array.zeroOut()
+      mask = Math.toIntExact(arraySize - 2)
+      numKeys = 0
+      var i = 0
+      while (i < packed.length) {
+        val key = packed(i)
+        updateIndex(key, findKeyPosition(key), packed(i + 1))
+        i += 2
+      }
+      assert(numKeys == expectedNumKeys,
+        s"expected $expectedNumKeys keys after rebuilding the sparse index, got $numKeys")
+    }
     val pageLength = readLong().toInt
     freePage(page)
     // Use Long multiplication: pageLength can be up to 1 << 30 (8 GiB page / 8),
