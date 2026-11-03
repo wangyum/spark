@@ -1106,22 +1106,34 @@ object SQLConf {
 
   val VECTORIZED_HUGE_VECTOR_RESERVE_RATIO =
     buildConf("spark.sql.inMemoryColumnarStorage.hugeVectorReserveRatio")
-      .doc("When spark.sql.inMemoryColumnarStorage.hugeVectorThreshold <= 0 or the required " +
-        "memory is smaller than spark.sql.inMemoryColumnarStorage.hugeVectorThreshold, spark " +
-        "reserves required memory * 2 memory; otherwise, spark reserves " +
-        "required memory * this ratio memory, and will release this column vector memory before " +
-        "reading the next batch rows.")
+      .doc("Only takes effect when spark.sql.inMemoryColumnarStorage.hugeVectorThreshold is " +
+        "set to a value other than its -1 default. Once the required memory exceeds that " +
+        "threshold, Spark reserves required memory * this ratio memory instead of its default " +
+        "growth rate, and will release this column vector memory before reading the next batch " +
+        "rows. Must be at least 1.0, since a smaller ratio would reserve less than the " +
+        "required memory.")
       .version("4.0.0")
       .doubleConf
+      .checkValue(_ >= 1.0, "The huge vector reserve ratio must be at least 1.0.")
       .createWithDefault(1.2)
 
   val VECTORIZED_HUGE_VECTOR_THRESHOLD =
     buildConf("spark.sql.inMemoryColumnarStorage.hugeVectorThreshold")
-      .doc("When the required memory is larger than this, spark reserves required memory * " +
-        s"${VECTORIZED_HUGE_VECTOR_RESERVE_RATIO.key} memory next time and release this column " +
-        s"vector memory before reading the next batch rows. -1 means disabling the optimization.")
+      .doc("When set to a value other than its -1 default (including 0), this threshold " +
+        "replaces Spark's default growth slab for a vector's backing array: capacity still " +
+        "doubles up to this many elements of that array, which is this many bytes only for a " +
+        "byte-backed array such as a string or binary column's byte data; past it, Spark " +
+        s"reserves required memory * ${VECTORIZED_HUGE_VECTOR_RESERVE_RATIO.key} memory " +
+        "instead of its default growth rate, and releases this column vector memory before " +
+        "reading the next batch rows. A required size equal to this threshold still doubles, " +
+        "so pick one less than the intended slab to get the ratio applied exactly at that " +
+        "size. -1 means disabling the optimization and leaving Spark's default growth rate in " +
+        "effect for every size.")
       .version("4.0.0")
       .bytesConf(ByteUnit.BYTE)
+      .checkValue(v => v == -1 || (v >= 0 && v <= Int.MaxValue),
+        "The huge vector threshold must be -1, or between 0 and Int.MaxValue since " +
+          "WritableColumnVector#reserve compares it against an Int capacity.")
       .createWithDefault(-1)
 
   val IN_MEMORY_PARTITION_PRUNING =

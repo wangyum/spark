@@ -77,7 +77,10 @@ public abstract class WritableColumnVector extends ColumnVector {
   protected abstract void releaseMemory();
 
   /**
-   * Resets this column for writing. The currently stored values are no longer accessible.
+   * Resets this column for writing. The currently stored values are no longer accessible. Once
+   * {@link #hugeVectorThreshold} is set and this vector has grown past it, this also shrinks
+   * the vector's backing memory back down to {@link #defaultCapacity}, freeing and reallocating
+   * it in the process.
    */
   public void reset() {
     if (isConstant || isAllNull()) return;
@@ -139,14 +142,32 @@ public abstract class WritableColumnVector extends ColumnVector {
     reserve(elementsAppended + additionalCapacity);
   }
 
+  /**
+   * Vectors at or below this many elements double when they grow, which pays off for the small
+   * arrays most vectors start as. Above it they grow by an eighth, since doubling arrays of many
+   * megabytes would waste far more memory than the copies the slower growth rate adds. A caller
+   * that has set {@link #hugeVectorThreshold} gets that value as the slab instead, and
+   * {@link #hugeVectorReserveRatio} as the growth rate past it, since both configs predate and
+   * otherwise have no effect on this default.
+   */
+  @VisibleForTesting
+  static final int GROWTH_SLAB = 1 << 20;
+
   public void reserve(int requiredCapacity) {
     if (requiredCapacity < 0) {
       throwUnsupportedException(requiredCapacity, null);
     } else if (requiredCapacity > capacity) {
-      int newCapacity =
-          hugeVectorThreshold < 0 || requiredCapacity < hugeVectorThreshold ?
-              (int) Math.min(MAX_CAPACITY, requiredCapacity * 2L) :
-              (int) Math.min(MAX_CAPACITY, requiredCapacity * hugeVectorReserveRatio);
+      long slab = hugeVectorThreshold > -1 ? hugeVectorThreshold : GROWTH_SLAB;
+      int newCapacity;
+      if (requiredCapacity <= slab) {
+        newCapacity = (int) Math.min((long) MAX_CAPACITY, requiredCapacity * 2L);
+      } else if (hugeVectorThreshold > -1) {
+        newCapacity = (int) Math.min(
+            (long) MAX_CAPACITY, (long) (requiredCapacity * hugeVectorReserveRatio));
+      } else {
+        newCapacity = (int) Math.min(
+            (long) MAX_CAPACITY, requiredCapacity + ((long) requiredCapacity >> 3));
+      }
       if (requiredCapacity <= newCapacity) {
         try {
           reserveInternal(newCapacity);
@@ -1011,14 +1032,43 @@ public abstract class WritableColumnVector extends ColumnVector {
   @VisibleForTesting
   protected int MAX_CAPACITY = ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH;
 
+  /**
+   * Overrides {@link #GROWTH_SLAB} as the growth slab in {@link #reserve(int)}, and the point
+   * past which {@link #reset()} shrinks this vector back to {@link #defaultCapacity}, when set
+   * to anything other than its -1 default.
+   */
   protected int hugeVectorThreshold;
 
+  /**
+   * The growth rate {@link #reserve(int)} uses past {@link #hugeVectorThreshold} instead of its
+   * default rate, once that threshold is set to anything other than its -1 default.
+   */
   protected double hugeVectorReserveRatio;
 
   /**
    * Number of nulls in this column. This is an optimization for the reader, to skip NULL checks.
    */
   protected int numNulls;
+
+  /**
+   * Whether this vector holds null bits at all. The byte child of a string, binary or similar
+   * vector never holds them, since its bytes are never null by themselves (see the constructor),
+   * so it frees them and answers null queries as never-null. Every other vector tracks nulls.
+   */
+  boolean tracksNulls = true;
+
+  /**
+   * Frees the null bits this vector holds. The base implementation has none, so it has nothing
+   * to free.
+   */
+  protected void releaseNullBits() {
+  }
+
+  /** Stops holding null bits, and frees any it already allocated. */
+  private void stopTrackingNulls() {
+    tracksNulls = false;
+    releaseNullBits();
+  }
 
   /**
    * True if this column's values are fixed. This means the column values never change, even
@@ -1105,6 +1155,12 @@ public abstract class WritableColumnVector extends ColumnVector {
       }
       this.childColumns = new WritableColumnVector[1];
       this.childColumns[0] = reserveNewInternalColumn(childCapacity, childType);
+      if (!(type instanceof ArrayType)) {
+        // The child holds the bytes of this vector's own values, which are never null by
+        // themselves: a null marks a whole value, on this vector. The per-byte null bits the
+        // child allocated would double the memory a long value column takes for no use.
+        this.childColumns[0].stopTrackingNulls();
+      }
     } else if (type instanceof StructType st) {
       this.childColumns = new WritableColumnVector[st.fields().length];
       for (int i = 0; i < childColumns.length; ++i) {

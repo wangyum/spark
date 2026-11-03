@@ -108,13 +108,14 @@ public class LateMaterializationParquetRecordReader extends VectorizedParquetRec
       SparkLoggerFactory.getLogger(LateMaterializationParquetRecordReader.class);
 
   /**
-   * What one buffered variable-length value costs, as a multiple of its own bytes. The byte child
-   * holds a null byte per byte, and {@link WritableColumnVector#reserve} doubles it when it grows,
-   * so this is the most the value takes on heap, and what the task's memory manager is asked for.
-   * That holds at the default growth. A {@code hugeVectorReserveRatio} above 2 makes it
-   * under-count past {@code hugeVectorThreshold}, which is off by default.
+   * What one buffered variable-length value costs, as a multiple of its own bytes. The byte
+   * child holds no null bits of its own (a null marks the whole value, on the parent), and
+   * {@link WritableColumnVector#reserve} doubles it when it grows, so this is the most the
+   * value takes on heap, and what the task's memory manager is asked for. That holds at the
+   * default growth. A {@code hugeVectorReserveRatio} above 2 makes it under-count past
+   * {@code hugeVectorThreshold}, which is off by default.
    */
-  private static final long VARIABLE_LENGTH_BYTES_FACTOR = 4L;
+  private static final long VARIABLE_LENGTH_BYTES_FACTOR = 2L;
 
   /**
    * What one surviving row range costs to hold, parquet's {@code RowRanges.Range} with its object

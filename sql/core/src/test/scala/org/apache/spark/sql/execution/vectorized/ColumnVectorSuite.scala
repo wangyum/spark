@@ -1033,30 +1033,176 @@ class ColumnVectorSuite extends SparkFunSuite with SQLHelper {
     }
   }
 
-  test("SPARK-44239: Test column vector reserve policy") {
+  test("SPARK-53194: Test column vector reserve policy with the default growth slab") {
+    val dataType = ByteType
+
+    // The new capacity of a vector under the growth slab doubles.
+    Array(new OnHeapColumnVector(80, dataType),
+      new OffHeapColumnVector(80, dataType)).foreach { vector =>
+      try {
+        vector.appendBytes(100, 0)
+        assert(vector.capacity == 200)
+      } finally {
+        vector.close()
+      }
+    }
+
+    // Doubling still applies exactly at the growth slab boundary.
+    Array(new OnHeapColumnVector(80, dataType),
+      new OffHeapColumnVector(80, dataType)).foreach { vector =>
+      try {
+        vector.appendBytes(WritableColumnVector.GROWTH_SLAB, 0.toByte)
+        assert(vector.capacity == WritableColumnVector.GROWTH_SLAB * 2L)
+      } finally {
+        vector.close()
+      }
+    }
+
+    // A vector over the slab grows by an eighth, so a column of many-megabyte values does
+    // not reserve double its bytes, and a reset never shrinks it back down since the huge
+    // vector optimization is disabled by default.
+    val big = WritableColumnVector.GROWTH_SLAB + 1
+    Array(new OnHeapColumnVector(80, dataType),
+      new OffHeapColumnVector(80, dataType)).foreach { vector =>
+      try {
+        vector.appendBytes(big, 0.toByte)
+        assert(vector.capacity == big + (big >> 3))
+        vector.reset()
+        assert(vector.capacity == big + (big >> 3))
+      } finally {
+        vector.close()
+      }
+    }
+  }
+
+  test("SPARK-44239: hugeVectorThreshold/hugeVectorReserveRatio override the growth policy") {
     withSQLConf(
-      SQLConf.VECTORIZED_HUGE_VECTOR_THRESHOLD.key -> "300",
-      SQLConf.VECTORIZED_HUGE_VECTOR_RESERVE_RATIO.key -> "1.2") {
+        SQLConf.VECTORIZED_HUGE_VECTOR_THRESHOLD.key -> "300",
+        SQLConf.VECTORIZED_HUGE_VECTOR_RESERVE_RATIO.key -> "1.5") {
       val dataType = ByteType
 
+      // Below the configured threshold, capacity still doubles.
       Array(new OnHeapColumnVector(80, dataType),
         new OffHeapColumnVector(80, dataType)).foreach { vector =>
         try {
-          // The new capacity of small vector = request capacity * 2 and will not be reset
           vector.appendBytes(100, 0)
           assert(vector.capacity == 200)
+
+          // A reset at or below the threshold does not shrink the vector back down.
           vector.reset()
           assert(vector.capacity == 200)
+        } finally {
+          vector.close()
+        }
+      }
 
-          // The new capacity of huge vector = (request capacity - HUGE_VECTOR_THRESHOLD) * 1.2 +
-          // HUGE_VECTOR_THRESHOLD * 2 = 300 * 1.2 and will be reset.
+      // Doubling still applies exactly at the configured threshold.
+      Array(new OnHeapColumnVector(80, dataType),
+        new OffHeapColumnVector(80, dataType)).foreach { vector =>
+        try {
           vector.appendBytes(300, 0)
-          assert(vector.capacity == 360)
+          assert(vector.capacity == 600)
+        } finally {
+          vector.close()
+        }
+      }
+
+      // Past the configured threshold, growth uses the configured ratio instead of Spark's
+      // default growth rate, truncating rather than rounding a non-integral product.
+      Array(new OnHeapColumnVector(80, dataType),
+        new OffHeapColumnVector(80, dataType)).foreach { vector =>
+        try {
+          vector.appendBytes(301, 0)
+          assert(vector.capacity == 451) // 301 * 1.5 = 451.5, truncated to 451.
+
+          // A reset past the threshold shrinks the vector back to its default capacity.
           vector.reset()
           assert(vector.capacity == 80)
         } finally {
           vector.close()
         }
+      }
+    }
+  }
+
+  test("SPARK-44239: hugeVectorThreshold=0 keeps reserve() and reset() in sync") {
+    withSQLConf(
+        SQLConf.VECTORIZED_HUGE_VECTOR_THRESHOLD.key -> "0",
+        SQLConf.VECTORIZED_HUGE_VECTOR_RESERVE_RATIO.key -> "1.5") {
+      val dataType = ByteType
+
+      Array(new OnHeapColumnVector(80, dataType),
+        new OffHeapColumnVector(80, dataType)).foreach { vector =>
+        try {
+          // A threshold of 0 enables the configured ratio for any growth, just like any
+          // other non-default threshold.
+          vector.appendBytes(100, 0)
+          assert(vector.capacity == 150) // 100 * 1.5 = 150, not the default doubling/+1/8.
+
+          // A threshold of 0 also enables the reset shrink, consistent with reserve().
+          vector.reset()
+          assert(vector.capacity == 80)
+        } finally {
+          vector.close()
+        }
+      }
+    }
+  }
+
+  test("The byte data of a string column vector holds no null bits") {
+    Array(new OnHeapColumnVector(32, StringType),
+      new OffHeapColumnVector(32, StringType)).foreach { vector =>
+      try {
+        vector.putByteArray(0, "hello".getBytes)
+        assert(!vector.arrayData().isNullAt(0))
+        // A null marks a whole value on the string vector, not a byte of its data.
+        vector.putNull(0)
+        assert(vector.isNullAt(0))
+        assert(!vector.arrayData().isNullAt(0))
+        // Writing nulls to the byte data itself changes nothing there.
+        vector.arrayData().putNull(1)
+        assert(!vector.arrayData().isNullAt(1))
+      } finally {
+        vector.close()
+      }
+    }
+
+    // An array's elements can be null each on their own, so an element vector keeps its null
+    // bits, unlike the byte data of a string.
+    val arrayVector = new OnHeapColumnVector(32, ArrayType(ByteType, containsNull = true))
+    try {
+      arrayVector.arrayData().putNull(0)
+      assert(arrayVector.arrayData().isNullAt(0))
+    } finally {
+      arrayVector.close()
+    }
+  }
+
+  test("SPARK-53194: Growing the byte data of a string column vector keeps earlier values") {
+    Array(new OnHeapColumnVector(4, StringType),
+      new OffHeapColumnVector(4, StringType)).foreach { vector =>
+      try {
+        val byteData = vector.arrayData()
+        val initialCapacity = byteData.capacity
+
+        // Fits within the byte-data child's initial capacity, so this does not grow it; these
+        // bytes sit in the region a later growth must carry over.
+        val first = (0 until 10).map(_.toByte).toArray
+        vector.putByteArray(0, first)
+        assert(byteData.capacity == initialCapacity)
+
+        // Exceeds the remaining capacity, forcing the byte-data child - which holds no null
+        // bits of its own - to grow. The no-null-tracking oldCapacity computation in
+        // OffHeapColumnVector#reserveInternal must still treat `first`, already written below,
+        // as live data and carry it over, rather than silently dropping it.
+        val second = (10 until 30).map(_.toByte).toArray
+        vector.putByteArray(1, second)
+        assert(byteData.capacity > initialCapacity)
+
+        assert(vector.getBinary(0) === first)
+        assert(vector.getBinary(1) === second)
+      } finally {
+        vector.close()
       }
     }
   }
