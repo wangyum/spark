@@ -360,10 +360,12 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
 
       // If it is not an equi-join, a broadcast hint is considered first:
       //   1. When range join is enabled and the condition is a range predicate,
-      //      pick a broadcast range join if the hinted build side is one
-      //      BroadcastRangeJoinExec supports. Both sides hinted: the smaller
-      //      side, when that side is supported. An unsupported hinted side
-      //      falls through.
+      //      pick a broadcast range join if a hinted side is one
+      //      BroadcastRangeJoinExec supports. An unsupported hinted side is
+      //      dropped first, so with both sides hinted an inner join builds the
+      //      smaller side, left outer, semi, and anti joins build the right
+      //      side, and a right outer join builds the left side. Only a join
+      //      whose hinted sides are all unsupported falls through.
       //   2. Otherwise a broadcast hint picks broadcast nested loop join. Both
       //      sides hinted: the smaller side for inner and full joins, the left
       //      side for a right join, and the right side for a left join.
@@ -388,48 +390,25 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
       case j @ logical.Join(left, right, joinType, condition, hint) =>
         checkHintNonEquiJoin(hint)
 
+        /**
+         * Plans a broadcast range join on a side `BroadcastRangeJoinExec` supports. Both
+         * sides qualifying picks the smaller one: `BroadcastRangeJoinExec.supports` admits
+         * both sides only for inner-like joins, where the smaller side is already what
+         * `getNonEquiJoinBuildSide` would prefer too.
+         */
         def createRangeJoin(onlyLookingAtHint: Boolean) = {
-          /**
-           * Which side to broadcast for the range join. A hint-only pass honors a
-           * BROADCAST hint. Otherwise a side qualifies when it is small enough and
-           * is not marked NO_BROADCAST_AND_REPLICATION. `allowed` drops a side
-           * BroadcastRangeJoinExec cannot build. Both sides qualify: the smaller one.
-           */
-          def broadcastSide(allowed: BuildSide => Boolean): Option[BuildSide] = {
-            def qualifies(
-                plan: LogicalPlan,
-                broadcastHint: Boolean,
-                blocked: Boolean): Boolean = {
-              if (onlyLookingAtHint) {
-                broadcastHint
-              } else {
-                canBroadcastBySize(plan, conf) && !blocked
-              }
-            }
-            val canBuildLeft = qualifies(left, hintToBroadcastLeft(hint),
-              hintToNotBroadcastAndReplicateLeft(hint)) && allowed(BuildLeft)
-            val canBuildRight = qualifies(right, hintToBroadcastRight(hint),
-              hintToNotBroadcastAndReplicateRight(hint)) && allowed(BuildRight)
-            if (canBuildLeft && canBuildRight) {
-              Some(getSmallerSide(left, right))
-            } else if (canBuildLeft) {
-              Some(BuildLeft)
-            } else if (canBuildRight) {
-              Some(BuildRight)
-            } else {
-              None
-            }
-          }
-
           if (conf.broadcastRangeJoinEnabled) {
             plan match {
               case ExtractRangeJoinKeys(_, leftKeys, rightKeys, rangeJoinKind) =>
                 val allowed = BroadcastRangeJoinExec.supports(joinType, _: BuildSide)
-                broadcastSide(allowed).map { buildSide =>
-                  Seq(BroadcastRangeJoinExec(
-                    planLater(left), planLater(right), buildSide, joinType,
-                    leftKeys, rightKeys, condition, rangeJoinKind))
-                }
+                val desiredBuildSide = getSmallerSide(left, right)
+                getNonEquiBroadcastSide(
+                  left, right, hint, conf, onlyLookingAtHint, allowed, desiredBuildSide)
+                  .map { buildSide =>
+                    Seq(BroadcastRangeJoinExec(
+                      planLater(left), planLater(right), buildSide, joinType,
+                      leftKeys, rightKeys, condition, rangeJoinKind))
+                  }
               case _ => None
             }
           } else {
@@ -448,7 +427,26 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
         if (hint.isEmpty) {
           createRangeJoin(onlyLookingAtHint = false).getOrElse(createNonEquiJoin())
         } else {
-          createRangeJoin(onlyLookingAtHint = true).getOrElse(createNonEquiJoin())
+          createRangeJoin(onlyLookingAtHint = true).orElse {
+            // A hint naming a side `BroadcastRangeJoinExec` cannot build for this join
+            // type still names a side `BroadcastNestedLoopJoinExec` can build (it has no
+            // such restriction), so `createNonEquiJoin()` below honors it; retrying by
+            // size here would silently broadcast a different, unhinted side instead. Only
+            // when the hint drives no broadcast decision at all - irrelevant to a non-equi
+            // join (e.g. SHUFFLE_HASH), blocked on both sides, or an explicit
+            // shuffle-replicate-NL request for a Cartesian product - does falling through
+            // to `createNonEquiJoin()`'s own ladder skip the by-size range join
+            // `getNonEquiJoinBuildSide` doesn't know about; retry it here instead.
+            val hintPicksABuildSide = getNonEquiBroadcastSide(
+              left, right, hint, conf, onlyLookingAtHint = true, _ => true, BuildLeft).isDefined
+            val explicitCartesianHint = hintToShuffleReplicateNL(hint) &&
+              joinType.isInstanceOf[InnerLike] && !hintToNotBroadcastAndReplicate(hint)
+            if (hintPicksABuildSide || explicitCartesianHint) {
+              None
+            } else {
+              createRangeJoin(onlyLookingAtHint = false)
+            }
+          }.getOrElse(createNonEquiJoin())
         }
 
       // --- Cases where this strategy does not apply ---------------------------------------------

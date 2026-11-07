@@ -380,28 +380,9 @@ trait JoinSelectionHelper extends Logging {
       if (canBuildBroadcastLeft(joinType)) BuildLeft else BuildRight
     }
 
-    // The side to broadcast by hint, or by size, if any.
-    def broadcastSide(onlyLookingAtHint: Boolean): Option[BuildSide] = {
-      val buildLeft = if (onlyLookingAtHint) {
-        hintToBroadcastLeft(hint)
-      } else {
-        canBroadcastBySize(left, conf) && !hintToNotBroadcastAndReplicateLeft(hint)
-      }
-      val buildRight = if (onlyLookingAtHint) {
-        hintToBroadcastRight(hint)
-      } else {
-        canBroadcastBySize(right, conf) && !hintToNotBroadcastAndReplicateRight(hint)
-      }
-      if (buildLeft && buildRight) {
-        Some(desiredBuildSide)
-      } else if (buildLeft) {
-        Some(BuildLeft)
-      } else if (buildRight) {
-        Some(BuildRight)
-      } else {
-        None
-      }
-    }
+    def broadcastSide(onlyLookingAtHint: Boolean): Option[BuildSide] =
+      getNonEquiBroadcastSide(
+        left, right, hint, conf, onlyLookingAtHint, _ => true, desiredBuildSide)
 
     val cartesianProduct =
       joinType.isInstanceOf[InnerLike] && !hintToNotBroadcastAndReplicate(hint)
@@ -423,6 +404,40 @@ trait JoinSelectionHelper extends Logging {
         case None if hintToShuffleReplicateNL(hint) && cartesianProduct => None
         case None => withoutHint
       }
+    }
+  }
+
+  /**
+   * The side to broadcast by hint, or by size when `onlyLookingAtHint` is false,
+   * restricted to sides `allowed` accepts. A side hinted NO_BROADCAST_AND_REPLICATION
+   * never qualifies by size. Both sides qualifying picks `desiredBuildSide`. Shared by
+   * callers that each admit a different set of sides and prefer a different tie-break,
+   * such as `getNonEquiJoinBuildSide` (any side, the join's preferred side) and a
+   * broadcast range join (only sides its operator can build, the smaller side).
+   */
+  def getNonEquiBroadcastSide(
+      left: LogicalPlan,
+      right: LogicalPlan,
+      hint: JoinHint,
+      conf: SQLConf,
+      onlyLookingAtHint: Boolean,
+      allowed: BuildSide => Boolean,
+      desiredBuildSide: BuildSide): Option[BuildSide] = {
+    def qualifies(plan: LogicalPlan, broadcastHint: Boolean, blocked: Boolean): Boolean = {
+      if (onlyLookingAtHint) broadcastHint else canBroadcastBySize(plan, conf) && !blocked
+    }
+    val canBuildLeft = qualifies(left, hintToBroadcastLeft(hint),
+      hintToNotBroadcastAndReplicateLeft(hint)) && allowed(BuildLeft)
+    val canBuildRight = qualifies(right, hintToBroadcastRight(hint),
+      hintToNotBroadcastAndReplicateRight(hint)) && allowed(BuildRight)
+    if (canBuildLeft && canBuildRight) {
+      Some(desiredBuildSide)
+    } else if (canBuildLeft) {
+      Some(BuildLeft)
+    } else if (canBuildRight) {
+      Some(BuildRight)
+    } else {
+      None
     }
   }
 
