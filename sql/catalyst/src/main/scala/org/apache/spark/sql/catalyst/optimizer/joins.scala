@@ -287,6 +287,15 @@ case object BuildRight extends BuildSide
 
 case object BuildLeft extends BuildSide
 
+/** How `JoinSelection` plans a non-equi join: see `JoinSelectionHelper.selectNonEquiJoin`. */
+sealed abstract class NonEquiJoinPlan
+
+case class RangeBroadcast(buildSide: BuildSide) extends NonEquiJoinPlan
+
+case class NestedLoopBroadcast(buildSide: BuildSide) extends NonEquiJoinPlan
+
+case object Cartesian extends NonEquiJoinPlan
+
 trait JoinSelectionHelper extends Logging {
 
   def getBroadcastBuildSide(
@@ -380,28 +389,9 @@ trait JoinSelectionHelper extends Logging {
       if (canBuildBroadcastLeft(joinType)) BuildLeft else BuildRight
     }
 
-    // The side to broadcast by hint, or by size, if any.
-    def broadcastSide(onlyLookingAtHint: Boolean): Option[BuildSide] = {
-      val buildLeft = if (onlyLookingAtHint) {
-        hintToBroadcastLeft(hint)
-      } else {
-        canBroadcastBySize(left, conf) && !hintToNotBroadcastAndReplicateLeft(hint)
-      }
-      val buildRight = if (onlyLookingAtHint) {
-        hintToBroadcastRight(hint)
-      } else {
-        canBroadcastBySize(right, conf) && !hintToNotBroadcastAndReplicateRight(hint)
-      }
-      if (buildLeft && buildRight) {
-        Some(desiredBuildSide)
-      } else if (buildLeft) {
-        Some(BuildLeft)
-      } else if (buildRight) {
-        Some(BuildRight)
-      } else {
-        None
-      }
-    }
+    def broadcastSide(onlyLookingAtHint: Boolean): Option[BuildSide] =
+      getNonEquiBroadcastSide(
+        left, right, hint, conf, onlyLookingAtHint, _ => true, desiredBuildSide)
 
     val cartesianProduct =
       joinType.isInstanceOf[InnerLike] && !hintToNotBroadcastAndReplicate(hint)
@@ -426,8 +416,84 @@ trait JoinSelectionHelper extends Logging {
     }
   }
 
+  /**
+   * The side to broadcast by hint, or by size when `onlyLookingAtHint` is false,
+   * restricted to sides `allowed` accepts. A side hinted NO_BROADCAST_AND_REPLICATION
+   * never qualifies by size. Both sides qualifying picks `desiredBuildSide`. Shared by
+   * callers that each admit a different set of sides and prefer a different tie-break,
+   * such as `getNonEquiJoinBuildSide` (any side, the join's preferred side) and a
+   * broadcast range join (only sides its operator can build, the smaller side).
+   */
+  def getNonEquiBroadcastSide(
+      left: LogicalPlan,
+      right: LogicalPlan,
+      hint: JoinHint,
+      conf: SQLConf,
+      onlyLookingAtHint: Boolean,
+      allowed: BuildSide => Boolean,
+      desiredBuildSide: BuildSide): Option[BuildSide] = {
+    def qualifies(plan: LogicalPlan, broadcastHint: Boolean, blocked: Boolean): Boolean = {
+      if (onlyLookingAtHint) broadcastHint else canBroadcastBySize(plan, conf) && !blocked
+    }
+    val canBuildLeft = qualifies(left, hintToBroadcastLeft(hint),
+      hintToNotBroadcastAndReplicateLeft(hint)) && allowed(BuildLeft)
+    val canBuildRight = qualifies(right, hintToBroadcastRight(hint),
+      hintToNotBroadcastAndReplicateRight(hint)) && allowed(BuildRight)
+    if (canBuildLeft && canBuildRight) {
+      Some(desiredBuildSide)
+    } else if (canBuildLeft) {
+      Some(BuildLeft)
+    } else if (canBuildRight) {
+      Some(BuildRight)
+    } else {
+      None
+    }
+  }
+
   def getSmallerSide(left: LogicalPlan, right: LogicalPlan): BuildSide = {
     if (right.stats.sizeInBytes <= left.stats.sizeInBytes) BuildRight else BuildLeft
+  }
+
+  /**
+   * How `JoinSelection` plans a non-equi join, trying a broadcast range join before falling
+   * back to whatever `getNonEquiJoinBuildSide` would choose. `rangeJoinAllowed` restricts which
+   * side a range join may build (e.g. `BroadcastRangeJoinExec.supports`); pass `_ => false` when
+   * a range join cannot apply to `join` at all.
+   *
+   * A hinted side a range join can build wins first. Otherwise, unless the hint already settles
+   * on a broadcast side or a Cartesian product outside the range join's narrower restrictions
+   * (see `hintSettlesNonRangePlan` below), a range join is tried by size. Anything left over
+   * falls back to `getNonEquiJoinBuildSide`, which applies the same hint-or-size reasoning
+   * without the range join's restrictions.
+   */
+  def selectNonEquiJoin(
+      join: Join,
+      conf: SQLConf,
+      rangeJoinAllowed: BuildSide => Boolean): NonEquiJoinPlan = {
+    val Join(left, right, joinType, _, hint) = join
+
+    def rangeBroadcastSide(onlyLookingAtHint: Boolean): Option[BuildSide] =
+      getNonEquiBroadcastSide(
+        left, right, hint, conf, onlyLookingAtHint, rangeJoinAllowed, getSmallerSide(left, right))
+
+    // A hint that already broadcasts a side, or that explicitly requests a shuffle-replicate-NL
+    // Cartesian product, must be honored as-is: retrying the range join by size below could
+    // silently broadcast a different, unhinted side, or build one the hint rules out. Both sides
+    // of this check are already `false` when `hint` is empty, so it also covers the no-hint case.
+    val hintSettlesNonRangePlan = hintToBroadcastLeft(hint) || hintToBroadcastRight(hint) ||
+      (hintToShuffleReplicateNL(hint) &&
+        joinType.isInstanceOf[InnerLike] && !hintToNotBroadcastAndReplicate(hint))
+
+    val byHint = rangeBroadcastSide(onlyLookingAtHint = true)
+    val bySize =
+      if (hintSettlesNonRangePlan) None else rangeBroadcastSide(onlyLookingAtHint = false)
+
+    byHint.orElse(bySize).map(RangeBroadcast).getOrElse {
+      getNonEquiJoinBuildSide(join, conf) match {
+        case Some(buildSide) => NestedLoopBroadcast(buildSide)
+        case None => Cartesian
+      }
+    }
   }
 
   /**

@@ -26,13 +26,16 @@ import com.esotericsoftware.kryo.io.{Input, Output}
 
 import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, UnsafeRow}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildSide}
 import org.apache.spark.sql.catalyst.planning.{IntervalOverlapJoin, PartialRangeJoin, PointInRangeJoin, RangeJoinKind}
 import org.apache.spark.sql.catalyst.plans.physical.BroadcastMode
 import org.apache.spark.sql.catalyst.types.PhysicalDataType
-import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, Decimal, DecimalType, IntegerType, LongType, ShortType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, Decimal,
+  DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, TimestampNTZType,
+  TimestampType}
 import org.apache.spark.util.{KnownSizeEstimation, SizeEstimator, Utils}
+import org.apache.spark.util.collection.unsafe.sort.PrefixComparators.DoublePrefixComparator
 
 /**
  * Broadcast payload of a range join. An index only names candidate rows.
@@ -137,6 +140,14 @@ private[joins] object RangeIndex {
     sizeHint.map(n => math.min(n, 1L << 20).toInt).getOrElse(64)
 
   /**
+   * Interval builds at or below this size answer an overlap probe with a
+   * linear scan over the stored rows instead of walking the tree. Answers
+   * stay exact; tiny dimension tables otherwise spend more on walk setup
+   * than a nested loop pass over the same handful of rows.
+   */
+  val SMALL_BUILD_OVERLAP_ROWS: Int = 16
+
+  /**
    * One key type's bridge to an order-preserving long: converting an evaluated
    * key value (from either the build or the streamed side), and turning
    * generated Java for a typed key into generated Java for a long. The two
@@ -147,14 +158,20 @@ private[joins] object RangeIndex {
 
   /**
    * An order-preserving long for a key type that has one, or None when the type
-   * must stay on the generic boxed index: variable-length keys, floating point,
-   * whose SQL equality for -0.0 and NaN has no bit-preserving order, and
-   * decimals wider than `Decimal.MAX_LONG_DIGITS`, whose unscaled value does
-   * not fit a long. This is the only place a key type is specialized; the long
-   * indexes and the generated probe code both consult it.
+   * must stay on the generic boxed index: variable-length keys (collated string,
+   * binary) and decimals wider than `Decimal.MAX_LONG_DIGITS`, whose unscaled
+   * value does not fit a long. Floating point maps through
+   * `DoublePrefixComparator.computePrefix` XOR `Long.MinValue`, which folds
+   * -0.0 into 0.0, canonicalizes NaN, and yields a signed long whose order
+   * matches SQL comparison; no long is turned back into a key, and the join
+   * condition rechecks every candidate. This is the only place a key type is
+   * specialized; the long indexes and the generated probe code both consult it.
    */
   def longKey(dt: DataType): Option[LongKey] = {
     def key(value: Any => Long): LongKey = LongKey(value, v => s"((long) $v)")
+    def floatPrefixCode(v: String): String =
+      "org.apache.spark.util.collection.unsafe.sort.PrefixComparators" +
+        s".DoublePrefixComparator.computePrefix((double) $v) ^ java.lang.Long.MIN_VALUE"
     dt match {
       case _: BooleanType =>
         Some(LongKey(v => if (v.asInstanceOf[Boolean]) 1L else 0L, v => s"($v ? 1L : 0L)"))
@@ -168,6 +185,15 @@ private[joins] object RangeIndex {
         Some(key(v => v.asInstanceOf[Long]))
       case d: DecimalType if d.precision <= Decimal.MAX_LONG_DIGITS =>
         Some(LongKey(v => v.asInstanceOf[Decimal].toUnscaledLong, v => s"$v.toUnscaledLong()"))
+      case _: FloatType =>
+        Some(LongKey(
+          v => DoublePrefixComparator.computePrefix(v.asInstanceOf[Float].toDouble) ^
+            Long.MinValue,
+          floatPrefixCode))
+      case _: DoubleType =>
+        Some(LongKey(
+          v => DoublePrefixComparator.computePrefix(v.asInstanceOf[Double]) ^ Long.MinValue,
+          floatPrefixCode))
       case _ => None
     }
   }
@@ -187,6 +213,30 @@ private[joins] object RangeIndex {
   def requiredLongKey(dt: DataType): LongKey = {
     longKey(dt).getOrElse(
       throw new IllegalStateException(s"$dt has no order-preserving long key."))
+  }
+
+  /**
+   * `estimatedSize`'s row-payload term, shared by every index family: the rows
+   * dominate a realistic build, and are always `UnsafeRow` once collected through a
+   * real `BroadcastExchangeExec` (the same assumption `IdentityBroadcastMode` and
+   * `HashedRelation` make), so this sums [[UnsafeRow.getSizeInBytes]] there instead
+   * of walking the retained heap - matching those siblings' accounting, so a build
+   * that moves between broadcast modes (e.g. enabling this feature) does not change
+   * size by methodology alone. A row built directly through an index's own
+   * constructors, as this index's own unit tests do without a `SparkPlan` producing
+   * it, makes no such promise and falls back to [[SizeEstimator]].
+   */
+  def rowsSize(rows: Array[InternalRow]): Long = {
+    var sum = 0L
+    var i = 0
+    while (i < rows.length) {
+      sum += (rows(i) match {
+        case u: UnsafeRow => u.getSizeInBytes.toLong
+        case other => SizeEstimator.estimate(other)
+      })
+      i += 1
+    }
+    sum
   }
 }
 
@@ -257,18 +307,24 @@ private[joins] class IntervalIndex private (
   private[this] var coreHigh: Any = IntervalIndex.coreHigh(highs, ordering)
 
   /**
-   * Measured over the retained arrays, not the index object: SizeEstimator
-   * would consult `estimatedSize` for a KnownSizeEstimation and recurse.
-   * Its identity tracking charges a key shared by `lows` and `highs`, or
-   * aliased across indexes, exactly once.
+   * The keys still go through SizeEstimator: a point build key used as both ends
+   * shares one key object between `lows` and `highs` (see [[IntervalIndex.apply]]),
+   * and SizeEstimator's identity tracking charges that shared object once, same as
+   * an arbitrary boxed key type (collated string, binary, wide decimal) shared across
+   * indexes would be. Only the row payload - the dominant term for a realistic build,
+   * and never aliased this way - moves to [[RangeIndex.rowsSize]]'s tighter accounting.
    */
   override def estimatedSize: Long =
-    SizeEstimator.estimate(Array[AnyRef](lows, highs, maxHighIdx, rows))
+    SizeEstimator.estimate(Array[AnyRef](lows, highs, maxHighIdx)) + RangeIndex.rowsSize(rows)
 
   def overlapping(low: Any, high: Any): Iterator[InternalRow] = {
     if (lows.isEmpty || low == null || high == null) return Iterator.empty
     val ord = ordering
     val (probeLow, probeHigh) = if (ord.lteq(low, high)) (low, high) else (high, low)
+    // Tiny builds: a linear scan beats walk setup per probe.
+    if (lows.length <= RangeIndex.SMALL_BUILD_OVERLAP_ROWS) {
+      return IntervalIndex.linearOverlap(lows, highs, rows, ord, probeLow, probeHigh)
+    }
     // A window that covers every interval gets every row the walk would
     // return, without visiting the tree. Returns all rows iff every interval
     // overlaps the probe; the condition still re-checks each candidate.
@@ -375,6 +431,36 @@ private[joins] object IntervalIndex {
         i += 1
       }
       min
+    }
+  }
+
+  /** Exact overlap matches via a linear scan; used for tiny builds. */
+  private[joins] def linearOverlap(
+      lows: Array[Any],
+      highs: Array[Any],
+      rows: Array[InternalRow],
+      ord: Ordering[Any],
+      probeLow: Any,
+      probeHigh: Any): Iterator[InternalRow] = {
+    new Iterator[InternalRow] {
+      private var i = 0
+      private var nxt: InternalRow = null
+      private def advance(): Unit = {
+        nxt = null
+        while (i < lows.length && nxt == null) {
+          if (ord.lteq(lows(i), probeHigh) && ord.gteq(highs(i), probeLow)) {
+            nxt = rows(i)
+          }
+          i += 1
+        }
+      }
+      advance()
+      override def hasNext: Boolean = nxt != null
+      override def next(): InternalRow = {
+        val r = nxt
+        advance()
+        r
+      }
     }
   }
 
@@ -543,7 +629,10 @@ private[joins] class PointIndex private (
 
   private[this] def length: Int = keys.length
 
-  override def estimatedSize: Long = SizeEstimator.estimate(Array[AnyRef](keys, rows))
+  /** See [[IntervalIndex.estimatedSize]]: keys keep SizeEstimator's identity-aware
+   * accounting; only the row payload moves to [[RangeIndex.rowsSize]]. */
+  override def estimatedSize: Long =
+    SizeEstimator.estimate(Array[AnyRef](keys)) + RangeIndex.rowsSize(rows)
 
   /** Points whose key is less than or equal to `value`. */
   def upTo(value: Any): Iterator[InternalRow] =
@@ -723,8 +812,10 @@ private[joins] class LongIntervalIndex private (
   private[this] var coreLow: Long = LongIntervalIndex.coreLow(lows)
   private[this] var coreHigh: Long = LongIntervalIndex.coreHigh(highs)
 
+  /** Raw `Long` keys have no boxing or aliasing to account for, unlike the boxed
+   * index family; each of `lows`/`highs`/`maxHighs` is an exact 8 bytes/row. */
   override def estimatedSize: Long =
-    SizeEstimator.estimate(Array[AnyRef](lows, highs, maxHighs, rows))
+    (lows.length.toLong + highs.length + maxHighs.length) * 8L + RangeIndex.rowsSize(rows)
 
   def overlapping(low: Long, high: Long): Iterator[InternalRow] = {
     if (lows.isEmpty) return Iterator.empty
@@ -734,6 +825,10 @@ private[joins] class LongIntervalIndex private (
       val t = probeLow
       probeLow = probeHigh
       probeHigh = t
+    }
+    // Tiny builds: a linear scan beats walk setup per probe.
+    if (lows.length <= RangeIndex.SMALL_BUILD_OVERLAP_ROWS) {
+      return LongIntervalIndex.linearOverlap(lows, highs, rows, probeLow, probeHigh)
     }
     // A window that covers every interval gets every row the walk would
     // return, without visiting the tree. Returns all rows iff every interval
@@ -837,6 +932,35 @@ private[joins] object LongIntervalIndex {
         i += 1
       }
       min
+    }
+  }
+
+  /** Exact overlap matches via a linear scan; used for tiny builds. */
+  private[joins] def linearOverlap(
+      lows: Array[Long],
+      highs: Array[Long],
+      rows: Array[InternalRow],
+      probeLow: Long,
+      probeHigh: Long): Iterator[InternalRow] = {
+    new Iterator[InternalRow] {
+      private var i = 0
+      private var nxt: InternalRow = null
+      private def advance(): Unit = {
+        nxt = null
+        while (i < lows.length && nxt == null) {
+          if (lows(i) <= probeHigh && highs(i) >= probeLow) {
+            nxt = rows(i)
+          }
+          i += 1
+        }
+      }
+      advance()
+      override def hasNext: Boolean = nxt != null
+      override def next(): InternalRow = {
+        val r = nxt
+        advance()
+        r
+      }
     }
   }
 
@@ -982,7 +1106,8 @@ private[joins] class LongPointIndex private (
 
   private[this] def length: Int = keys.length
 
-  override def estimatedSize: Long = SizeEstimator.estimate(Array[AnyRef](keys, rows))
+  /** Raw `Long` keys have no boxing to account for; see [[LongIntervalIndex.estimatedSize]]. */
+  override def estimatedSize: Long = keys.length.toLong * 8L + RangeIndex.rowsSize(rows)
 
   /** Points whose key is less than or equal to `value`. */
   def upTo(value: Long): Iterator[InternalRow] =
@@ -1125,8 +1250,10 @@ private[joins] object LongPointIndex {
  * to reference a Scala method value directly; that string has to be kept in sync
  * with the method it names by hand. The generated path never notices a new case
  * or a stale name at compile time; a mismatch surfaces only as a Janino compile
- * failure at query-run time. RangeJoinSuite's codegen point-scan tests are what
- * actually catches that class of typo.
+ * failure at query-run time. RangeJoinSuite's codegen point-scan tests cover
+ * the long point-index methods (int keys); RangeJoinSQLSuite's double and
+ * string partial-range queries are what catch a stale boxed `PointIndex`
+ * methodName.
  */
 private[joins] sealed abstract class PointScan(val methodName: String)
 

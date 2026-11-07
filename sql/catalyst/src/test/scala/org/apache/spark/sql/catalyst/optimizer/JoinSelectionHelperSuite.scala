@@ -254,6 +254,30 @@ class JoinSelectionHelperSuite extends PlanTest with JoinSelectionHelper {
     }
   }
 
+  test("getNonEquiBroadcastSide drops a hinted side `allowed` rejects") {
+    val hint = JoinHint(hintBroadcast, None)
+    val allowed: BuildSide => Boolean = _ != BuildLeft
+    assert(getNonEquiBroadcastSide(
+      left, right, hint, SQLConf.get, onlyLookingAtHint = true, allowed, BuildRight) === None)
+  }
+
+  test("getNonEquiBroadcastSide drops a size-qualified side `allowed` rejects") {
+    // The right side is small enough to broadcast by size, but `allowed` excludes it, and
+    // the left side is too large to qualify on its own.
+    val allowed: BuildSide => Boolean = _ != BuildRight
+    assert(getNonEquiBroadcastSide(
+      left, right, JoinHint.NONE, SQLConf.get, onlyLookingAtHint = false, allowed, BuildLeft) ===
+      None)
+  }
+
+  test("getNonEquiBroadcastSide picks the given desiredBuildSide when both sides qualify") {
+    // Right is the smaller side, but a caller-supplied desiredBuildSide can still pick left.
+    val hint = JoinHint(hintBroadcast, hintBroadcast)
+    assert(getNonEquiBroadcastSide(
+      left, right, hint, SQLConf.get, onlyLookingAtHint = true, _ => true, BuildLeft) ===
+      Some(BuildLeft))
+  }
+
   test("NAAJ broadcast threshold is floored by the automatic broadcast threshold") {
     val betweenThresholdsRight = right.copy(
       rowCount = 8 * 1024 * 1024,

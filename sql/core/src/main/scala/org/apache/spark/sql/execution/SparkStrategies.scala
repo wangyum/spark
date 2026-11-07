@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, NamedRelation}
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide, JoinSelectionHelper, NormalizeFloatingNumbers}
+import org.apache.spark.sql.catalyst.optimizer.{BuildRight, BuildSide, Cartesian, JoinSelectionHelper, NestedLoopBroadcast, NormalizeFloatingNumbers, RangeBroadcast}
 import org.apache.spark.sql.catalyst.planning._
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical._
@@ -358,97 +358,41 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
         Seq(joins.BroadcastHashJoinExec(leftKeys, rightKeys, LeftAnti, BuildRight,
           None, planLater(j.left), planLater(j.right), isNullAwareAntiJoin = true))
 
-      // If it is not an equi-join, a broadcast hint is considered first:
-      //   1. When range join is enabled and the condition is a range predicate,
-      //      pick a broadcast range join if the hinted build side is one
-      //      BroadcastRangeJoinExec supports. Both sides hinted: the smaller
-      //      side, when that side is supported. An unsupported hinted side
-      //      falls through.
-      //   2. Otherwise a broadcast hint picks broadcast nested loop join. Both
-      //      sides hinted: the smaller side for inner and full joins, the left
-      //      side for a right join, and the right side for a left join.
-      //   3. A shuffle replicate NL hint picks cartesian product for an
-      //      inner-like join.
-      //
-      // If there is no hint, or none of those hints apply:
-      //   1. When range join is enabled and a side is small enough to broadcast,
-      //      pick a broadcast range join on a side BroadcastRangeJoinExec
-      //      supports. Both sides small: the smaller side when it is supported.
-      //      The preserved side of an outer, semi, or anti join is not built.
-      //   2. Pick broadcast nested loop join if one side is small enough to
-      //      broadcast. If only the left side is broadcastable and it is a left
-      //      join, or only the right side is broadcastable and it is a right
-      //      join, skip this rule. Both sides small: the smaller side for inner
-      //      and full joins, the left side for a right join, and the right side
-      //      for a left join.
-      //   3. Pick cartesian product if the join type is inner-like.
-      //   4. Pick broadcast nested loop join as the final solution. It may OOM.
-      //      It broadcasts the smaller side for inner and full joins, the left
-      //      side for a right join, and the right side for a left join.
+      // For a non-equi join, a broadcast range join is tried first when range join is enabled
+      // and the condition is a range predicate (see `ExtractRangeJoinKeys`), falling back to a
+      // broadcast nested loop join or, for inner-like joins, a Cartesian product. A hint takes
+      // precedence over both relation size and the range join's narrower set of supported (join
+      // type, build side) pairs; see `JoinSelectionHelper.selectNonEquiJoin` for the exact
+      // precedence between a hint, relation size, and that restriction.
       case j @ logical.Join(left, right, joinType, condition, hint) =>
         checkHintNonEquiJoin(hint)
 
-        def createRangeJoin(onlyLookingAtHint: Boolean) = {
-          /**
-           * Which side to broadcast for the range join. A hint-only pass honors a
-           * BROADCAST hint. Otherwise a side qualifies when it is small enough and
-           * is not marked NO_BROADCAST_AND_REPLICATION. `allowed` drops a side
-           * BroadcastRangeJoinExec cannot build. Both sides qualify: the smaller one.
-           */
-          def broadcastSide(allowed: BuildSide => Boolean): Option[BuildSide] = {
-            def qualifies(
-                plan: LogicalPlan,
-                broadcastHint: Boolean,
-                blocked: Boolean): Boolean = {
-              if (onlyLookingAtHint) {
-                broadcastHint
-              } else {
-                canBroadcastBySize(plan, conf) && !blocked
-              }
-            }
-            val canBuildLeft = qualifies(left, hintToBroadcastLeft(hint),
-              hintToNotBroadcastAndReplicateLeft(hint)) && allowed(BuildLeft)
-            val canBuildRight = qualifies(right, hintToBroadcastRight(hint),
-              hintToNotBroadcastAndReplicateRight(hint)) && allowed(BuildRight)
-            if (canBuildLeft && canBuildRight) {
-              Some(getSmallerSide(left, right))
-            } else if (canBuildLeft) {
-              Some(BuildLeft)
-            } else if (canBuildRight) {
-              Some(BuildRight)
-            } else {
-              None
-            }
+        // A range join only applies when enabled and the condition is a range predicate; the
+        // extracted keys are needed to build `BroadcastRangeJoinExec` below.
+        val rangeJoinKeys = if (conf.broadcastRangeJoinEnabled) {
+          plan match {
+            case ExtractRangeJoinKeys(_, leftKeys, rightKeys, rangeJoinKind) =>
+              Some((leftKeys, rightKeys, rangeJoinKind))
+            case _ => None
           }
-
-          if (conf.broadcastRangeJoinEnabled) {
-            plan match {
-              case ExtractRangeJoinKeys(_, leftKeys, rightKeys, rangeJoinKind) =>
-                val allowed = BroadcastRangeJoinExec.supports(joinType, _: BuildSide)
-                broadcastSide(allowed).map { buildSide =>
-                  Seq(BroadcastRangeJoinExec(
-                    planLater(left), planLater(right), buildSide, joinType,
-                    leftKeys, rightKeys, condition, rangeJoinKind))
-                }
-              case _ => None
-            }
-          } else {
-            None
-          }
+        } else {
+          None
+        }
+        val rangeJoinAllowed: BuildSide => Boolean = rangeJoinKeys match {
+          case Some(_) => BroadcastRangeJoinExec.supports(joinType, _: BuildSide)
+          case None => _ => false
         }
 
-        def createNonEquiJoin() = getNonEquiJoinBuildSide(j, conf) match {
-          case Some(buildSide) =>
+        selectNonEquiJoin(j, conf, rangeJoinAllowed) match {
+          case RangeBroadcast(buildSide) =>
+            val (leftKeys, rightKeys, rangeJoinKind) = rangeJoinKeys.get
+            Seq(BroadcastRangeJoinExec(planLater(left), planLater(right), buildSide, joinType,
+              leftKeys, rightKeys, condition, rangeJoinKind))
+          case NestedLoopBroadcast(buildSide) =>
             Seq(joins.BroadcastNestedLoopJoinExec(
               planLater(left), planLater(right), buildSide, joinType, condition))
-          case None =>
+          case Cartesian =>
             Seq(joins.CartesianProductExec(planLater(left), planLater(right), condition))
-        }
-
-        if (hint.isEmpty) {
-          createRangeJoin(onlyLookingAtHint = false).getOrElse(createNonEquiJoin())
-        } else {
-          createRangeJoin(onlyLookingAtHint = true).getOrElse(createNonEquiJoin())
         }
 
       // --- Cases where this strategy does not apply ---------------------------------------------
