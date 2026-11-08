@@ -353,6 +353,21 @@ trait JoinSelectionHelper extends Logging {
     }
   }
 
+  def getNonEquiDesiredBuildSide(
+      left: LogicalPlan,
+      right: LogicalPlan,
+      joinType: JoinType): BuildSide = {
+    if (joinType.isInstanceOf[InnerLike] || joinType == FullOuter) {
+      getSmallerSide(left, right)
+    } else {
+      // For perf reasons, `BroadcastNestedLoopJoinExec` prefers to broadcast left side if
+      // it's a right join, and broadcast right side if it's a left join.
+      // TODO: revisit it. If left side is much smaller than the right side, it may be better
+      // to broadcast the left side even if it's a left join.
+      if (canBuildBroadcastLeft(joinType)) BuildLeft else BuildRight
+    }
+  }
+
   /**
    * How `JoinSelection` plans `join` when it has no equi-join keys and
    * `canPlanAsBroadcastHashJoin(join, conf)` is false: the side a broadcast nested loop join
@@ -370,15 +385,7 @@ trait JoinSelectionHelper extends Logging {
    */
   def getNonEquiJoinBuildSide(join: Join, conf: SQLConf): Option[BuildSide] = {
     val Join(left, right, joinType, _, hint) = join
-    val desiredBuildSide = if (joinType.isInstanceOf[InnerLike] || joinType == FullOuter) {
-      getSmallerSide(left, right)
-    } else {
-      // For perf reasons, `BroadcastNestedLoopJoinExec` prefers to broadcast left side if
-      // it's a right join, and broadcast right side if it's a left join.
-      // TODO: revisit it. If left side is much smaller than the right side, it may be better
-      // to broadcast the left side even if it's a left join.
-      if (canBuildBroadcastLeft(joinType)) BuildLeft else BuildRight
-    }
+    val desiredBuildSide = getNonEquiDesiredBuildSide(left, right, joinType)
 
     def broadcastSide(onlyLookingAtHint: Boolean): Option[BuildSide] =
       getNonEquiBroadcastSide(

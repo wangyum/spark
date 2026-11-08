@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, NamedRelation}
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide, JoinSelectionHelper, NormalizeFloatingNumbers}
+import org.apache.spark.sql.catalyst.optimizer.{BuildRight, BuildSide, JoinSelectionHelper, NormalizeFloatingNumbers}
 import org.apache.spark.sql.catalyst.planning._
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical._
@@ -390,20 +390,15 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
       case j @ logical.Join(left, right, joinType, condition, hint) =>
         checkHintNonEquiJoin(hint)
 
-        /**
-         * Plans a broadcast range join on a side `BroadcastRangeJoinExec` supports. Both
-         * sides qualifying picks the smaller one: `BroadcastRangeJoinExec.supports` admits
-         * both sides only for inner-like joins, where the smaller side is already what
-         * `getNonEquiJoinBuildSide` would prefer too.
-         */
+        val desiredBuildSide = getNonEquiDesiredBuildSide(left, right, joinType)
+
         def createRangeJoin(onlyLookingAtHint: Boolean) = {
           if (conf.broadcastRangeJoinEnabled) {
             plan match {
               case ExtractRangeJoinKeys(_, leftKeys, rightKeys, rangeJoinKind) =>
                 val allowed = BroadcastRangeJoinExec.supports(joinType, _: BuildSide)
-                val desiredBuildSide = getSmallerSide(left, right)
                 getNonEquiBroadcastSide(
-                  left, right, hint, conf, onlyLookingAtHint, allowed, desiredBuildSide)
+                  left, right, hint, conf, onlyLookingAtHint, allowed, getSmallerSide(left, right))
                   .map { buildSide =>
                     Seq(BroadcastRangeJoinExec(
                       planLater(left), planLater(right), buildSide, joinType,
@@ -416,37 +411,45 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
           }
         }
 
-        def createNonEquiJoin() = getNonEquiJoinBuildSide(j, conf) match {
-          case Some(buildSide) =>
-            Seq(joins.BroadcastNestedLoopJoinExec(
-              planLater(left), planLater(right), buildSide, joinType, condition))
-          case None =>
-            Seq(joins.CartesianProductExec(planLater(left), planLater(right), condition))
+        def createBroadcastNLJoin(onlyLookingAtHint: Boolean) = {
+          getNonEquiBroadcastSide(
+            left, right, hint, conf, onlyLookingAtHint, _ => true, desiredBuildSide)
+            .map { buildSide =>
+              Seq(joins.BroadcastNestedLoopJoinExec(
+                planLater(left), planLater(right), buildSide, joinType, condition))
+            }
+        }
+
+        def createCartesianProduct() = {
+          if (joinType.isInstanceOf[InnerLike] && !hintToNotBroadcastAndReplicate(hint)) {
+            Some(Seq(joins.CartesianProductExec(planLater(left), planLater(right), condition)))
+          } else {
+            None
+          }
+        }
+
+        def createJoinWithoutHint() = {
+          createRangeJoin(onlyLookingAtHint = false)
+            .orElse(createBroadcastNLJoin(onlyLookingAtHint = false))
+            .orElse(createCartesianProduct())
+            .getOrElse {
+              // This join could be very slow or OOM
+              // Build the desired side unless the join requires a particular build side
+              // (e.g. NO_BROADCAST_AND_REPLICATION hint)
+              val requiredBuildSide = getBroadcastNestedLoopJoinBuildSide(hint, joinType)
+              val buildSide = requiredBuildSide.getOrElse(desiredBuildSide)
+              Seq(joins.BroadcastNestedLoopJoinExec(
+                planLater(left), planLater(right), buildSide, joinType, condition))
+            }
         }
 
         if (hint.isEmpty) {
-          createRangeJoin(onlyLookingAtHint = false).getOrElse(createNonEquiJoin())
+          createJoinWithoutHint()
         } else {
-          createRangeJoin(onlyLookingAtHint = true).orElse {
-            // A hint naming a side `BroadcastRangeJoinExec` cannot build for this join
-            // type still names a side `BroadcastNestedLoopJoinExec` can build (it has no
-            // such restriction), so `createNonEquiJoin()` below honors it; retrying by
-            // size here would silently broadcast a different, unhinted side instead. Only
-            // when the hint drives no broadcast decision at all - irrelevant to a non-equi
-            // join (e.g. SHUFFLE_HASH), blocked on both sides, or an explicit
-            // shuffle-replicate-NL request for a Cartesian product - does falling through
-            // to `createNonEquiJoin()`'s own ladder skip the by-size range join
-            // `getNonEquiJoinBuildSide` doesn't know about; retry it here instead.
-            val hintPicksABuildSide = getNonEquiBroadcastSide(
-              left, right, hint, conf, onlyLookingAtHint = true, _ => true, BuildLeft).isDefined
-            val explicitCartesianHint = hintToShuffleReplicateNL(hint) &&
-              joinType.isInstanceOf[InnerLike] && !hintToNotBroadcastAndReplicate(hint)
-            if (hintPicksABuildSide || explicitCartesianHint) {
-              None
-            } else {
-              createRangeJoin(onlyLookingAtHint = false)
-            }
-          }.getOrElse(createNonEquiJoin())
+          createRangeJoin(onlyLookingAtHint = true)
+            .orElse(createBroadcastNLJoin(onlyLookingAtHint = true))
+            .orElse { if (hintToShuffleReplicateNL(hint)) createCartesianProduct() else None }
+            .getOrElse(createJoinWithoutHint())
         }
 
       // --- Cases where this strategy does not apply ---------------------------------------------
