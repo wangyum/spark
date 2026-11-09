@@ -142,17 +142,6 @@ public abstract class WritableColumnVector extends ColumnVector {
     reserve(elementsAppended + additionalCapacity);
   }
 
-  /**
-   * Vectors at or below this many elements double when they grow, which pays off for the small
-   * arrays most vectors start as. Above it they grow by an eighth, since doubling arrays of many
-   * megabytes would waste far more memory than the copies the slower growth rate adds. A caller
-   * that has set {@link #hugeVectorThreshold} gets that value as the slab instead, and
-   * {@link #hugeVectorReserveRatio} as the growth rate past it, since both configs predate and
-   * otherwise have no effect on this default.
-   */
-  @VisibleForTesting
-  static final int GROWTH_SLAB = 1 << 20;
-
   public void reserve(int requiredCapacity) {
     if (requiredCapacity < 0) {
       throwUnsupportedException(requiredCapacity, null);
@@ -1033,6 +1022,17 @@ public abstract class WritableColumnVector extends ColumnVector {
   protected int MAX_CAPACITY = ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH;
 
   /**
+   * Vectors at or below this many elements double when they grow, which pays off for the small
+   * arrays most vectors start as. Above it they grow by an eighth, since doubling arrays of many
+   * megabytes would waste far more memory than the copies the slower growth rate adds. A caller
+   * that has set {@link #hugeVectorThreshold} gets that value as the slab instead, and
+   * {@link #hugeVectorReserveRatio} as the growth rate past it, since both configs predate and
+   * otherwise have no effect on this default.
+   */
+  @VisibleForTesting
+  static final int GROWTH_SLAB = 1 << 20;
+
+  /**
    * Overrides {@link #GROWTH_SLAB} as the growth slab in {@link #reserve(int)}, and the point
    * past which {@link #reset()} shrinks this vector back to {@link #defaultCapacity}, when set
    * to anything other than its -1 default.
@@ -1055,7 +1055,7 @@ public abstract class WritableColumnVector extends ColumnVector {
    * vector never holds them, since its bytes are never null by themselves (see the constructor),
    * so it frees them and answers null queries as never-null. Every other vector tracks nulls.
    */
-  boolean tracksNulls = true;
+  protected boolean tracksNulls = true;
 
   /**
    * Frees the null bits this vector holds. The base implementation has none, so it has nothing
@@ -1064,7 +1064,12 @@ public abstract class WritableColumnVector extends ColumnVector {
   protected void releaseNullBits() {
   }
 
-  /** Stops holding null bits, and frees any it already allocated. */
+  /**
+   * Stops holding null bits, and frees any it already allocated. Unlike the growth-slab policy,
+   * this optimization has no opt-out: the removed null bits were always meaningless on a
+   * byte-data child (a null marks the whole value, on the parent vector, never a byte of it), so
+   * there is no prior behavior worth preserving behind a config.
+   */
   private void stopTrackingNulls() {
     tracksNulls = false;
     releaseNullBits();

@@ -1149,6 +1149,20 @@ class ColumnVectorSuite extends SparkFunSuite with SQLHelper {
     }
   }
 
+  test("SPARK-53194: hugeVectorThreshold/hugeVectorReserveRatio reject out-of-range values") {
+    Seq("-2", "2147483648").foreach { invalid =>
+      val e = intercept[IllegalArgumentException] {
+        withSQLConf(SQLConf.VECTORIZED_HUGE_VECTOR_THRESHOLD.key -> invalid) {}
+      }
+      assert(e.getMessage.contains(SQLConf.VECTORIZED_HUGE_VECTOR_THRESHOLD.key))
+    }
+
+    val e = intercept[IllegalArgumentException] {
+      withSQLConf(SQLConf.VECTORIZED_HUGE_VECTOR_RESERVE_RATIO.key -> "0.5") {}
+    }
+    assert(e.getMessage.contains(SQLConf.VECTORIZED_HUGE_VECTOR_RESERVE_RATIO.key))
+  }
+
   test("The byte data of a string column vector holds no null bits") {
     Array(new OnHeapColumnVector(32, StringType),
       new OffHeapColumnVector(32, StringType)).foreach { vector =>

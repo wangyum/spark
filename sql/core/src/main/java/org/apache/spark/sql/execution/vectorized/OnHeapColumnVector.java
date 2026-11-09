@@ -117,7 +117,7 @@ public final class OnHeapColumnVector extends WritableColumnVector {
 
   @Override
   public void putNotNull(int rowId) {
-    if (!tracksNulls) return;
+    if (!tracksNulls) return; // Skip writing nulls to a vector that holds no null bits.
     nulls[rowId] = (byte)0;
   }
 
