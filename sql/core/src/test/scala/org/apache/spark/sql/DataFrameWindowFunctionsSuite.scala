@@ -1888,6 +1888,44 @@ class DataFrameWindowFunctionsSuite extends SharedSparkSession
       }
     }
   }
+
+  test("SPARK-61231: moving window frame is correct for an unspilled, multi-task partition") {
+    // Default config: the segment-tree moving-frame optimization is off
+    // (`spark.sql.window.segmentTree.enabled` defaults to false), so this non-MIN/MAX moving
+    // frame (`rowsBetween(-2, 2)`) is evaluated by `SlidingWindowFunctionFrame`. Each key's
+    // partition here (30 rows) is far below the 4096-row `windowExecBufferInMemoryThreshold`
+    // default, so none of them spill: this exercises the no-redundant-copy path end to end,
+    // under real (not synthetic/unit-test) partitioning and multi-task execution.
+    //
+    // `collect_list` echoes every buffered row's value back by position, so if skipping the
+    // extra copy let two tasks' or two frames' rows alias each other, the output would show
+    // wrong or duplicated values instead of each row's own distinct content.
+    val numKeys = 8
+    val rowsPerKey = 30
+    val rows = for {
+      k <- 0 until numKeys
+      i <- 0 until rowsPerKey
+    } yield (k, i, s"val-$k-$i-" + "x" * 50)
+
+    // Partition by key across more tasks than this suite's 2 local cores, so multiple tasks
+    // process different keys' windows concurrently on the same executor.
+    val df = rows.toDF("key", "ord", "value").repartition(numKeys, $"key")
+    val window = Window.partitionBy($"key").orderBy($"ord").rowsBetween(-2, 2)
+
+    var result: Array[Row] = null
+    assertNotSpilled(sparkContext, "collect") {
+      result = df.select($"key", $"ord", collect_list($"value").over(window).as("vals")).collect()
+    }
+
+    assert(result.length == numKeys * rowsPerKey)
+    result.foreach { row =>
+      val key = row.getInt(0)
+      val ord = row.getInt(1)
+      val expected = (math.max(0, ord - 2) to math.min(rowsPerKey - 1, ord + 2))
+        .map(j => s"val-$key-$j-" + "x" * 50)
+      assert(row.getSeq[String](2) == expected, s"key=$key ord=$ord")
+    }
+  }
 }
 
 /**
