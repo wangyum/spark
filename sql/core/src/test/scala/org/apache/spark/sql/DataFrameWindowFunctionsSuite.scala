@@ -1894,12 +1894,13 @@ class DataFrameWindowFunctionsSuite extends SharedSparkSession
     // (`spark.sql.window.segmentTree.enabled` defaults to false), so this non-MIN/MAX moving
     // frame (`rowsBetween(-2, 2)`) is evaluated by `SlidingWindowFunctionFrame`. Each key's
     // partition here (30 rows) is far below the 4096-row `windowExecBufferInMemoryThreshold`
-    // default, so none of them spill: this exercises the no-redundant-copy path end to end,
-    // under real (not synthetic/unit-test) partitioning and multi-task execution.
+    // default, so none of them spill: this proves the no-redundant-copy branch is the one a real
+    // query plan actually reaches -- under real (not synthetic/unit-test) partitioning and
+    // multi-task execution -- and stays correct there, which a hand-built unit test cannot show
+    // on its own. The `needsCopy=true` (spilled) branch is covered separately below.
     //
-    // `collect_list` echoes every buffered row's value back by position, so if skipping the
-    // extra copy let two tasks' or two frames' rows alias each other, the output would show
-    // wrong or duplicated values instead of each row's own distinct content.
+    // `collect_list` echoes every buffered row's value back by position, so any row left
+    // pointing at stale or wrong content would show up directly as a missing/incorrect value.
     val numKeys = 8
     val rowsPerKey = 30
     val rows = for {
@@ -1924,6 +1925,39 @@ class DataFrameWindowFunctionsSuite extends SharedSparkSession
       val expected = (math.max(0, ord - 2) to math.min(rowsPerKey - 1, ord + 2))
         .map(j => s"val-$key-$j-" + "x" * 50)
       assert(row.getSeq[String](2) == expected, s"key=$key ord=$ord")
+    }
+  }
+
+  test("SPARK-61231: moving window frame is correct for a genuinely spilled partition") {
+    // The sibling test above proves `needsCopy=false` (unspilled) is correct end to end. This
+    // one forces the partition's `ExternalAppendOnlyUnsafeRowArray` to actually switch to its
+    // `UnsafeExternalSorter`-backed, spill mode -- the same real mechanism the "SPARK-49386"
+    // test above uses -- so `needsCopy=true` is validated against the real `SpillableArrayIterator`
+    // (which repoints a single reusable `UnsafeRow` on every `next()`), not the simplified fake
+    // override used by the unit-level tests in `WindowFunctionFrameSuite`. A two-sided, finite
+    // `rowsBetween` frame is required: it's the only frame shape `SlidingWindowFunctionFrame`
+    // backs under default config (`sum`/`avg`-style unbounded-preceding frames below route
+    // through `Unbounded*WindowFunctionFrame` instead, which never exercises this fix).
+    val numRows = 50
+    val rows = (0 until numRows).map(i => (1, i, s"val-$i-" + "x" * 50))
+    val df = rows.toDF("key", "ord", "value")
+    val window = Window.partitionBy($"key").orderBy($"ord").rowsBetween(-2, 2)
+
+    withSQLConf(SQLConf.WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD.key -> "1",
+      SQLConf.WINDOW_EXEC_BUFFER_SPILL_THRESHOLD.key -> Int.MaxValue.toString,
+      SQLConf.WINDOW_EXEC_BUFFER_SIZE_SPILL_THRESHOLD.key -> "1") {
+      var result: Array[Row] = null
+      assertSpilled(sparkContext, "collect") {
+        result = df.select($"ord", collect_list($"value").over(window).as("vals")).collect()
+      }
+
+      assert(result.length == numRows)
+      result.foreach { row =>
+        val ord = row.getInt(0)
+        val expected = (math.max(0, ord - 2) to math.min(numRows - 1, ord + 2))
+          .map(j => s"val-$j-" + "x" * 50)
+        assert(row.getSeq[String](1) == expected, s"ord=$ord")
+      }
     }
   }
 }
