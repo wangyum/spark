@@ -19,7 +19,7 @@ package org.apache.spark.sql.execution.window
 
 import org.apache.spark.{SparkException, SparkFunSuite}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, GenericInternalRow, Lag, Literal, MutableProjection, NamedExpression, NthValue, OffsetWindowFunction, SortOrder, SpecificInternalRow, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, GenericInternalRow, Lag, Literal, MutableProjection, NamedExpression, NthValue, OffsetWindowFunction, SortOrder, SpecificInternalRow, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.execution.ExternalAppendOnlyUnsafeRowArray
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.{DataType, IntegerType}
@@ -165,5 +165,82 @@ class WindowFunctionFrameSuite extends SparkFunSuite {
       assert(!result.isNullAt(0), s"write $i returned the default value")
       assert(result.getInt(0) == expected, s"write $i")
     }
+  }
+
+  test("SPARK-61231: SlidingWindowFunctionFrame reuses rows from an unspilled buffer") {
+    // While `input` hasn't spilled, its iterator hands out the distinct `UnsafeRow`s it already
+    // owns (see `ExternalAppendOnlyUnsafeRowArray.isSpillBacked`), so the frame's own buffer can
+    // hold the very same references instead of copying each row again.
+    val toUnsafeRow = UnsafeProjection.create(Array[DataType](IntegerType))
+    val rows = new ExternalAppendOnlyUnsafeRowArray(
+      null, null, null, null, 1024, 1L, 100, Long.MaxValue, 100, Long.MaxValue)
+    val values = Seq(10, 20, 30, 40, 50)
+    values.foreach(v => rows.add(toUnsafeRow(new GenericInternalRow(Array[Any](v)))))
+    assert(!rows.isSpillBacked)
+    val owned = rows.generateIterator().toArray
+
+    // ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING.
+    val frame = new SlidingWindowFunctionFrame(
+      target, processor = null, lbound = RowBoundOrdering(-1), ubound = RowBoundOrdering(1))
+    frame.prepare(rows)
+    values.indices.foreach(i => frame.write(i, InternalRow.empty))
+
+    assert(frame.buffer.size() > 0)
+    val bufferedRows = new Array[InternalRow](frame.buffer.size())
+    frame.buffer.toArray(bufferedRows).foreach { row =>
+      assert(owned.exists(_.asInstanceOf[AnyRef] eq row.asInstanceOf[AnyRef]),
+        "the buffered row is a fresh copy instead of the array's own row instance")
+    }
+  }
+
+  test("SPARK-61231: SlidingWindowFunctionFrame still copies rows once input has spilled") {
+    // Once `input` spills, its iterator rebinds a single reusable `UnsafeRow` on every `next()`,
+    // so the frame must keep copying to hold on to a row past the current iteration step.
+    val toUnsafeRow = UnsafeProjection.create(Array[DataType](IntegerType))
+    // `numRowsInMemoryBufferThreshold = 0` forces every `add` straight into the spillable path.
+    val rows = new ExternalAppendOnlyUnsafeRowArray(
+      null, null, null, null, 1024, 1L, 0, Long.MaxValue, 100, Long.MaxValue) {
+      // Avoid touching a real UnsafeExternalSorter (needs a live TaskMemoryManager/BlockManager);
+      // this fake spillable store is just a plain in-memory holder that reuses one row object,
+      // reproducing the spill-backed iterator's "reused `UnsafeRow`" sharing behavior.
+      private val stored = new scala.collection.mutable.ArrayBuffer[Array[Byte]]()
+      override def isSpillBacked: Boolean = true
+      override def add(unsafeRow: UnsafeRow): Unit = {
+        // `copy()` first: `getBytes()` alone can return the row's own live backing array
+        // (see `UnsafeDataUtils.getBytes`'s zero-copy fast path), which would alias the
+        // caller's reused projection buffer instead of snapshotting this value.
+        stored += unsafeRow.copy().getBytes
+        numRowsInternal += 1
+      }
+      private var numRowsInternal: Long = 0
+      override def length: Long = numRowsInternal
+      override def generateIterator(startIndex: Int): Iterator[UnsafeRow] =
+        new Iterator[UnsafeRow] {
+          private var i = startIndex
+          private val reusable = new UnsafeRow(1)
+          override def hasNext: Boolean = i < stored.length
+          override def next(): UnsafeRow = {
+            val bytes = stored(i)
+            reusable.pointTo(bytes, bytes.length)
+            i += 1
+            reusable
+          }
+        }
+    }
+    val values = Seq(10, 20, 30, 40, 50)
+    values.foreach(v => rows.add(toUnsafeRow(new GenericInternalRow(Array[Any](v)))))
+    assert(rows.isSpillBacked)
+
+    // ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING.
+    val frame = new SlidingWindowFunctionFrame(
+      target, processor = null, lbound = RowBoundOrdering(-1), ubound = RowBoundOrdering(1))
+    frame.prepare(rows)
+    values.indices.foreach(i => frame.write(i, InternalRow.empty))
+
+    // The window for the last row covers values 40 and 50; if the frame had kept references into
+    // the reused row instead of copying, every buffered row would wrongly show the last value.
+    val bufferedValues = new Array[InternalRow](frame.buffer.size())
+    frame.buffer.toArray(bufferedValues)
+    assert(bufferedValues.map(_.getInt(0)).toSeq == Seq(40, 50))
   }
 }
