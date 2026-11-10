@@ -401,18 +401,6 @@ private[joins] class SortMergeAsOfJoinScanner(
     case Nearest => findNearest(leftRow)
   }
 
-  /**
-   * Retains `rightRow` as the best match found so far.
-   *
-   * While the right-side buffer is held in memory, its iterator yields the distinct rows stored
-   * in the buffer and a match can be retained as is. Once the buffer is spill-backed the
-   * iterator re-points a single [[UnsafeRow]] on every `next()`, so the match has to be copied
-   * out before the scan advances. `needsCopy` is read once per scan by the callers.
-   */
-  private def retainMatch(rightRow: UnsafeRow, needsCopy: Boolean): UnsafeRow = {
-    if (needsCopy) rightRow.copy() else rightRow
-  }
-
   /** Whether `cond` is TRUE on the current joined row. FALSE and NULL both fail. */
   private def holds(cond: BasePredicate): Boolean = cond.eval(joinedRow)
 
@@ -431,7 +419,6 @@ private[joins] class SortMergeAsOfJoinScanner(
   private def findLastBackward(leftRow: InternalRow): InternalRow = {
     var bestMatch: InternalRow = null
     val iter = rightGroupBuffer.generateIterator()
-    val needsCopy = rightGroupBuffer.isSpillBacked
     var asOfSeen = false
 
     joinedRow.withLeft(leftRow)
@@ -443,7 +430,7 @@ private[joins] class SortMergeAsOfJoinScanner(
         asOfSeen = true
         if (residualHolds) {
           // Last match wins (closest right.t to left.t)
-          bestMatch = retainMatch(rightRow, needsCopy)
+          bestMatch = rightGroupBuffer.retainRow(rightRow)
         }
       } else if (asOfSeen) {
         // At or past left.t, so no later row passes the as-of condition.
@@ -460,7 +447,6 @@ private[joins] class SortMergeAsOfJoinScanner(
    */
   private def findFirstForward(leftRow: InternalRow): InternalRow = {
     val iter = rightGroupBuffer.generateIterator()
-    val needsCopy = rightGroupBuffer.isSpillBacked
     var asOfSeen = false
 
     joinedRow.withLeft(leftRow)
@@ -471,7 +457,7 @@ private[joins] class SortMergeAsOfJoinScanner(
       if (holds(boundAsOfCond)) {
         asOfSeen = true
         if (residualHolds) {
-          return retainMatch(rightRow, needsCopy)
+          return rightGroupBuffer.retainRow(rightRow)
         }
       } else if (asOfSeen) {
         // Past the tolerance bound, so no later row passes the as-of condition.
@@ -575,7 +561,6 @@ private[joins] class SortMergeAsOfJoinScanner(
     var bestBefore: UnsafeRow = null
     var bestBeforeKey: Any = null
     val iter = rightGroupBuffer.generateIterator()
-    val needsCopy = rightGroupBuffer.isSpillBacked
 
     joinedRow.withLeft(leftRow)
     while (iter.hasNext) {
@@ -588,15 +573,15 @@ private[joins] class SortMergeAsOfJoinScanner(
           if (keyOrdering.lt(rightKey, leftKey)) {
             // Keep the first eligible row at each key so equal-distance ties stay stable.
             if (bestBefore == null || keyOrdering.lt(bestBeforeKey, rightKey)) {
-              bestBefore = retainMatch(rightRow, needsCopy)
+              bestBefore = rightGroupBuffer.retainRow(rightRow)
               bestBeforeKey = InternalRow.copyValue(rightKey)
             }
           } else if (keyOrdering.equiv(rightKey, leftKey)) {
             // An exact match is the nearest row, even for an infinite key (Inf - Inf is NaN).
-            return retainMatch(rightRow, needsCopy)
+            return rightGroupBuffer.retainRow(rightRow)
           } else if (bestBefore == null ||
               isAfterCloser(bestBeforeKey, leftKey, rightKey, leftKeyExpr.dataType)) {
-            return retainMatch(rightRow, needsCopy)
+            return rightGroupBuffer.retainRow(rightRow)
           } else {
             return bestBefore
           }

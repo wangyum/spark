@@ -457,20 +457,10 @@ final class SlidingWindowFunctionFrame(
   private[this] var inputIterator: Iterator[UnsafeRow] = _
 
   /** The next row from `input`. */
-  private[this] var nextRow: InternalRow = null
+  private[this] var nextRow: UnsafeRow = null
 
   /** The rows within current sliding window. Package-visible so tests can inspect it. */
   private[window] val buffer = new util.ArrayDeque[InternalRow]()
-
-  /**
-   * Whether a row handed out by [[inputIterator]] must be copied before it is stashed in
-   * [[buffer]]. While `input` is in-memory, its iterator hands out the distinct, already-copied
-   * `UnsafeRow`s it owns (see [[ExternalAppendOnlyUnsafeRowArray.isSpillBacked]]), so `buffer` can
-   * safely hold the same reference. Once `input` spills, the iterator rebinds a single reusable
-   * row on every `next()`, so a copy is required to keep a past row intact. Read once per
-   * partition, mirroring the `needsCopy` pattern in `SortMergeAsOfJoinExec`.
-   */
-  private[this] var needsCopy = false
 
   /**
    * Index of the first input row with a value equal to or greater than the lower bound of the
@@ -487,7 +477,6 @@ final class SlidingWindowFunctionFrame(
   /** Prepare the frame for calculating a new partition. Reset all variables. */
   override def prepare(rows: ExternalAppendOnlyUnsafeRowArray): Unit = {
     input = rows
-    needsCopy = input.isSpillBacked
     inputIterator = input.generateIterator()
     nextRow = WindowFunctionFrame.getNextOrNull(inputIterator)
     lowerBound = 0
@@ -513,7 +502,7 @@ final class SlidingWindowFunctionFrame(
       if (lbound.compare(nextRow, lowerBound, current, index) < 0) {
         lowerBound += 1
       } else {
-        buffer.add(if (needsCopy) nextRow.copy() else nextRow)
+        buffer.add(input.retainRow(nextRow))
         bufferUpdated = true
       }
       nextRow = WindowFunctionFrame.getNextOrNull(inputIterator)

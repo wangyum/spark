@@ -114,6 +114,13 @@ class ExternalAppendOnlyUnsafeRowArray(
   def isSpillBacked: Boolean = spillableArray != null
 
   /**
+   * Returns `row` (a row yielded by this array's current iterator) as-is if it is safe for the
+   * caller to keep a reference to past the current iteration step, or an independent copy if
+   * not -- i.e. applies the contract documented on [[isSpillBacked]].
+   */
+  def retainRow(row: UnsafeRow): UnsafeRow = if (isSpillBacked) row.copy() else row
+
+  /**
    * Total number of bytes that has been spilled into disk so far.
    */
   def spillSize: Long = {

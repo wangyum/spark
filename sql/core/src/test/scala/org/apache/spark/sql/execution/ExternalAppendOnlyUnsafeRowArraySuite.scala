@@ -197,6 +197,49 @@ class ExternalAppendOnlyUnsafeRowArraySuite extends SparkFunSuite with LocalSpar
     }
   }
 
+  test("retainRow returns the row as-is (without spill)") {
+    val (inMemoryThreshold, spillThreshold) = (100, 50)
+    withExternalArray(inMemoryThreshold, spillThreshold) { array =>
+      val expectedValues = populateRows(array, inMemoryThreshold - 1)
+      assert(!array.isSpillBacked)
+
+      val iterator = array.generateIterator()
+      for (expected <- expectedValues) {
+        val row = iterator.next()
+        assert(row.getLong(0) == expected)
+        assert(array.retainRow(row) eq row)
+      }
+    }
+  }
+
+  test("retainRow copies the row (with spill)") {
+    val (inMemoryThreshold, spillThreshold) = (20, 10)
+    withExternalArray(inMemoryThreshold, spillThreshold) { array =>
+      val expectedValues = populateRows(array, inMemoryThreshold - 1)
+      assert(!array.isSpillBacked)
+
+      // Cross the in-memory threshold to switch to the UnsafeExternalSorter-backed spill mode.
+      populateRows(array, 2, expectedValues)
+      assert(array.isSpillBacked)
+
+      // The spilled iterator repoints a single reusable UnsafeRow on every `next()`; if
+      // `retainRow` didn't copy, every entry retained below would end up showing the last value.
+      val iterator = array.generateIterator()
+      val retained = expectedValues.map { expected =>
+        val row = iterator.next()
+        assert(row.getLong(0) == expected)
+        val copy = array.retainRow(row)
+        assert(copy ne row)
+        copy
+      }
+      assert(!iterator.hasNext)
+
+      retained.zip(expectedValues).foreach { case (row, expected) =>
+        assert(row.getLong(0) == expected)
+      }
+    }
+  }
+
   test("iterator on an empty array should be empty") {
     withExternalArray(inMemoryThreshold = 4, spillThreshold = 10) { array =>
       val iterator = array.generateIterator()
