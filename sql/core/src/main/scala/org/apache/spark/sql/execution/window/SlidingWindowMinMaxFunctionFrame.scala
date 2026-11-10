@@ -286,9 +286,14 @@ private[window] final class SlidingWindowMinMaxFunctionFrame(
     // and UnsafeRow.getDecimal constructs a detached Decimal from a Long or a new BigDecimal.
     // Neither retains a pointer into the UnsafeRow's page memory, so the deque never holds a
     // stale reference when the source UnsafeRow is recycled on spill.
+    //
+    // While `input` is in-memory (not spill-backed), `row` is already one of its own stable,
+    // independently-owned rows (see `ExternalAppendOnlyUnsafeRowArray.isSpillBacked`), so a
+    // value extracted from it is just as stable -- the copy is only needed once `input` spills
+    // and its iterator starts recycling a single `UnsafeRow`.
     private def evaluateAndCopy(row: InternalRow): Any = {
       val value = boundChild.eval(row)
-      if (value == null) null else InternalRow.copyValue(value)
+      if (value == null || !input.isSpillBacked) value else InternalRow.copyValue(value)
     }
 
     def admit(row: InternalRow, index: Int): Unit = {
