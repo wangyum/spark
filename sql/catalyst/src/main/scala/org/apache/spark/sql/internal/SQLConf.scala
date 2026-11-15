@@ -1313,6 +1313,28 @@ object SQLConf {
     .booleanConf
     .createWithDefault(false)
 
+  val SORT_MERGE_JOIN_RANGE_INDEX_ENABLED =
+    buildConf("spark.sql.join.sortMergeJoin.rangeIndex.enabled")
+      .internal()
+      .doc("When true, a sort-merge join whose residual condition is a recognizable range " +
+        "predicate may index each buffered-side key group with the same structures as a " +
+        "broadcast range join, probing that index per streamed row instead of linearly " +
+        "rescanning the group. Disabled groups and unrecognized conditions keep the existing " +
+        "scan path.")
+      .version("4.4.0")
+      .booleanConf
+      .createWithDefault(true)
+
+  val SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD =
+    buildConf("spark.sql.join.sortMergeJoin.rangeIndex.threshold")
+      .internal()
+      .doc("Minimum buffered-side row count for an equi-key group before building a range " +
+        "index for it in sort-merge join.")
+      .version("4.4.0")
+      .intConf
+      .checkValue(_ >= 0, "value should be non-negative")
+      .createWithDefault(16)
+
   val SHUFFLE_HASH_JOIN_FACTOR =
     buildConfFromConfigFile[Int]("spark.sql.shuffledHashJoinFactor")
       .checkValue(_ >= 1, "The shuffle hash join factor must be at least 1.")
@@ -10288,6 +10310,10 @@ class SQLConf extends Serializable with Logging with SqlApiConf {
   def autoBroadcastJoinThreshold: Long = getConf(AUTO_BROADCASTJOIN_THRESHOLD)
 
   def broadcastRangeJoinEnabled: Boolean = getConf(BROADCAST_RANGE_JOIN_ENABLED)
+
+  def sortMergeJoinRangeIndexEnabled: Boolean = getConf(SORT_MERGE_JOIN_RANGE_INDEX_ENABLED)
+
+  def sortMergeJoinRangeIndexThreshold: Int = getConf(SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD)
 
   def limitInitialNumPartitions: Int = getConf(LIMIT_INITIAL_NUM_PARTITIONS)
 

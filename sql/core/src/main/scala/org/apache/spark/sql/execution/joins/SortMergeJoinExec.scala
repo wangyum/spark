@@ -152,8 +152,8 @@ case class SortMergeJoinExec(
       spillSize,
       onlyBufferFirstMatchedRow,
       streamedOnlyCondition,
-      restCondition
-    )
+      restCondition,
+      rangeProbeSpec)
     if (conf.usePartitionEvaluator) {
       left.execute().zipPartitionsWithEvaluator(right.execute(), evaluatorFactory)
     } else {
@@ -176,9 +176,20 @@ case class SortMergeJoinExec(
   private lazy val streamedOutput = streamedPlan.output
   private lazy val bufferedOutput = bufferedPlan.output
 
+  private lazy val rangeProbeSpec: Option[RangeGroupProbe.Spec] =
+    SortMergeJoinRangePhysical.createProbeSpec(
+      condition,
+      joinType,
+      leftKeys,
+      rightKeys,
+      left.output,
+      right.output,
+      conf)
+
   override def supportCodegen: Boolean = joinType match {
     case FullOuter => conf.getConf(SQLConf.ENABLE_FULL_OUTER_SORT_MERGE_JOIN_CODEGEN)
     case _: ExistenceJoin => conf.getConf(SQLConf.ENABLE_EXISTENCE_SORT_MERGE_JOIN_CODEGEN)
+    case _ if rangeProbeSpec.isDefined => false
     case _ => true
   }
 
@@ -1132,8 +1143,11 @@ private[joins] class SortMergeJoinScanner(
     sizeInBytesSpillThreshold: Long,
     spillSize: SQLMetric,
     eagerCleanupResources: () => Unit,
-    onlyBufferFirstMatch: Boolean = false) {
+    onlyBufferFirstMatch: Boolean = false,
+    rangeProbeSpec: Option[RangeGroupProbe.Spec] = None) {
   private[this] var streamedRow: InternalRow = _
+  private[this] var groupProbe: RangeGroupProbe.Handle = _
+  private[this] var bufferedGroupEpoch: Int = 0
   private[this] var streamedRowKey: InternalRow = _
   private[this] var bufferedRow: InternalRow = _
   // Note: this is guaranteed to never have any null columns:
@@ -1166,6 +1180,22 @@ private[joins] class SortMergeJoinScanner(
 
   def getBufferedMatches: ExternalAppendOnlyUnsafeRowArray = bufferedMatches
 
+  def getBufferedGroupEpoch: Int = bufferedGroupEpoch
+
+  /** Buffered-side rows matching the streamed row, using a per-group range index when enabled. */
+  def candidatesFor(streamedRow: InternalRow): Iterator[InternalRow] = {
+    if (groupProbe != null) {
+      RangeGroupProbe.candidates(groupProbe, streamedRow)
+    } else {
+      bufferedMatches.generateIterator()
+    }
+  }
+
+  private def resetBufferedGroup(): Unit = {
+    bufferedMatches.clear()
+    groupProbe = null
+  }
+
   /**
    * Advances both input iterators, stopping when we have found rows with matching join keys. If no
    * join rows found, try to do the eager resources cleanup.
@@ -1181,7 +1211,7 @@ private[joins] class SortMergeJoinScanner(
     val found = if (streamedRow == null) {
       // We have consumed the entire streamed iterator, so there can be no more matches.
       matchJoinKey = null
-      bufferedMatches.clear()
+      resetBufferedGroup()
       false
     } else if (matchJoinKey != null && keyOrdering.compare(streamedRowKey, matchJoinKey) == 0) {
       // The new streamed row has the same join key as the previous row, so return the same matches.
@@ -1190,7 +1220,7 @@ private[joins] class SortMergeJoinScanner(
       // The streamed row's join key does not match the current batch of buffered rows and there are
       // no more rows to read from the buffered iterator, so there can be no more matches.
       matchJoinKey = null
-      bufferedMatches.clear()
+      resetBufferedGroup()
       false
     } else {
       // Advance both the streamed and buffered iterators to find the next pair of matching rows.
@@ -1208,7 +1238,7 @@ private[joins] class SortMergeJoinScanner(
       if (streamedRow == null || bufferedRow == null) {
         // We have either hit the end of one of the iterators, so there can be no more matches.
         matchJoinKey = null
-        bufferedMatches.clear()
+        resetBufferedGroup()
         false
       } else {
         // The streamed row's join key matches the current buffered row's join, so walk through the
@@ -1233,7 +1263,7 @@ private[joins] class SortMergeJoinScanner(
     val found = if (!advancedStreamed()) {
       // We have consumed the entire streamed iterator, so there can be no more matches.
       matchJoinKey = null
-      bufferedMatches.clear()
+      resetBufferedGroup()
       false
     } else {
       if (matchJoinKey != null && keyOrdering.compare(streamedRowKey, matchJoinKey) == 0) {
@@ -1241,7 +1271,7 @@ private[joins] class SortMergeJoinScanner(
       } else {
         // The streamed row does not match the current group.
         matchJoinKey = null
-        bufferedMatches.clear()
+        resetBufferedGroup()
         if (bufferedRow != null && !streamedRowKey.anyNull) {
           // The buffered iterator could still contain matching rows, so we'll need to walk through
           // it until we either find matches or pass where they would be found.
@@ -1313,13 +1343,17 @@ private[joins] class SortMergeJoinScanner(
     assert(keyOrdering.compare(streamedRowKey, bufferedRowKey) == 0)
     // This join key may have been produced by a mutable projection, so we need to make a copy:
     matchJoinKey = streamedRowKey.copy()
-    bufferedMatches.clear()
+        resetBufferedGroup()
     do {
       if (!onlyBufferFirstMatch || bufferedMatches.isEmpty) {
         bufferedMatches.add(bufferedRow.asInstanceOf[UnsafeRow])
       }
       advancedBufferedToRowWithNullFreeJoinKey()
     } while (bufferedRow != null && keyOrdering.compare(streamedRowKey, bufferedRowKey) == 0)
+    bufferedGroupEpoch += 1
+    rangeProbeSpec.foreach { spec =>
+      groupProbe = RangeGroupProbe.build(bufferedMatches, spec)
+    }
   }
 }
 
@@ -1389,7 +1423,7 @@ private abstract class OneSideOuterIterator(
   protected[this] val joinedRow: JoinedRow = new JoinedRow()
 
   // Index of the buffered rows, reset to 0 whenever we advance to a new streamed row
-  private[this] var rightMatchesIterator: Iterator[UnsafeRow] = null
+  private[this] var rightMatchesIterator: Iterator[InternalRow] = null
 
   // This iterator is initialized lazily so there should be no matches initially
   assert(smjScanner.getBufferedMatches.length == 0)
@@ -1432,7 +1466,7 @@ private abstract class OneSideOuterIterator(
   private def advanceBufferUntilRestConditionSatisfied(): Boolean = {
     var foundMatch: Boolean = false
     if (rightMatchesIterator == null) {
-      rightMatchesIterator = smjScanner.getBufferedMatches.generateIterator()
+      rightMatchesIterator = smjScanner.candidatesFor(smjScanner.getStreamedRow)
     }
 
     while (!foundMatch && rightMatchesIterator.hasNext) {

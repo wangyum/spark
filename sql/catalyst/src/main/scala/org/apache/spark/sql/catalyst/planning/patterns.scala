@@ -487,6 +487,23 @@ final case class GreaterPartialRangeJoin(override val strict: Boolean) extends P
 object ExtractRangeJoinKeys extends PredicateHelper {
   type ReturnType = (Seq[Expression], Seq[Expression], RangeJoinKind)
 
+  /**
+   * Recognize a range shape in a residual join condition given child outputs, for physical
+   * operators that already fixed the equi-keys and only need the range predicate extracted.
+   */
+  def fromJoinCondition(
+      condition: Expression,
+      leftOutput: Seq[Attribute],
+      rightOutput: Seq[Attribute]): Option[ReturnType] = {
+    val synthetic = Join(
+      LocalRelation(leftOutput),
+      LocalRelation(rightOutput),
+      Inner,
+      Some(condition),
+      JoinHint.NONE)
+    unapply(synthetic)
+  }
+
   def unapply(plan: LogicalPlan): Option[ReturnType] = plan match {
     case Join(left, right, _, Some(condition), _) =>
       val predicates = splitConjunctivePredicates(condition)
