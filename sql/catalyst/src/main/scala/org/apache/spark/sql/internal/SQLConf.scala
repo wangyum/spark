@@ -1317,7 +1317,7 @@ object SQLConf {
     buildConf("spark.sql.join.sortMergeJoin.rangeIndex.enabled")
       .internal()
       .doc("When true, a sort-merge join whose residual condition contains a recognizable " +
-        "range predicate will index buffered-side key groups exceeding the threshold with " +
+        "range predicate will index buffered-side key groups at or above the threshold with " +
         "a range index budgeted via TaskMemoryManager, probing that index per streamed row " +
         "instead of linearly rescanning the group. Supported on both interpreted and " +
         "whole-stage codegen paths.")

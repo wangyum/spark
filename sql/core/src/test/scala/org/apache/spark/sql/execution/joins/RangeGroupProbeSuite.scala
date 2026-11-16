@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, UnsafeProj
 import org.apache.spark.sql.catalyst.optimizer.BuildRight
 import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.execution.ExternalAppendOnlyUnsafeRowArray
+import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, LongType}
 
@@ -292,6 +293,108 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       assert(handle == null,
         "when the real relation footprint exceeds the nominal estimate and the consumer has " +
           "no more memory to grant, the index must be released and the group must fall back")
+    }
+  }
+
+  test("Session defers the index build until the second probe of a group") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
+      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      session.onGroupBuffered()
+      assert(session.currentRelationOrNull == null, "no probe has happened yet")
+
+      session.onProbe(array)
+      assert(session.currentRelationOrNull == null,
+        "a group probed exactly once must not build an index")
+
+      session.onProbe(array)
+      assert(session.currentRelationOrNull != null,
+        "a second probe of the same group must trigger the deferred build")
+    }
+  }
+
+  test("Session.candidates falls back to a linear scan on the first probe, then uses the " +
+    "index from the second probe onward") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
+      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      session.onGroupBuffered()
+
+      // First probe: candidates must come straight from the array, not an index.
+      val first = session.candidates(array, InternalRow(1L, 25L, 55L)).toSeq
+      assert(first.length == array.length, "the first probe must linearly scan every row")
+      assert(session.currentRelationOrNull == null)
+
+      // Second probe of the same group: the index is now built and used.
+      val second = session.candidates(array, InternalRow(1L, 25L, 55L)).toSeq
+      assert(second.length == 3, "the index-backed probe must only return in-range rows")
+      assert(session.currentRelationOrNull != null)
+    }
+  }
+
+  test("Session.resetGroup clears probe state so the next group starts fresh") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
+      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      session.onGroupBuffered()
+      session.onProbe(array)
+      session.onProbe(array)
+      assert(session.currentRelationOrNull != null, "the group must be indexed by now")
+
+      session.resetGroup()
+      assert(session.currentRelationOrNull == null, "resetGroup must release the index")
+
+      // The next group must re-defer its own build, not immediately reuse the prior group's
+      // already-passed probeCount/buildAttempted state.
+      session.onGroupBuffered()
+      session.onProbe(array)
+      assert(session.currentRelationOrNull == null,
+        "a fresh group's first probe must not build an index")
+    }
+  }
+
+  test("Session.memoryConsumer.spill() releases an indexed group, falls back to a linear " +
+    "scan, counts it as a fallback, and never rebuilds for the rest of the group") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
+      val indexedMetric = SQLMetrics.createMetric(sc, "indexed")
+      val fallbackMetric = SQLMetrics.createMetric(sc, "fallback")
+      val session = new RangeGroupProbe.Session(
+        pointInRangeSpec(threshold = 2), indexedMetric, fallbackMetric)
+      session.onGroupBuffered()
+      session.onProbe(array)
+      session.onProbe(array)
+      assert(session.currentRelationOrNull != null, "the group must be indexed by now")
+      assert(indexedMetric.value == 1)
+      assert(fallbackMetric.value == 0)
+
+      // Simulate what TaskMemoryManager does when it asks this consumer to give memory back,
+      // e.g. because another consumer in the same task needs execution memory.
+      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager())
+      session.memoryConsumer.spill(1L, otherConsumer)
+
+      assert(session.currentRelationOrNull == null,
+        "the index must be released once the consumer is asked to spill")
+      assert(fallbackMetric.value == 1,
+        "a spilled, previously-indexed group must be counted as a fallback")
+      assert(indexedMetric.value == 1, "the earlier indexed count must not be undone")
+
+      // A further probe of the same group must not attempt to rebuild and re-acquire memory.
+      session.onProbe(array)
+      assert(session.currentRelationOrNull == null, "the group must not rebuild after a spill")
+      assert(indexedMetric.value == 1, "a rebuild would have incremented this again")
+      assert(fallbackMetric.value == 1, "a rebuild attempt would have incremented this again")
+    }
+  }
+
+  test("Session.memoryConsumer.spill() is a no-op on a self-triggered spill") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
+      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      session.onGroupBuffered()
+      session.onProbe(array)
+      session.onProbe(array)
+      assert(session.currentRelationOrNull != null)
+
+      assert(session.memoryConsumer.spill(1L, session.memoryConsumer) == 0L,
+        "a self-triggered spill must return 0 without releasing the index")
+      assert(session.currentRelationOrNull != null,
+        "a self-triggered spill must not release the index")
     }
   }
 }

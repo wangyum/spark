@@ -275,7 +275,7 @@ case class SortMergeJoinExec(
         val sessionTerm = ctx.addMutableState(sessionCls, "probeSession",
           v => s"$v = new $sessionCls($specTerm, $indexedMetric, $fallbackMetric);",
           forceInline = true)
-        val buildCode = s"$sessionTerm.onGroupBuffered($matches);"
+        val buildCode = s"$sessionTerm.onGroupBuffered();"
         val clearCode =
           s"""
              |$sessionTerm.resetGroup();
@@ -1182,8 +1182,14 @@ case class SortMergeJoinExec(
  * @param rangeProbeSpec when defined, recognizes a range-shaped residual condition and enables
  *                       per-equi-key-group range indexing instead of a linear buffer scan
  * @param numRangeIndexedGroups metric counting equi-key groups indexed via `rangeProbeSpec`
- * @param numRangeIndexFallbackGroups metric counting equi-key groups that fell back to a linear
- *                                    scan despite `rangeProbeSpec` being defined
+ * @param numRangeIndexFallbackGroups metric counting equi-key groups whose index build was
+ *                                    attempted and rejected (over budget, spilled) or whose
+ *                                    index was evicted under memory pressure, despite
+ *                                    `rangeProbeSpec` being defined. A group probed exactly
+ *                                    once never attempts a build (see
+ *                                    `RangeGroupProbe.Session.onProbe`) and so increments
+ *                                    neither this metric nor `numRangeIndexedGroups` - their
+ *                                    sum is not the total count of above-threshold groups.
  */
 private[joins] class SortMergeJoinScanner(
     streamedKeyGenerator: Projection,
@@ -1407,7 +1413,7 @@ private[joins] class SortMergeJoinScanner(
       advancedBufferedToRowWithNullFreeJoinKey()
     } while (bufferedRow != null && keyOrdering.compare(streamedRowKey, bufferedRowKey) == 0)
     if (probeSession != null) {
-      probeSession.onGroupBuffered(bufferedMatches)
+      probeSession.onGroupBuffered()
     }
   }
 }

@@ -61,12 +61,18 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
    * @param expectFallback when true, assert that at least one group fell back to a linear scan
    *                       (`numRangeIndexFallbackGroups` metric > 0) and that no group was
    *                       range-indexed.
+   * @param expectNeverAttempted when true, assert that no group ever attempted a build
+   *                             (`numRangeIndexedGroups` and `numRangeIndexFallbackGroups` both
+   *                             0) - the common one-to-many shape where every eligible group is
+   *                             probed by exactly one streamed row, so `RangeGroupProbe.Session
+   *                             .onProbe`'s deferred-build gate never fires.
    */
   private def checkAgainstBaseline(
       joined: => DataFrame,
       configs: Seq[(String, String)],
       expectIndexed: Boolean = false,
-      expectFallback: Boolean = false): Unit = {
+      expectFallback: Boolean = false,
+      expectNeverAttempted: Boolean = false): Unit = {
     for (codegen <- Seq(true, false)) {
       val runConfigs = configs :+ (SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString)
       val baseline = withSQLConf(
@@ -92,6 +98,12 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
             s"expected a fallback to linear scan (numRangeIndexFallbackGroups was 0):\n$plan")
           assert(smj.map(_.metrics("numRangeIndexedGroups").value).sum == 0,
             s"expected no group to be range-indexed when exercising the fallback path:\n$plan")
+        }
+        if (expectNeverAttempted) {
+          assert(smj.map(_.metrics("numRangeIndexedGroups").value).sum == 0 &&
+            smj.map(_.metrics("numRangeIndexFallbackGroups").value).sum == 0,
+            s"expected every eligible group to be probed exactly once and never attempt a " +
+              s"build (neither indexed nor fallback):\n$plan")
         }
       }
     }
@@ -231,6 +243,24 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
     val cond = pointCond(events, spans)
     checkAgainstBaseline(
       spans.hint("merge").join(events.hint("merge"), cond), smjConfigs, expectIndexed = true)
+  }
+
+  test("sort merge join never attempts to build an index for a group probed exactly once") {
+    // Each buffered group has largeGroupSize (20) rows -- above the default threshold (16) --
+    // but is matched by exactly one streamed row per equi-key, the common one-to-many join
+    // shape (e.g. a unique dimension key joined to a skewed fact table) that
+    // RangeGroupProbe.Session.onProbe's deferred-build gate exists to protect: the group must
+    // never be attempted (neither indexed nor counted as a fallback), since a single probe is
+    // always cheaper done as the plain linear scan it would have used anyway.
+    val events = spark.range(equiKeyBuckets.toLong).selectExpr(
+      "id as e_id",
+      s"${rangeSpanWidth / 2} as event_pt")
+    val spans = largeGroupSpans()
+    val cond = pointCond(events, spans)
+    checkAgainstBaseline(
+      events.hint("merge").join(spans.hint("merge"), cond),
+      smjConfigs,
+      expectNeverAttempted = true)
   }
 
   test("sort merge point-in-range left outer join engages the index for a large group") {

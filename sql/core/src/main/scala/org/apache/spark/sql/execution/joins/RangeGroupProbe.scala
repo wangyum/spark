@@ -107,7 +107,7 @@ private[joins] object RangeGroupProbe {
 
     private[this] val taskContext: TaskContext = TaskContext.get()
 
-    private[this] val memoryConsumer: RangeIndexMemoryConsumer = {
+    private[joins] val memoryConsumer: RangeIndexMemoryConsumer = {
       if (taskContext != null) {
         val consumer = new RangeIndexMemoryConsumer(taskContext.taskMemoryManager())
         consumer.onRelease(() => releaseForSpill())
@@ -125,7 +125,7 @@ private[joins] object RangeGroupProbe {
       taskContext.addTaskCompletionListener[Unit](_ => resetGroup())
     }
 
-    def onGroupBuffered(matches: ExternalAppendOnlyUnsafeRowArray): Unit = resetGroup()
+    def onGroupBuffered(): Unit = resetGroup()
 
     /**
      * Called once per streamed row probing the current buffered group, before
@@ -134,7 +134,10 @@ private[joins] object RangeGroupProbe {
      * exactly once - the common one-to-many join shape, e.g. a unique dimension key joined to
      * a skewed fact table - pays only the linear scan it would have paid anyway, instead of
      * also building an index nothing will reuse. `buildAttempted` latches the budget/
-     * eligibility decision so a later probe never re-evaluates it for the same group.
+     * eligibility decision so a later probe never re-evaluates it for the same group. Note that
+     * a group probed exactly once never increments `numIndexedMetric` or `numFallbackMetric`:
+     * those two metrics count groups whose build was actually attempted, not every group above
+     * `threshold`, so their sum is no longer the total count of above-threshold groups.
      */
     def onProbe(matches: ExternalAppendOnlyUnsafeRowArray): Unit = {
       probeCount += 1
@@ -175,9 +178,21 @@ private[joins] object RangeGroupProbe {
     def currentRelationOrNull: RangeRelation =
       if (currentHandle != null) currentHandle.relation else null
 
+    def resetGroup(): Unit = {
+      if (currentHandle != null) {
+        release(currentHandle, memoryConsumer)
+        currentHandle = null
+      }
+      probeCount = 0
+      buildAttempted = false
+    }
+
     /**
      * Releases the current group's index on a TaskMemoryManager spill request, falling back to
-     * the always-available linear scan on the buffered group for the rest of the group.
+     * the always-available linear scan on the buffered group for the rest of the group. Counts
+     * as a fallback: the group was successfully indexed (already counted in `numIndexedMetric`)
+     * but now reverts to a linear scan for its remaining probes, matching what
+     * `numFallbackMetric` otherwise counts for a group whose build was rejected outright.
      */
     private def releaseForSpill(): Long = {
       if (currentHandle != null) {
@@ -187,19 +202,13 @@ private[joins] object RangeGroupProbe {
         // Don't retry the build for the rest of this group: the memory just freed is exactly
         // what a retry would need to re-acquire, and retrying would just spill again.
         buildAttempted = true
+        if (numFallbackMetric != null) numFallbackMetric += 1
+        logDebug(log"range index evicted under memory pressure for a buffered group; " +
+          log"falling back to a linear scan for its remaining probes")
         bytes
       } else {
         0L
       }
-    }
-
-    def resetGroup(): Unit = {
-      if (currentHandle != null) {
-        release(currentHandle, memoryConsumer)
-        currentHandle = null
-      }
-      probeCount = 0
-      buildAttempted = false
     }
   }
 
