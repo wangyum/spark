@@ -1321,3 +1321,63 @@ private[execution] object RangeRelationBroadcastMode {
     new RangeRelationBroadcastMode(normalizedKeys, indexKind)
   }
 }
+
+/**
+ * Shared range-index probe dispatch for broadcast and per-key-group sort-merge joins.
+ */
+private[joins] object RangeRelationProbe {
+
+  /**
+   * Create candidate probe function for a materialized range relation and bound probe keys.
+   * `pointScan` is by-name so it is only forced inside the point-index branches.
+   */
+  def makeCandidateFn(
+      relation: RangeRelation,
+      boundStreamKeys: Seq[Expression],
+      pointScan: => (PointScan, Boolean)): InternalRow => Iterator[InternalRow] = {
+    val isOneKey = boundStreamKeys.length == 1
+    val lowExpr = boundStreamKeys.head
+    val highExpr = if (isOneKey) null else boundStreamKeys(1)
+
+    relation match {
+      case longs: LongIntervalIndex => row =>
+        val low = lowExpr.eval(row)
+        if (low == null) {
+          Iterator.empty
+        } else {
+          val high = if (isOneKey) low else highExpr.eval(row)
+          if (high == null) {
+            Iterator.empty
+          } else {
+            longs.overlapping(longs.toLong(low), longs.toLong(high))
+          }
+        }
+      case points: LongPointIndex =>
+        val (direction, strict) = pointScan
+        val scan: Long => Iterator[InternalRow] = direction match {
+          case PointScan.UpTo => points.upTo(_, strict)
+          case PointScan.From => points.from(_, strict)
+        }
+        row =>
+          val low = lowExpr.eval(row)
+          if (low == null) Iterator.empty else scan(points.toLong(low))
+      case intervals: IntervalIndex => row =>
+        val low = lowExpr.eval(row)
+        if (low == null) {
+          Iterator.empty
+        } else {
+          val high = if (isOneKey) low else highExpr.eval(row)
+          intervals.overlapping(low, high)
+        }
+      case points: PointIndex =>
+        val (direction, strict) = pointScan
+        val scan: Any => Iterator[InternalRow] = direction match {
+          case PointScan.UpTo => points.upTo(_, strict)
+          case PointScan.From => points.from(_, strict)
+        }
+        row =>
+          val low = lowExpr.eval(row)
+          if (low == null) Iterator.empty else scan(low)
+    }
+  }
+}

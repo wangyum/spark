@@ -19,7 +19,7 @@ package org.apache.spark.sql.execution.joins
 
 import org.apache.spark.{PartitionEvaluator, PartitionEvaluatorFactory}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, JoinedRow, Predicate, Projection, RowOrdering, UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, JoinedRow, Predicate, Projection, RowOrdering, UnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.{ExistenceJoin, FullOuter, InnerLike, JoinType, LeftAnti, LeftOuter, LeftSemi, RightOuter}
 import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, RowIterator, SparkPlan}
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -39,7 +39,10 @@ class SortMergeJoinEvaluatorFactory(
     spillSize: SQLMetric,
     onlyBufferFirstMatchedRow: Boolean,
     streamedOnlyCondition: Option[Expression] = None,
-    restCondition: Option[Expression] = None)
+    restCondition: Option[Expression] = None,
+    rangeProbeSpec: Option[RangeGroupProbe.Spec] = None,
+    numRangeIndexedGroups: SQLMetric = null,
+    numRangeIndexFallbackGroups: SQLMetric = null)
     extends PartitionEvaluatorFactory[InternalRow, InternalRow] {
   override def createEvaluator(): PartitionEvaluator[InternalRow, InternalRow] =
     new SortMergeJoinEvaluator
@@ -79,7 +82,7 @@ class SortMergeJoinEvaluatorFactory(
           new RowIterator {
             private[this] var currentLeftRow: InternalRow = _
             private[this] var currentRightMatches: ExternalAppendOnlyUnsafeRowArray = _
-            private[this] var rightMatchesIterator: Iterator[UnsafeRow] = null
+            private[this] var rightMatchesIterator: Iterator[InternalRow] = null
             private[this] val smjScanner = new SortMergeJoinScanner(
               createLeftKeyGenerator(),
               createRightKeyGenerator(),
@@ -90,13 +93,16 @@ class SortMergeJoinEvaluatorFactory(
               spillThreshold,
               sizeInBytesSpillThreshold,
               spillSize,
-              cleanupResources)
+              cleanupResources,
+              rangeProbeSpec = rangeProbeSpec,
+              numRangeIndexedGroups = numRangeIndexedGroups,
+              numRangeIndexFallbackGroups = numRangeIndexFallbackGroups)
             private[this] val joinRow = new JoinedRow
 
             if (smjScanner.findNextInnerJoinRows()) {
               currentRightMatches = smjScanner.getBufferedMatches
               currentLeftRow = smjScanner.getStreamedRow
-              rightMatchesIterator = currentRightMatches.generateIterator()
+              rightMatchesIterator = smjScanner.candidatesFor(smjScanner.getStreamedRow)
             }
 
             override def advanceNext(): Boolean = {
@@ -105,7 +111,7 @@ class SortMergeJoinEvaluatorFactory(
                   if (smjScanner.findNextInnerJoinRows()) {
                     currentRightMatches = smjScanner.getBufferedMatches
                     currentLeftRow = smjScanner.getStreamedRow
-                    rightMatchesIterator = currentRightMatches.generateIterator()
+                    rightMatchesIterator = smjScanner.candidatesFor(currentLeftRow)
                   } else {
                     currentRightMatches = null
                     currentLeftRow = null
@@ -136,7 +142,10 @@ class SortMergeJoinEvaluatorFactory(
             spillThreshold,
             sizeInBytesSpillThreshold,
             spillSize,
-            cleanupResources)
+            cleanupResources,
+            rangeProbeSpec = rangeProbeSpec,
+            numRangeIndexedGroups = numRangeIndexedGroups,
+            numRangeIndexFallbackGroups = numRangeIndexFallbackGroups)
           val rightNullRow = new GenericInternalRow(right.output.length)
           val boundStreamedOnly: InternalRow => Boolean = streamedOnlyCondition.map {
             Predicate.create(_, left.output).eval _
@@ -163,7 +172,10 @@ class SortMergeJoinEvaluatorFactory(
             spillThreshold,
             sizeInBytesSpillThreshold,
             spillSize,
-            cleanupResources)
+            cleanupResources,
+            rangeProbeSpec = rangeProbeSpec,
+            numRangeIndexedGroups = numRangeIndexedGroups,
+            numRangeIndexFallbackGroups = numRangeIndexFallbackGroups)
           val leftNullRow = new GenericInternalRow(left.output.length)
           val boundStreamedOnly: InternalRow => Boolean = streamedOnlyCondition.map {
             Predicate.create(_, right.output).eval _
@@ -208,7 +220,10 @@ class SortMergeJoinEvaluatorFactory(
               sizeInBytesSpillThreshold,
               spillSize,
               cleanupResources,
-              onlyBufferFirstMatchedRow)
+              onlyBufferFirstMatchedRow,
+              rangeProbeSpec = rangeProbeSpec,
+              numRangeIndexedGroups = numRangeIndexedGroups,
+              numRangeIndexFallbackGroups = numRangeIndexFallbackGroups)
             private[this] val joinRow = new JoinedRow
 
             override def advanceNext(): Boolean = {
@@ -216,7 +231,7 @@ class SortMergeJoinEvaluatorFactory(
                 val currentRightMatches = smjScanner.getBufferedMatches
                 currentLeftRow = smjScanner.getStreamedRow
                 if (currentRightMatches != null && currentRightMatches.length > 0) {
-                  val rightMatchesIterator = currentRightMatches.generateIterator()
+                  val rightMatchesIterator = smjScanner.candidatesFor(currentLeftRow)
                   while (rightMatchesIterator.hasNext) {
                     joinRow(currentLeftRow, rightMatchesIterator.next())
                     if (boundCondition(joinRow)) {
@@ -252,7 +267,10 @@ class SortMergeJoinEvaluatorFactory(
               sizeInBytesSpillThreshold,
               spillSize,
               cleanupResources,
-              onlyBufferFirstMatchedRow)
+              onlyBufferFirstMatchedRow,
+              rangeProbeSpec = rangeProbeSpec,
+              numRangeIndexedGroups = numRangeIndexedGroups,
+              numRangeIndexFallbackGroups = numRangeIndexFallbackGroups)
             private[this] val joinRow = new JoinedRow
 
             override def advanceNext(): Boolean = {
@@ -269,7 +287,7 @@ class SortMergeJoinEvaluatorFactory(
                   return true
                 }
                 var found = false
-                val rightMatchesIterator = currentRightMatches.generateIterator()
+                val rightMatchesIterator = smjScanner.candidatesFor(currentLeftRow)
                 while (!found && rightMatchesIterator.hasNext) {
                   joinRow(currentLeftRow, rightMatchesIterator.next())
                   if (boundRest(joinRow)) {
@@ -308,7 +326,10 @@ class SortMergeJoinEvaluatorFactory(
               sizeInBytesSpillThreshold,
               spillSize,
               cleanupResources,
-              onlyBufferFirstMatchedRow)
+              onlyBufferFirstMatchedRow,
+              rangeProbeSpec = rangeProbeSpec,
+              numRangeIndexedGroups = numRangeIndexedGroups,
+              numRangeIndexFallbackGroups = numRangeIndexFallbackGroups)
             private[this] val joinRow = new JoinedRow
 
             override def advanceNext(): Boolean = {
@@ -324,7 +345,7 @@ class SortMergeJoinEvaluatorFactory(
                 val currentRightMatches = smjScanner.getBufferedMatches
                 var found = false
                 if (currentRightMatches != null && currentRightMatches.length > 0) {
-                  val rightMatchesIterator = currentRightMatches.generateIterator()
+                  val rightMatchesIterator = smjScanner.candidatesFor(currentLeftRow)
                   while (!found && rightMatchesIterator.hasNext) {
                     joinRow(currentLeftRow, rightMatchesIterator.next())
                     if (boundRest(joinRow)) {

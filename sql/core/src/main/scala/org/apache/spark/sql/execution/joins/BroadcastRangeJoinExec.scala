@@ -119,7 +119,7 @@ case class BroadcastRangeJoinExec(
     val kind = rangeJoinKind
     val side = buildSide
     streamed.execute().mapPartitionsInternal { streamedIter =>
-      val candidateFn = BroadcastRangeJoinExec.makeCandidateFn(
+      val candidateFn = RangeRelationProbe.makeCandidateFn(
         relation.value, boundStreamKeys, PointScan.forJoin(kind, side))
       f(new BroadcastRangeJoinExec.ProbeContext(
         streamedIter,
@@ -505,64 +505,6 @@ object BroadcastRangeJoinExec {
     case (RightOuter, BuildLeft) => true
     case (LeftOuter | LeftSemi | LeftAnti, BuildRight) => true
     case _ => false
-  }
-
-  /**
-   * Create candidate probe function for a broadcast relation and bound probe keys.
-   * Constructed once per partition in `perPartition`, avoiding per-row relation dispatch.
-   * Lives here rather than on [[BroadcastRangeJoinExec]] so the closure that calls it
-   * does not capture the enclosing plan node. `pointScan` is by-name so it is only
-   * forced - and only throws for a non-partial-range join - inside the point-index
-   * branches below, matching the laziness `perPartition` relies on.
-   */
-  private def makeCandidateFn(
-      relation: RangeRelation,
-      boundStreamKeys: Seq[Expression],
-      pointScan: => (PointScan, Boolean)): InternalRow => Iterator[InternalRow] = {
-    val isOneKey = boundStreamKeys.length == 1
-    val lowExpr = boundStreamKeys.head
-    val highExpr = if (isOneKey) null else boundStreamKeys(1)
-
-    relation match {
-      case longs: LongIntervalIndex => row =>
-        val low = lowExpr.eval(row)
-        if (low == null) {
-          Iterator.empty
-        } else {
-          val high = if (isOneKey) low else highExpr.eval(row)
-          if (high == null) {
-            Iterator.empty
-          } else {
-            longs.overlapping(longs.toLong(low), longs.toLong(high))
-          }
-        }
-      case points: LongPointIndex =>
-        val (direction, strict) = pointScan
-        val scan: Long => Iterator[InternalRow] = direction match {
-          case PointScan.UpTo => points.upTo(_, strict)
-          case PointScan.From => points.from(_, strict)
-        }
-        row =>
-          val low = lowExpr.eval(row)
-          if (low == null) Iterator.empty else scan(points.toLong(low))
-      case intervals: IntervalIndex => row =>
-        val low = lowExpr.eval(row)
-        if (low == null) {
-          Iterator.empty
-        } else {
-          val high = if (isOneKey) low else highExpr.eval(row)
-          intervals.overlapping(low, high)
-        }
-      case points: PointIndex =>
-        val (direction, strict) = pointScan
-        val scan: Any => Iterator[InternalRow] = direction match {
-          case PointScan.UpTo => points.upTo(_, strict)
-          case PointScan.From => points.from(_, strict)
-        }
-        row =>
-          val low = lowExpr.eval(row)
-          if (low == null) Iterator.empty else scan(low)
-    }
   }
 
   /**
