@@ -19,7 +19,8 @@ package org.apache.spark.sql.execution.joins
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, BindReferences, Expression}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
-import org.apache.spark.sql.catalyst.planning.{ExtractRangeJoinKeys, PartialRangeJoin, PointInRangeJoin, RangeJoinKind}
+import org.apache.spark.sql.catalyst.planning.PartialRangeJoin
+import org.apache.spark.sql.catalyst.planning.{ExtractRangeJoinKeys, RangeJoinKind}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.internal.SQLConf
 
@@ -87,39 +88,21 @@ private[joins] object SortMergeJoinRangePhysical {
           s"SortMergeJoinRangePhysical does not support $other")
     }
 
-    // Only scalar point range keys on the buffered side are indexed
-    if (bufferRange.length != 1 ||
-        !RangeIndex.canMapKeysToLong(bufferRange) ||
-        !RangeIndex.canMapKeysToLong(streamRange)) {
-      return None
-    }
-
-    val pointScanOpt = kind match {
-      case _: PartialRangeJoin if streamRange.length == 1 =>
-        val (scan, strict) = PointScan.forJoin(kind, buildSide)
-        val compactScan = scan match {
-          case PointScan.UpTo => CompactPointScan.UpTo
-          case PointScan.From => CompactPointScan.From
-        }
-        Some((compactScan, strict))
-      case PointInRangeJoin if streamRange.length == 2 =>
-        Some((CompactPointScan.Between, false))
+    val boundBufferKeys = BindReferences.bindReferences(bufferRange, bufferOutput)
+    val boundStreamKeys = BindReferences.bindReferences(streamRange, streamOutput)
+    val mode = RangeRelationBroadcastMode(boundBufferKeys, RangeIndexKind(kind))
+    val pointScan = kind match {
+      case _: PartialRangeJoin =>
+        PointScan.forJoin(kind, buildSide)
       case _ =>
-        None
+        (PointScan.UpTo, false)
     }
-
-    pointScanOpt.map { case (pointScan, strict) =>
-      val boundBufferKey = BindReferences.bindReference(bufferRange.head, bufferOutput)
-      val boundStreamKeys = BindReferences.bindReferences(streamRange, streamOutput)
-      new RangeGroupProbe.Spec(
-        boundBufferKey,
-        boundStreamKeys,
-        bufferRange.head.dataType,
-        pointScan,
-        strict,
-        conf.sortMergeJoinRangeIndexThreshold,
-        conf.sortMergeJoinRangeIndexMaxRows,
-        conf.sortMergeJoinRangeIndexMaxBytes)
-    }
+    Some(new RangeGroupProbe.Spec(
+      mode,
+      boundStreamKeys,
+      pointScan,
+      conf.sortMergeJoinRangeIndexThreshold,
+      conf.sortMergeJoinRangeIndexMaxRows,
+      conf.sortMergeJoinRangeIndexMaxBytes))
   }
 }

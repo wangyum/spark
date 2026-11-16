@@ -34,6 +34,8 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   private val streamHi = AttributeReference("hi", LongType)()
   private val bufferId = AttributeReference("s_id", LongType)()
   private val bufferP = AttributeReference("s_p", LongType)()
+  private val bufferLo = AttributeReference("b_lo", LongType)()
+  private val bufferHi = AttributeReference("b_hi", LongType)()
 
   private def pointInRangeSpec(threshold: Int): RangeGroupProbe.Spec = {
     val conf = new SQLConf
@@ -47,6 +49,20 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       Seq(streamId, streamLo, streamHi),
       Seq(bufferId, bufferP),
       conf).getOrElse(fail("expected a recognized point-in-range spec"))
+  }
+
+  private def pointInIntervalSpec(threshold: Int): RangeGroupProbe.Spec = {
+    val conf = new SQLConf
+    conf.setConf(SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD, threshold)
+    val condition = Some(streamLo >= bufferLo && streamLo <= bufferHi)
+    SortMergeJoinRangePhysical.createProbeSpec(
+      condition,
+      Inner,
+      Seq(streamId),
+      Seq(bufferId),
+      Seq(streamId, streamLo),
+      Seq(bufferId, bufferLo, bufferHi),
+      conf).getOrElse(fail("expected a recognized point-in-interval spec"))
   }
 
   private def partialRangeSpec(threshold: Int): RangeGroupProbe.Spec = {
@@ -114,7 +130,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       val handle = RangeGroupProbe.build(
         array, pointInRangeSpec(threshold = 2), tc.taskMemoryManager(), consumer)
       assert(handle != null)
-      assert(handle.index.length == 10)
+      assert(handle.relation.estimatedSize > 0)
 
       // Probe [25, 55]: should match points 30, 40, 50 (3 matches)
       val candidates = handle.candidates(InternalRow(1L, 25L, 55L)).toSeq
@@ -122,6 +138,46 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       assert(candidates.map(_.getLong(1)) == Seq(30L, 40L, 50L))
 
       RangeGroupProbe.release(handle, tc.taskMemoryManager(), consumer)
+    }
+  }
+
+  test("build indexes buffered intervals and probes point-in-interval correctly") {
+    sc = new SparkContext("local", "test", new SparkConf(false))
+    val taskContext = MemoryTestingUtils.fakeTaskContext(SparkEnv.get)
+    TaskContext.setTaskContext(taskContext)
+    try {
+      val array = new ExternalAppendOnlyUnsafeRowArray(
+        taskContext.taskMemoryManager(),
+        SparkEnv.get.blockManager,
+        SparkEnv.get.serializerManager,
+        taskContext,
+        1024,
+        SparkEnv.get.memoryManager.pageSizeBytes,
+        1000,
+        Long.MaxValue,
+        1000,
+        Long.MaxValue)
+      val proj = UnsafeProjection.create(Array[DataType](LongType, LongType, LongType))
+      // Add 10 non-overlapping spans: [0, 9], [10, 19], ..., [90, 99]
+      (0 until 10).foreach { i =>
+        array.add(proj(InternalRow(1L, i.toLong * 10L, i.toLong * 10L + 9L)))
+      }
+      val consumer = new RangeIndexMemoryConsumer(taskContext.taskMemoryManager())
+      val handle = RangeGroupProbe.build(
+        array, pointInIntervalSpec(threshold = 2), taskContext.taskMemoryManager(), consumer)
+      assert(handle != null)
+      assert(handle.relation.estimatedSize > 0)
+
+      // Probe point 25: falls in [20, 29]
+      val candidates = handle.candidates(InternalRow(1L, 25L)).toSeq
+      assert(candidates.length == 1)
+      assert(candidates.head.getLong(1) == 20L)
+      assert(candidates.head.getLong(2) == 29L)
+
+      RangeGroupProbe.release(handle, taskContext.taskMemoryManager(), consumer)
+      array.clear()
+    } finally {
+      TaskContext.unset()
     }
   }
 
