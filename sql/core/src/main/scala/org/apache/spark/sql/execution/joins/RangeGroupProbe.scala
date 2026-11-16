@@ -37,7 +37,21 @@ private[joins] object RangeGroupProbe {
       val pointScan: (PointScan, Boolean),
       val threshold: Int,
       val maxRows: Int,
-      val maxBytes: Long) extends Serializable
+      val maxBytes: Long) extends Serializable {
+
+    def estimateMemoryBytes(numRows: Long): Long = {
+      val bytesPerRow = mode.indexKind match {
+        case IntervalIndexKind => 64L
+        case PointIndexKind => 32L
+      }
+      numRows * bytesPerRow
+    }
+
+    def isEligible(numRows: Long, isSpillBacked: Boolean): Boolean = {
+      numRows > threshold && numRows <= maxRows && !isSpillBacked &&
+        estimateMemoryBytes(numRows) <= maxBytes
+    }
+  }
 
   final class Handle private[RangeGroupProbe] (
       val relation: RangeRelation,
@@ -53,19 +67,11 @@ private[joins] object RangeGroupProbe {
       taskMemoryManager: TaskMemoryManager,
       consumer: RangeIndexMemoryConsumer): Handle = {
     val n = matches.length
-    if (n <= spec.threshold || n > spec.maxRows || matches.isSpillBacked) {
+    if (!spec.isEligible(n, matches.isSpillBacked)) {
       return null
     }
 
-    val bytesPerRow = spec.mode.indexKind match {
-      case IntervalIndexKind => 64L
-      case PointIndexKind => 32L
-    }
-    val requiredBytes = n * bytesPerRow
-    if (requiredBytes > spec.maxBytes) {
-      return null
-    }
-
+    val requiredBytes = spec.estimateMemoryBytes(n)
     val acquired = if (taskMemoryManager != null && consumer != null) {
       taskMemoryManager.acquireExecutionMemory(requiredBytes, consumer)
     } else {

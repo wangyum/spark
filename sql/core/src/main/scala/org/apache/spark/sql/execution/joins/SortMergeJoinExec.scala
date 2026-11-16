@@ -48,7 +48,14 @@ case class SortMergeJoinExec(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "spillSize" -> SQLMetrics.createSizeMetric(sparkContext, "spill size"),
     "numRangeIndexedGroups" ->
-      SQLMetrics.createMetric(sparkContext, "number of range-indexed groups"))
+      SQLMetrics.createMetric(sparkContext, "number of range-indexed groups"),
+    "numRangeIndexFallbackGroups" ->
+      SQLMetrics.createMetric(sparkContext, "number of range-index fallback groups"))
+
+  override def nodeName: String = {
+    val base = super.nodeName
+    if (rangeProbeSpec.isDefined) s"$base(rangeIndex=true)" else base
+  }
 
   override def outputOrdering: Seq[SortOrder] = joinType match {
     // For inner join, orders of both sides keys should be kept.
@@ -156,7 +163,8 @@ case class SortMergeJoinExec(
       streamedOnlyCondition,
       restCondition,
       rangeProbeSpec,
-      numRangeIndexedGroups = longMetric("numRangeIndexedGroups"))
+      numRangeIndexedGroups = longMetric("numRangeIndexedGroups"),
+      numRangeIndexFallbackGroups = longMetric("numRangeIndexFallbackGroups"))
     if (conf.usePartitionEvaluator) {
       left.execute().zipPartitionsWithEvaluator(right.execute(), evaluatorFactory)
     } else {
@@ -272,12 +280,15 @@ case class SortMergeJoinExec(
         val specTerm = ctx.addReferenceObj("rangeProbeSpec", spec)
         val tcExpr = "(org.apache.spark.TaskContext.get() != null) ? " +
           "org.apache.spark.TaskContext.get().taskMemoryManager() : null"
-        val metricTermName = metricTerm(ctx, "numRangeIndexedGroups")
+        val indexedMetric = metricTerm(ctx, "numRangeIndexedGroups")
+        val fallbackMetric = metricTerm(ctx, "numRangeIndexFallbackGroups")
         val buildCode =
           s"""
              |$probeTerm = $helperCls.build($matches, $specTerm, $tcExpr, $consumerTerm);
              |if ($probeTerm != null) {
-             |  $metricTermName.add(1);
+             |  $indexedMetric.add(1);
+             |} else if ($matches.length() > $specTerm.threshold()) {
+             |  $fallbackMetric.add(1);
              |}
            """.stripMargin
         val clearCode =
@@ -608,8 +619,9 @@ case class SortMergeJoinExec(
 
     val createIterator = groupProbeTerm match {
       case Some(probeTerm) =>
-        s"scala.collection.Iterator $iterator = ($probeTerm != null) ? " +
-          s"$probeTerm.candidates($streamedRow) : $matches.generateIterator();"
+        val helperCls = RangeGroupProbe.getClass.getName.stripSuffix("$")
+        s"scala.collection.Iterator $iterator = " +
+          s"$helperCls.candidates($probeTerm, $matches, $streamedRow);"
       case None =>
         s"scala.collection.Iterator<UnsafeRow> $iterator = $matches.generateIterator();"
     }
@@ -1177,7 +1189,8 @@ private[joins] class SortMergeJoinScanner(
     eagerCleanupResources: () => Unit,
     onlyBufferFirstMatch: Boolean = false,
     rangeProbeSpec: Option[RangeGroupProbe.Spec] = None,
-    numRangeIndexedGroups: SQLMetric = null) {
+    numRangeIndexedGroups: SQLMetric = null,
+    numRangeIndexFallbackGroups: SQLMetric = null) {
   private[this] val memoryConsumer: RangeIndexMemoryConsumer = if (rangeProbeSpec.isDefined) {
     val tc = TaskContext.get()
     if (tc != null) new RangeIndexMemoryConsumer(tc.taskMemoryManager()) else null
@@ -1390,8 +1403,10 @@ private[joins] class SortMergeJoinScanner(
       val tc = TaskContext.get()
       val tmm = if (tc != null) tc.taskMemoryManager() else null
       groupProbe = RangeGroupProbe.build(bufferedMatches, spec, tmm, memoryConsumer)
-      if (groupProbe != null && numRangeIndexedGroups != null) {
-        numRangeIndexedGroups += 1
+      if (groupProbe != null) {
+        if (numRangeIndexedGroups != null) numRangeIndexedGroups += 1
+      } else if (bufferedMatches.length > spec.threshold) {
+        if (numRangeIndexFallbackGroups != null) numRangeIndexFallbackGroups += 1
       }
     }
   }
