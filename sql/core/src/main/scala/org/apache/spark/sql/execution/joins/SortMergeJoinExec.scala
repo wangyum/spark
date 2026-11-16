@@ -1237,14 +1237,6 @@ private[joins] class SortMergeJoinScanner(
     RangeGroupProbe.candidates(groupProbe, bufferedMatches, streamedRow)
   }
 
-  private def resetBufferedGroup(): Unit = {
-    val tc = TaskContext.get()
-    val tmm = if (tc != null) tc.taskMemoryManager() else null
-    RangeGroupProbe.release(groupProbe, tmm, memoryConsumer)
-    groupProbe = null
-    bufferedMatches.clear()
-  }
-
   /**
    * Advances both input iterators, stopping when we have found rows with matching join keys. If no
    * join rows found, try to do the eager resources cleanup.
@@ -1379,6 +1371,14 @@ private[joins] class SortMergeJoinScanner(
     } else {
       true
     }
+  }
+
+  private def resetBufferedGroup(): Unit = {
+    val tc = TaskContext.get()
+    val tmm = if (tc != null) tc.taskMemoryManager() else null
+    RangeGroupProbe.release(groupProbe, tmm, memoryConsumer)
+    groupProbe = null
+    bufferedMatches.clear()
   }
 
   /**
