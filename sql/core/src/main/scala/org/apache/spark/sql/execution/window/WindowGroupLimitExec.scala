@@ -19,10 +19,10 @@ package org.apache.spark.sql.execution.window
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Expression, SortOrder, UnsafeProjection, UnsafeRow}
-import org.apache.spark.sql.catalyst.expressions.codegen.GenerateOrdering
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, RowNumber, SortOrder, UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode, GenerateOrdering}
 import org.apache.spark.sql.catalyst.plans.physical.{AllTuples, ClusteredDistribution, Distribution, Partitioning}
-import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
 sealed trait WindowGroupLimitMode
@@ -47,7 +47,7 @@ case class WindowGroupLimitExec(
     rankLikeFunction: Expression,
     limit: Int,
     mode: WindowGroupLimitMode,
-    child: SparkPlan) extends UnaryExecNode {
+    child: SparkPlan) extends UnaryExecNode with BlockingOperatorWithCodegen {
 
   override def output: Seq[Attribute] = child.output
 
@@ -61,25 +61,82 @@ case class WindowGroupLimitExec(
       }
   }
 
-  override def requiredChildOrdering: Seq[Seq[SortOrder]] =
-    Seq(partitionSpec.map(SortOrder(_, Ascending)) ++ orderSpec)
+  /**
+   * True when this operator can skip requiring sorted input and instead keep, per partition key,
+   * only the single best row seen so far in a hash map
+   * ([[HashRowNumberGroupLimitAccumulator]]). This is a static, plan-time decision, not a
+   * runtime fallback: it is only safe when at most one row per key can ever be the final answer
+   * (`RowNumber` with `limit == 1`; `Rank`/`DenseRank` must keep every row tied for the best order
+   * key, which is not a bounded accumulation), and only when every order-key expression's type is
+   * one `UnsafeRow` can mutate in place (the hash map's per-key state is fixed-width; see
+   * [[HashRowNumberGroupLimitAccumulator]] for why).
+   */
+  lazy val isHashEligible: Boolean =
+    conf.windowGroupLimitHashPushdownEnabled &&
+      rankLikeFunction.isInstanceOf[RowNumber] &&
+      limit == 1 &&
+      orderSpec.forall(order => UnsafeRow.isMutable(order.child.dataType))
 
-  override def outputOrdering: Seq[SortOrder] = child.outputOrdering
+  override def requiredChildOrdering: Seq[Seq[SortOrder]] =
+    if (isHashEligible) {
+      Seq(Nil)
+    } else {
+      Seq(partitionSpec.map(SortOrder(_, Ascending)) ++ orderSpec)
+    }
+
+  override def outputOrdering: Seq[SortOrder] =
+    if (isHashEligible) Nil else child.outputOrdering
 
   override def outputPartitioning: Partitioning = child.outputPartitioning
 
   override lazy val metrics = Map(
-    "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
+    "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows")
+  ) ++ {
+    // Only the hash path can report these -- the sort-based path has nothing to fall back
+    // from -- so the rest don't show a constant/misleading 0 in the SQL UI for ineligible plans
+    // (see HashAggregateExec.metrics for the same "only when applicable" approach).
+    if (isHashEligible) {
+      Map(
+        "peakMemory" -> SQLMetrics.createSizeMetric(sparkContext, "peak memory"),
+        "spillSize" -> SQLMetrics.createSizeMetric(sparkContext, "spill size"),
+        "numTasksFallBacked" ->
+          SQLMetrics.createMetric(sparkContext, "number of sort fallback tasks"))
+    } else {
+      Map.empty
+    }
+  }
+
+  // Only ever constructed when isHashEligible is true: shared by the interpreted doExecute()
+  // path below and by doProduce()'s codegen path (see supportCodegen), as a single source of
+  // truth for how a task's HashRowNumberGroupLimitAccumulator gets built. Deliberately captures
+  // only partitionSpec/orderSpec/child.output/the metrics -- not `this` or `child` -- so
+  // codegen's addReferenceObj does not drag the child plan into every task's closure.
+  @transient private[sql] lazy val hashEvaluatorFactory: HashRowNumberGroupLimitEvaluatorFactory =
+    new HashRowNumberGroupLimitEvaluatorFactory(
+      partitionSpec,
+      orderSpec,
+      child.output,
+      longMetric("numOutputRows"),
+      longMetric("peakMemory"),
+      longMetric("spillSize"),
+      longMetric("numTasksFallBacked"),
+      conf.windowGroupLimitHashPushdownMinCompactionRatio,
+      conf.windowGroupLimitHashPushdownMinRows,
+      conf.enableRadixSort)
 
   protected override def doExecute(): RDD[InternalRow] = {
     val evaluatorFactory =
-      new WindowGroupLimitEvaluatorFactory(
-        partitionSpec,
-        orderSpec,
-        rankLikeFunction,
-        limit,
-        child.output,
-        longMetric("numOutputRows"))
+      if (isHashEligible) {
+        hashEvaluatorFactory
+      } else {
+        new WindowGroupLimitEvaluatorFactory(
+          partitionSpec,
+          orderSpec,
+          rankLikeFunction,
+          limit,
+          child.output,
+          longMetric("numOutputRows"))
+      }
 
     if (conf.usePartitionEvaluator) {
       child.execute().mapPartitionsWithEvaluator(evaluatorFactory)
@@ -89,6 +146,61 @@ case class WindowGroupLimitExec(
         evaluator.eval(index, rowIterator)
       }
     }
+  }
+
+  // Only the hash path (Section 4.3/4.4 of the design) is codegen'd; the sort-based path keeps
+  // acting as a pipeline breaker exactly as it does today.
+  override def supportCodegen: Boolean = isHashEligible
+
+  override def usedInputs: AttributeSet = AttributeSet.empty
+
+  override def inputRDDs(): Seq[RDD[InternalRow]] =
+    child.asInstanceOf[CodegenSupport].inputRDDs()
+
+  // Set by doProduce, read by doConsume -- both are only ever invoked while generating code for
+  // the same WholeStageCodegenExec, so sharing this var across the two calls is safe.
+  private var accumulatorTerm: String = _
+
+  override protected def doProduce(ctx: CodegenContext): String = {
+    val needToConsume = ctx.addMutableState(
+      "boolean", "needToConsumeGroupLimit", v => s"$v = true;")
+    val factoryTerm = ctx.addReferenceObj("groupLimitAccumulatorFactory", hashEvaluatorFactory)
+    accumulatorTerm = ctx.addMutableState(
+      classOf[HashRowNumberGroupLimitAccumulator].getName,
+      "groupLimitAccumulator",
+      v => s"$v = $factoryTerm.createAccumulator();",
+      forceInline = true)
+    val resultIterTerm = ctx.addMutableState(
+      "scala.collection.Iterator<InternalRow>", "groupLimitResultIter", forceInline = true)
+
+    val consumeGroupLimitInput = ctx.freshName("consumeGroupLimitInput")
+    val consumeInputFuncName = ctx.addNewFunction(consumeGroupLimitInput,
+      s"""
+         | private void $consumeGroupLimitInput(int partitionIndex) throws java.io.IOException {
+         |   ${child.asInstanceOf[CodegenSupport].produce(ctx, this)}
+         | }
+       """.stripMargin)
+
+    val outputRow = ctx.freshName("groupLimitRow")
+    s"""
+       | if ($needToConsume) {
+       |   $consumeInputFuncName(partitionIndex);
+       |   $resultIterTerm = $accumulatorTerm.finish();
+       |   $needToConsume = false;
+       | }
+       | while ($limitNotReachedCond $resultIterTerm.hasNext()) {
+       |   UnsafeRow $outputRow = (UnsafeRow) $resultIterTerm.next();
+       |   ${consume(ctx, null, outputRow)}
+       |   if (shouldStop()) return;
+       | }
+     """.stripMargin
+  }
+
+  override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
+    s"""
+       |${row.code}
+       |$accumulatorTerm.consumeRow((UnsafeRow) ${row.value});
+     """.stripMargin
   }
 
   override protected def withNewChildInternal(newChild: SparkPlan): WindowGroupLimitExec =

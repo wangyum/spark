@@ -680,4 +680,11 @@ class SQLConfSuite extends SharedSparkSession {
     assert(e.getMessage.contains("forceSnapshotUploadOnLag"))
     assert(e.getMessage.contains("coordinatorReportSnapshotUploadLag"))
   }
+
+  test("SPARK-61804: windowGroupLimitHashPushdownEnabled defaults to false") {
+    assert(!spark.sessionState.conf.windowGroupLimitHashPushdownEnabled)
+    withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+      assert(spark.sessionState.conf.windowGroupLimitHashPushdownEnabled)
+    }
+  }
 }
