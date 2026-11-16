@@ -189,7 +189,6 @@ case class SortMergeJoinExec(
   override def supportCodegen: Boolean = joinType match {
     case FullOuter => conf.getConf(SQLConf.ENABLE_FULL_OUTER_SORT_MERGE_JOIN_CODEGEN)
     case _: ExistenceJoin => conf.getConf(SQLConf.ENABLE_EXISTENCE_SORT_MERGE_JOIN_CODEGEN)
-    case _ if rangeProbeSpec.isDefined => false
     case _ => true
   }
 
@@ -1147,7 +1146,6 @@ private[joins] class SortMergeJoinScanner(
     rangeProbeSpec: Option[RangeGroupProbe.Spec] = None) {
   private[this] var streamedRow: InternalRow = _
   private[this] var groupProbe: RangeGroupProbe.Handle = _
-  private[this] var bufferedGroupEpoch: Int = 0
   private[this] var streamedRowKey: InternalRow = _
   private[this] var bufferedRow: InternalRow = _
   // Note: this is guaranteed to never have any null columns:
@@ -1179,8 +1177,6 @@ private[joins] class SortMergeJoinScanner(
   def getStreamedRow: InternalRow = streamedRow
 
   def getBufferedMatches: ExternalAppendOnlyUnsafeRowArray = bufferedMatches
-
-  def getBufferedGroupEpoch: Int = bufferedGroupEpoch
 
   /** Buffered-side rows matching the streamed row, using a per-group range index when enabled. */
   def candidatesFor(streamedRow: InternalRow): Iterator[InternalRow] = {
@@ -1343,14 +1339,13 @@ private[joins] class SortMergeJoinScanner(
     assert(keyOrdering.compare(streamedRowKey, bufferedRowKey) == 0)
     // This join key may have been produced by a mutable projection, so we need to make a copy:
     matchJoinKey = streamedRowKey.copy()
-        resetBufferedGroup()
+    resetBufferedGroup()
     do {
       if (!onlyBufferFirstMatch || bufferedMatches.isEmpty) {
         bufferedMatches.add(bufferedRow.asInstanceOf[UnsafeRow])
       }
       advancedBufferedToRowWithNullFreeJoinKey()
     } while (bufferedRow != null && keyOrdering.compare(streamedRowKey, bufferedRowKey) == 0)
-    bufferedGroupEpoch += 1
     rangeProbeSpec.foreach { spec =>
       groupProbe = RangeGroupProbe.build(bufferedMatches, spec)
     }

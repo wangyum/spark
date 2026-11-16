@@ -42,7 +42,9 @@ private[joins] object RangeGroupProbe {
 
   def build(matches: ExternalAppendOnlyUnsafeRowArray, spec: Spec): Handle = {
     val n = matches.length
-    if (n <= spec.threshold) {
+    // A spilled group already proved too large to hold safely in memory; indexing it would
+    // re-materialize the whole group a second time as untracked JVM heap, defeating the spill.
+    if (n <= spec.threshold || matches.isSpillBacked) {
       new Handle(None, matches, None)
     } else {
       val relation = spec.mode.transform(matches.generateIterator(), Some(n))

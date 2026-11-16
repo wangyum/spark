@@ -1319,8 +1319,9 @@ object SQLConf {
       .doc("When true, a sort-merge join whose residual condition is a recognizable range " +
         "predicate may index each buffered-side key group with the same structures as a " +
         "broadcast range join, probing that index per streamed row instead of linearly " +
-        "rescanning the group. Disabled groups and unrecognized conditions keep the existing " +
-        "scan path.")
+        "rescanning the group. The index is used on the sort-merge join interpreter path; " +
+        "whole-stage codegen continues to evaluate the full join condition. Disabled groups " +
+        "and unrecognized conditions keep the existing scan path.")
       .version("4.4.0")
       .booleanConf
       .createWithDefault(true)
