@@ -19,6 +19,7 @@ package org.apache.spark.sql.execution.joins
 
 import java.io.Serializable
 
+import org.apache.spark.TaskContext
 import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, BindReferences, Expression}
@@ -26,6 +27,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.catalyst.planning.{ExtractRangeJoinKeys, PartialRangeJoin}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.execution.ExternalAppendOnlyUnsafeRowArray
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 
 private[joins] class RangeIndexMemoryConsumer(taskMemoryManager: TaskMemoryManager)
@@ -33,6 +35,9 @@ private[joins] class RangeIndexMemoryConsumer(taskMemoryManager: TaskMemoryManag
   override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
 }
 
+/**
+ * Encapsulates per-equi-key group range index management, budgeting, and candidate probing.
+ */
 private[joins] object RangeGroupProbe {
 
   final class Spec(
@@ -63,6 +68,58 @@ private[joins] object RangeGroupProbe {
       val candidateFn: InternalRow => Iterator[InternalRow]) {
 
     def candidates(streamedRow: InternalRow): Iterator[InternalRow] = candidateFn(streamedRow)
+  }
+
+  /**
+   * Stateful execution controller for a single task partition. Manages memory budgeting,
+   * index build/release lifecycle, metrics, and automatic task completion cleanup.
+   */
+  final class Session(
+      val spec: Spec,
+      numIndexedMetric: SQLMetric = null,
+      numFallbackMetric: SQLMetric = null) {
+
+    private[this] val taskMemoryManager: TaskMemoryManager = {
+      val tc = TaskContext.get()
+      if (tc != null) tc.taskMemoryManager() else null
+    }
+
+    private[this] val memoryConsumer: RangeIndexMemoryConsumer = {
+      if (taskMemoryManager != null) new RangeIndexMemoryConsumer(taskMemoryManager) else null
+    }
+
+    private[this] var currentHandle: Handle = _
+
+    Option(TaskContext.get()).foreach { tc =>
+      tc.addTaskCompletionListener[Unit](_ => resetGroup())
+    }
+
+    def onGroupBuffered(matches: ExternalAppendOnlyUnsafeRowArray): Unit = {
+      resetGroup()
+      currentHandle = build(matches, spec, taskMemoryManager, memoryConsumer)
+      if (currentHandle != null) {
+        if (numIndexedMetric != null) numIndexedMetric += 1
+      } else if (matches.length > spec.threshold) {
+        if (numFallbackMetric != null) numFallbackMetric += 1
+      }
+    }
+
+    def candidates(
+        matches: ExternalAppendOnlyUnsafeRowArray,
+        streamedRow: InternalRow): Iterator[InternalRow] = {
+      if (currentHandle != null) {
+        currentHandle.candidates(streamedRow)
+      } else {
+        matches.generateIterator()
+      }
+    }
+
+    def resetGroup(): Unit = {
+      if (currentHandle != null) {
+        release(currentHandle, taskMemoryManager, memoryConsumer)
+        currentHandle = null
+      }
+    }
   }
 
   def createSpec(
