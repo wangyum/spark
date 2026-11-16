@@ -471,7 +471,9 @@ final case class GreaterPartialRangeJoin(override val strict: Boolean) extends P
 }
 
 /**
- * Finds joins whose condition is a range predicate usable by a broadcast range join.
+ * Finds joins whose condition is a range predicate usable by a range index, shared by the
+ * broadcast range join (via `unapply`) and sort-merge join's per-group range index (via
+ * `fromJoinCondition`).
  *
  * Tries the two-predicate shapes first (point-in-range, then interval overlap),
  * which capture more of the condition, and falls back to the single
@@ -504,7 +506,25 @@ object ExtractRangeJoinKeys extends PredicateHelper {
   }
 
   /**
-   * Types supported as range keys by the broadcast range index.
+   * Recognize a range shape in a residual join condition given child outputs, for physical
+   * operators that already fixed the equi-keys and only need the range predicate extracted.
+   */
+  def fromJoinCondition(
+      condition: Expression,
+      leftOutput: Seq[Attribute],
+      rightOutput: Seq[Attribute]): Option[ReturnType] = {
+    val synthetic = Join(
+      LocalRelation(leftOutput),
+      LocalRelation(rightOutput),
+      Inner,
+      Some(condition),
+      JoinHint.NONE)
+    unapply(synthetic)
+  }
+
+  /**
+   * Types supported as range keys, gating both the broadcast range index
+   * (`BroadcastRangeJoinExec`) and sort-merge join's per-group range index (`RangeGroupProbe`).
    * Other orderable types (arrays, intervals, timestamp-with-nanos, UDTs) stay a nested loop join.
    */
   private[planning] def supportedType(dataType: DataType): Boolean = dataType match {

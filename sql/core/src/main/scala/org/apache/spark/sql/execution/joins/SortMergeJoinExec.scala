@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -46,7 +47,25 @@ case class SortMergeJoinExec(
 
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
-    "spillSize" -> SQLMetrics.createSizeMetric(sparkContext, "spill size"))
+    "spillSize" -> SQLMetrics.createSizeMetric(sparkContext, "spill size")
+  )  ++ {
+    if (rangeProbeSpec.isDefined) {
+      Map(
+        "numRangeIndexedGroups" ->
+          SQLMetrics.createMetric(sparkContext, "number of range-indexed groups"),
+        // Not exclusive of numRangeIndexedGroups: a group already indexed can later revert to
+        // a linear scan (RangeGroupProbe.Session.releaseForSpill) and increment both.
+        "numRangeIndexFallbackGroups" ->
+          SQLMetrics.createMetric(sparkContext, "number of range-index fallback groups"))
+    } else {
+      Map.empty[String, SQLMetric]
+    }
+  }
+
+  override def nodeName: String = {
+    val base = super.nodeName
+    if (rangeProbeSpec.isDefined) s"$base(rangeIndex=true)" else base
+  }
 
   override def outputOrdering: Seq[SortOrder] = joinType match {
     // For inner join, orders of both sides keys should be kept.
@@ -152,8 +171,8 @@ case class SortMergeJoinExec(
       spillSize,
       onlyBufferFirstMatchedRow,
       streamedOnlyCondition,
-      restCondition
-    )
+      restCondition,
+      rangeProbeSessionFactory)
     if (conf.usePartitionEvaluator) {
       left.execute().zipPartitionsWithEvaluator(right.execute(), evaluatorFactory)
     } else {
@@ -176,6 +195,29 @@ case class SortMergeJoinExec(
   private lazy val streamedOutput = streamedPlan.output
   private lazy val bufferedOutput = bufferedPlan.output
 
+  // Same split as streamedPlan/bufferedPlan above, read off by identity instead of
+  // re-matching joinType a second time.
+  private lazy val buildSide: BuildSide = if (streamedPlan eq left) BuildRight else BuildLeft
+
+  private lazy val rangeProbeSpec: Option[RangeGroupProbe.Spec] =
+    RangeGroupProbe.createSpec(
+      condition,
+      joinType,
+      leftKeys,
+      rightKeys,
+      left.output,
+      right.output,
+      buildSide,
+      conf)
+
+  private lazy val rangeProbeSessionFactory: Option[RangeGroupProbe.SessionFactory] =
+    rangeProbeSpec.map { spec =>
+      RangeGroupProbe.SessionFactory(
+        spec,
+        longMetric("numRangeIndexedGroups"),
+        longMetric("numRangeIndexFallbackGroups"))
+    }
+
   override def supportCodegen: Boolean = joinType match {
     case FullOuter => conf.getConf(SQLConf.ENABLE_FULL_OUTER_SORT_MERGE_JOIN_CODEGEN)
     case _: ExistenceJoin => conf.getConf(SQLConf.ENABLE_EXISTENCE_SORT_MERGE_JOIN_CODEGEN)
@@ -191,8 +233,10 @@ case class SortMergeJoinExec(
    * 1. the function name
    * 2. the term for matched one row from streamed side
    * 3. the term for buffered rows from buffered side
+   * 4. the term for the range-index probe session, if a range-shaped residual condition is
+   *    recognized and range indexing is enabled
    */
-  private def genScanner(ctx: CodegenContext): (String, String, String) = {
+  private def genScanner(ctx: CodegenContext): (String, String, String, Option[String]) = {
     // Create class member for next row from both sides.
     // Inline mutable state since not many join operations in a task
     val streamedRow = ctx.addMutableState("InternalRow", "streamedRow", forceInline = true)
@@ -230,6 +274,30 @@ case class SortMergeJoinExec(
     // Copy the streamed keys as class members so they could be used in next function call.
     val matchedKeyVars = copyKeys(ctx, streamedKeyVars)
 
+    val (probeSessionTerm: Option[String], rangeProbeClearCode: String) =
+      rangeProbeSessionFactory match {
+        case Some(factory) =>
+          val sessionCls = classOf[RangeGroupProbe.Session].getName
+          val factoryTerm = ctx.addReferenceObj("rangeProbeSessionFactory", factory)
+          // Construct the session eagerly (mirroring SortMergeJoinScanner's interpreted-path
+          // probeSession) rather than lazily on first group build: createIterator below calls
+          // onProbe()/currentRelationOrNull() unconditionally for every streamed row, including
+          // rows with no buffered match at all (e.g. LeftOuter/LeftAnti/ExistenceJoin's
+          // eager-return-on-no-match path), which would NPE on a still-null session if
+          // construction were deferred until the first non-empty group.
+          val sessionTerm = ctx.addMutableState(sessionCls, "probeSession",
+            v => s"$v = $factoryTerm.createSession();",
+            forceInline = true)
+          val clearCode =
+            s"""
+               |$sessionTerm.resetGroup();
+               |$matches.clear();
+              """.stripMargin
+          (Some(sessionTerm), clearCode)
+        case None =>
+          (None, s"$matches.clear();")
+      }
+
     // Handle the case when streamed rows has any NULL keys.
     val handleStreamedAnyNull = joinType match {
       case _: InnerLike | LeftSemi =>
@@ -243,7 +311,7 @@ case class SortMergeJoinExec(
         // false, to reduce unnecessary computation.
         s"""
            |if (!$matches.isEmpty()) {
-           |  $matches.clear();
+           |  $rangeProbeClearCode
            |}
            |return false;
          """.stripMargin
@@ -345,7 +413,7 @@ case class SortMergeJoinExec(
          |      if (comp == 0) {
          |        return true;
          |      }
-         |      $matches.clear();
+         |      $rangeProbeClearCode
          |    }
          |
          |    do {
@@ -379,7 +447,7 @@ case class SortMergeJoinExec(
          |}
        """.stripMargin, inlineToOuterClass = true)
 
-    (findNextJoinRowsFuncName, streamedRow, matches)
+    (findNextJoinRowsFuncName, streamedRow, matches, probeSessionTerm)
   }
 
   /**
@@ -458,7 +526,7 @@ case class SortMergeJoinExec(
     val bufferedInput = ctx.addMutableState("scala.collection.Iterator", "bufferedInput",
       v => s"$v = inputs[1];", forceInline = true)
 
-    val (findNextJoinRowsFuncName, streamedRow, matches) = genScanner(ctx)
+    val (findNextJoinRowsFuncName, streamedRow, matches, probeSessionTerm) = genScanner(ctx)
 
     // Create variables for row from both sides.
     val (streamedVars, streamedVarDecl) = createStreamedVars(ctx, streamedRow)
@@ -571,13 +639,46 @@ case class SortMergeJoinExec(
 
     val existsVarDecl = existsVar.map(v => s"boolean $v = false;").getOrElse("")
 
+    // When a range index is in play, probe it the same way BroadcastRangeJoinExec does: keys
+    // evaluated directly into generated locals (primitive `long` or boxed `Object`, matching
+    // the index's key family) and a direct call to the concrete index class, decided statically
+    // here since `rangeProbeSpec`'s index kind and key family are fixed for the life of the
+    // plan. `onProbe` builds the index lazily, deferred until `RangeGroupProbe.PROBE_THRESHOLD`
+    // probes of the same group confirm it is reused; `currentRelationOrNull` is null until then,
+    // or when a group fell back to a linear scan (below threshold, over budget, spilled, or
+    // evicted under memory pressure); that case keeps today's behavior unchanged.
+    val createIterator = probeSessionTerm match {
+      case Some(sessionTerm) =>
+        val spec = rangeProbeSpec.get
+        val relVar = ctx.freshName("rangeRelation")
+        val keys = RangeIndexProbeCodegen.genProbeKeys(
+          ctx, streamedVars, spec.boundStreamKeys, spec.usesLongKeys)
+        val candidateExpr = RangeIndexProbeCodegen.genCandidateExpr(
+          ctx, relVar, spec.probeKind, spec.usesLongKeys, keys)
+        s"""
+           |$sessionTerm.onProbe($matches);
+           |${classOf[RangeRelation].getName} $relVar = $sessionTerm.currentRelationOrNull();
+           |scala.collection.Iterator $iterator;
+           |if ($relVar != null) {
+           |  ${keys.code}
+           |  // wrapOutstanding protects $relVar from being released by a TaskMemoryManager
+           |  // spill triggered across the inner while loop's nested consume() calls below.
+           |  $iterator = $sessionTerm.wrapOutstanding($candidateExpr);
+           |} else {
+           |  $iterator = $matches.generateIterator();
+           |}
+         """.stripMargin
+      case None =>
+        s"scala.collection.Iterator<UnsafeRow> $iterator = $matches.generateIterator();"
+    }
+
     val beforeLoopWithoutGuard =
       s"""
          |${streamedVarDecl.mkString("\n")}
          |${streamedBeforeLoop.trim}
          |$streamedOnlyPre
          |$existsVarDecl
-         |scala.collection.Iterator<UnsafeRow> $iterator = $matches.generateIterator();
+         |$createIterator
        """.stripMargin
     val outputRow =
       s"""
@@ -612,32 +713,34 @@ case class SortMergeJoinExec(
            |  InternalRow $bufferedRow = null;
            |  $loadStreamed
            |  $guardOutputRow
+           |  // This bypasses the inner candidate loop -- and the finishProbe call that normally
+           |  // follows it -- entirely, so wrapOutstanding's in-flight marker must be cleared
+           |  // here too, or a real TaskMemoryManager spill request would be declined for the
+           |  // rest of this group even though nothing is reading the index anymore.
+           |  ${finishProbeCode(probeSessionTerm)}
            |  continue;
            |}
          """.stripMargin
       case None => beforeLoopWithoutGuard
     }
 
+    val scan = JoinScanCodegen(findNextJoinRows, beforeLoop, iterator, bufferedRow, condCheck,
+      outputRow, eagerCleanup, finishProbeCode(probeSessionTerm))
     val doJoin = joinType match {
       case _: InnerLike =>
         val cleanedFlag =
           ctx.addMutableState(CodeGenerator.JAVA_BOOLEAN, "cleanedFlag", v => s"$v = false;")
-        codegenInner(findNextJoinRows, beforeLoop, iterator, bufferedRow, condCheck, outputRow,
-          eagerCleanup, cleanedFlag)
+        codegenInner(scan, cleanedFlag)
       case LeftOuter | RightOuter =>
-        codegenOuter(streamedInput, findNextJoinRows, beforeLoop, iterator, bufferedRow, condCheck,
-          ctx.freshName("hasOutputRow"), outputRow, eagerCleanup)
+        codegenOuter(streamedInput, scan, ctx.freshName("hasOutputRow"))
       case LeftSemi =>
         val cleanedFlag =
           ctx.addMutableState(CodeGenerator.JAVA_BOOLEAN, "cleanedFlag", v => s"$v = false;")
-        codegenSemi(findNextJoinRows, beforeLoop, iterator, bufferedRow, condCheck,
-          ctx.freshName("hasOutputRow"), outputRow, eagerCleanup, cleanedFlag)
+        codegenSemi(scan, ctx.freshName("hasOutputRow"), cleanedFlag)
       case LeftAnti =>
-        codegenAnti(streamedInput, findNextJoinRows, beforeLoop, iterator, bufferedRow, condCheck,
-          loadStreamed, ctx.freshName("hasMatchedRow"), outputRow, eagerCleanup)
+        codegenAnti(streamedInput, scan, loadStreamed, ctx.freshName("hasMatchedRow"))
       case ExistenceJoin(_) =>
-        codegenExistence(streamedInput, findNextJoinRows, beforeLoop, iterator, bufferedRow,
-          condCheck, loadStreamed, existsVar.get, outputRow, eagerCleanup)
+        codegenExistence(streamedInput, scan, loadStreamed, existsVar.get)
       case x =>
         throw new IllegalArgumentException(
           s"SortMergeJoin.doProduce should not take $x as the JoinType")
@@ -658,9 +761,11 @@ case class SortMergeJoinExec(
   }
 
   /**
-   * Generates the code for Inner join.
+   * The generated-code fragments every codegenInner/Outer/Semi/Anti/Existence variant below
+   * stitches its own control flow and match-tracking variables around - bundled because the
+   * five variants share this same skeleton and scalastyle caps a method's parameter count.
    */
-  private def codegenInner(
+  private case class JoinScanCodegen(
       findNextJoinRows: String,
       beforeLoop: String,
       matchIterator: String,
@@ -668,7 +773,23 @@ case class SortMergeJoinExec(
       conditionCheck: String,
       outputRow: String,
       eagerCleanup: String,
+      finishProbe: String = "")
+
+  /**
+   * A match stops reading the candidate iterator before it drains (or, for Anti/Existence, a
+   * non-match already drained it to hasNext() == false, making this a harmless no-op); see
+   * RangeGroupProbe.Session.finishProbe. Empty when range indexing isn't in play for this plan.
+   */
+  private def finishProbeCode(probeSessionTerm: Option[String]): String =
+    probeSessionTerm.map(t => s"$t.finishProbe();").getOrElse("")
+
+  /**
+   * Generates the code for Inner join.
+   */
+  private def codegenInner(
+      scan: JoinScanCodegen,
       cleanedFlag: String): String = {
+    import scan._
     s"""
        |if($cleanedFlag) {
        |  return;
@@ -681,6 +802,7 @@ case class SortMergeJoinExec(
        |    $conditionCheck
        |    $outputRow
        |  }
+       |  $finishProbe
        |  if (shouldStop()) return;
        |}
        |$cleanedFlag = true;
@@ -693,14 +815,9 @@ case class SortMergeJoinExec(
    */
   private def codegenOuter(
       streamedInput: String,
-      findNextJoinRows: String,
-      beforeLoop: String,
-      matchIterator: String,
-      bufferedRow: String,
-      conditionCheck: String,
-      hasOutputRow: String,
-      outputRow: String,
-      eagerCleanup: String): String = {
+      scan: JoinScanCodegen,
+      hasOutputRow: String): String = {
+    import scan._
     s"""
        |while ($streamedInput.hasNext()) {
        |  $findNextJoinRows;
@@ -715,6 +832,7 @@ case class SortMergeJoinExec(
        |    $hasOutputRow = true;
        |    $outputRow
        |  }
+       |  $finishProbe
        |  if (shouldStop()) return;
        |}
        |$eagerCleanup
@@ -725,15 +843,10 @@ case class SortMergeJoinExec(
    * Generates the code for Left Semi join.
    */
   private def codegenSemi(
-      findNextJoinRows: String,
-      beforeLoop: String,
-      matchIterator: String,
-      bufferedRow: String,
-      conditionCheck: String,
+      scan: JoinScanCodegen,
       hasOutputRow: String,
-      outputRow: String,
-      eagerCleanup: String,
       cleanedFlag: String): String = {
+    import scan._
     s"""
        |if($cleanedFlag) {
        |  return;
@@ -749,6 +862,7 @@ case class SortMergeJoinExec(
        |    $hasOutputRow = true;
        |    $outputRow
        |  }
+       |  $finishProbe
        |  if (shouldStop()) return;
        |}
        |$cleanedFlag = true;
@@ -761,15 +875,10 @@ case class SortMergeJoinExec(
    */
   private def codegenAnti(
       streamedInput: String,
-      findNextJoinRows: String,
-      beforeLoop: String,
-      matchIterator: String,
-      bufferedRow: String,
-      conditionCheck: String,
+      scan: JoinScanCodegen,
       loadStreamed: String,
-      hasMatchedRow: String,
-      outputRow: String,
-      eagerCleanup: String): String = {
+      hasMatchedRow: String): String = {
+    import scan._
     s"""
        |while ($streamedInput.hasNext()) {
        |  $findNextJoinRows;
@@ -781,6 +890,7 @@ case class SortMergeJoinExec(
        |    $conditionCheck
        |    $hasMatchedRow = true;
        |  }
+       |  $finishProbe
        |
        |  if (!$hasMatchedRow) {
        |    // load all values of streamed row, because the values not in join condition are not
@@ -799,15 +909,10 @@ case class SortMergeJoinExec(
    */
   private def codegenExistence(
       streamedInput: String,
-      findNextJoinRows: String,
-      beforeLoop: String,
-      matchIterator: String,
-      bufferedRow: String,
-      conditionCheck: String,
+      scan: JoinScanCodegen,
       loadStreamed: String,
-      exists: String,
-      outputRow: String,
-      eagerCleanup: String): String = {
+      exists: String): String = {
+    import scan._
     s"""
        |while ($streamedInput.hasNext()) {
        |  $findNextJoinRows;
@@ -818,6 +923,7 @@ case class SortMergeJoinExec(
        |    $conditionCheck
        |    $exists = true;
        |  }
+       |  $finishProbe
        |
        |  if (!$exists) {
        |    // load all values of streamed row, because the values not in join condition are not
@@ -1120,6 +1226,8 @@ case class SortMergeJoinExec(
  *                                  internal buffer
  * @param eagerCleanupResources the eager cleanup function to be invoked when no join row found
  * @param onlyBufferFirstMatch [[bufferMatchingRows]] should buffer only the first matching row
+ * @param probeSession when non-null, enables per-equi-key-group range indexing instead of a
+ *                     linear buffer scan
  */
 private[joins] class SortMergeJoinScanner(
     streamedKeyGenerator: Projection,
@@ -1132,7 +1240,8 @@ private[joins] class SortMergeJoinScanner(
     sizeInBytesSpillThreshold: Long,
     spillSize: SQLMetric,
     eagerCleanupResources: () => Unit,
-    onlyBufferFirstMatch: Boolean = false) {
+    onlyBufferFirstMatch: Boolean = false,
+    probeSession: RangeGroupProbe.Session = null) {
   private[this] var streamedRow: InternalRow = _
   private[this] var streamedRowKey: InternalRow = _
   private[this] var bufferedRow: InternalRow = _
@@ -1152,9 +1261,12 @@ private[joins] class SortMergeJoinScanner(
       spillThreshold,
       sizeInBytesSpillThreshold)
 
-  // At the end of the task, update the task's spill size for buffered side.
+  // At the end of the task, update the task's spill size for buffered side. Only clears
+  // bufferedMatches, not the full resetBufferedGroup(): probeSession (if any) already
+  // registered its own task-completion listener to reset itself.
   TaskContext.get().addTaskCompletionListener[Unit](_ => {
     spillSize += bufferedMatches.spillSize
+    bufferedMatches.clear()
   })
 
   // Initialization (note: do _not_ want to advance streamed here).
@@ -1165,6 +1277,25 @@ private[joins] class SortMergeJoinScanner(
   def getStreamedRow: InternalRow = streamedRow
 
   def getBufferedMatches: ExternalAppendOnlyUnsafeRowArray = bufferedMatches
+
+  /** Buffered-side rows matching the streamed row, using a per-group range index when enabled. */
+  def candidatesFor(streamedRow: InternalRow): Iterator[InternalRow] = {
+    if (probeSession != null) {
+      probeSession.candidates(bufferedMatches, streamedRow)
+    } else {
+      bufferedMatches.generateIterator()
+    }
+  }
+
+  /**
+   * Signals that the caller is done reading from the iterator `candidatesFor` last returned,
+   * even though it may not be drained to `hasNext() == false` - e.g. LeftSemi/LeftAnti/
+   * ExistenceJoin stop as soon as they find (or rule out) a match. See
+   * `RangeGroupProbe.Session.finishProbe`.
+   */
+  def finishProbe(): Unit = {
+    if (probeSession != null) probeSession.finishProbe()
+  }
 
   /**
    * Advances both input iterators, stopping when we have found rows with matching join keys. If no
@@ -1181,7 +1312,7 @@ private[joins] class SortMergeJoinScanner(
     val found = if (streamedRow == null) {
       // We have consumed the entire streamed iterator, so there can be no more matches.
       matchJoinKey = null
-      bufferedMatches.clear()
+      resetBufferedGroup()
       false
     } else if (matchJoinKey != null && keyOrdering.compare(streamedRowKey, matchJoinKey) == 0) {
       // The new streamed row has the same join key as the previous row, so return the same matches.
@@ -1190,7 +1321,7 @@ private[joins] class SortMergeJoinScanner(
       // The streamed row's join key does not match the current batch of buffered rows and there are
       // no more rows to read from the buffered iterator, so there can be no more matches.
       matchJoinKey = null
-      bufferedMatches.clear()
+      resetBufferedGroup()
       false
     } else {
       // Advance both the streamed and buffered iterators to find the next pair of matching rows.
@@ -1208,7 +1339,7 @@ private[joins] class SortMergeJoinScanner(
       if (streamedRow == null || bufferedRow == null) {
         // We have either hit the end of one of the iterators, so there can be no more matches.
         matchJoinKey = null
-        bufferedMatches.clear()
+        resetBufferedGroup()
         false
       } else {
         // The streamed row's join key matches the current buffered row's join, so walk through the
@@ -1233,7 +1364,7 @@ private[joins] class SortMergeJoinScanner(
     val found = if (!advancedStreamed()) {
       // We have consumed the entire streamed iterator, so there can be no more matches.
       matchJoinKey = null
-      bufferedMatches.clear()
+      resetBufferedGroup()
       false
     } else {
       if (matchJoinKey != null && keyOrdering.compare(streamedRowKey, matchJoinKey) == 0) {
@@ -1241,7 +1372,7 @@ private[joins] class SortMergeJoinScanner(
       } else {
         // The streamed row does not match the current group.
         matchJoinKey = null
-        bufferedMatches.clear()
+        resetBufferedGroup()
         if (bufferedRow != null && !streamedRowKey.anyNull) {
           // The buffered iterator could still contain matching rows, so we'll need to walk through
           // it until we either find matches or pass where they would be found.
@@ -1302,6 +1433,13 @@ private[joins] class SortMergeJoinScanner(
     }
   }
 
+  private def resetBufferedGroup(): Unit = {
+    if (probeSession != null) {
+      probeSession.resetGroup()
+    }
+    bufferedMatches.clear()
+  }
+
   /**
    * Called when the streamed and buffered join keys match in order to buffer the matching rows.
    */
@@ -1313,7 +1451,7 @@ private[joins] class SortMergeJoinScanner(
     assert(keyOrdering.compare(streamedRowKey, bufferedRowKey) == 0)
     // This join key may have been produced by a mutable projection, so we need to make a copy:
     matchJoinKey = streamedRowKey.copy()
-    bufferedMatches.clear()
+    resetBufferedGroup()
     do {
       if (!onlyBufferFirstMatch || bufferedMatches.isEmpty) {
         bufferedMatches.add(bufferedRow.asInstanceOf[UnsafeRow])
@@ -1389,7 +1527,7 @@ private abstract class OneSideOuterIterator(
   protected[this] val joinedRow: JoinedRow = new JoinedRow()
 
   // Index of the buffered rows, reset to 0 whenever we advance to a new streamed row
-  private[this] var rightMatchesIterator: Iterator[UnsafeRow] = null
+  private[this] var rightMatchesIterator: Iterator[InternalRow] = null
 
   // This iterator is initialized lazily so there should be no matches initially
   assert(smjScanner.getBufferedMatches.length == 0)
@@ -1432,7 +1570,7 @@ private abstract class OneSideOuterIterator(
   private def advanceBufferUntilRestConditionSatisfied(): Boolean = {
     var foundMatch: Boolean = false
     if (rightMatchesIterator == null) {
-      rightMatchesIterator = smjScanner.getBufferedMatches.generateIterator()
+      rightMatchesIterator = smjScanner.candidatesFor(smjScanner.getStreamedRow)
     }
 
     while (!foundMatch && rightMatchesIterator.hasNext) {

@@ -27,6 +27,7 @@ import com.esotericsoftware.kryo.io.{Input, Output}
 import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
+import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, CodeGenerator, ExprCode}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildSide}
 import org.apache.spark.sql.catalyst.planning.{IntervalOverlapJoin, PartialRangeJoin, PointInRangeJoin, RangeJoinKind}
 import org.apache.spark.sql.catalyst.plans.physical.BroadcastMode
@@ -142,6 +143,13 @@ private[joins] object RangeIndex {
    * linear scan over the stored rows instead of walking the tree. Answers
    * stay exact; tiny dimension tables otherwise spend more on walk setup
    * than a nested loop pass over the same handful of rows.
+   *
+   * Independent of `RangeGroupProbe.Spec.threshold` (also 16 by default): that one gates
+   * whether `RangeGroupProbe` builds a per-equi-key-group index for sort-merge join at all,
+   * while this one is an internal fast path inside an already-built `overlapping()` call, used
+   * by both that path and `BroadcastRangeJoinExec` (whose build side has no row-count gate of
+   * its own, so a tiny broadcast table routinely lands here). The two share a default value by
+   * coincidence, not because they are the same knob.
    */
   val SMALL_BUILD_OVERLAP_ROWS: Int = 16
 
@@ -1214,44 +1222,48 @@ private[joins] object LongPointIndex {
 }
 
 /**
- * Which side of a single-inequality range join's bound the build side holds - the
- * two scan directions a [[PointIndex]] / [[LongPointIndex]] expose, with the
- * predicate's strictness traveling beside it as the scan methods' `strict`
- * argument. The compiler's exhaustiveness check on this sealed hierarchy covers
- * only the interpreted matches in [[BroadcastRangeJoinExec]]'s
- * `makeCandidateFn`: it is the compiler, not a developer re-reading string
- * literals, that notices when a new case is added there. Generated probe code
- * never matches on the hierarchy. It still has to splice `methodName` into the
- * Java source it emits, since codegen has no way to reference a Scala method
- * value directly; that string has to be kept in sync with the method it names
- * by hand. The generated path never notices a new case or a stale name at
- * compile time; a mismatch surfaces only as a Janino compile failure at
- * query-run time. RangeJoinSuite's codegen point-scan tests cover the long
- * point-index methods (int keys); RangeJoinSQLSuite's wide-decimal and string
- * partial-range queries are what catch a stale boxed `PointIndex` methodName,
- * since DOUBLE keys build a `LongPointIndex` instead.
+ * How a join probes the [[RangeRelation]] its build side materializes, paired 1:1 with the
+ * [[RangeIndexKind]] that relation was built as (`indexKind` projects it out, so a caller
+ * holding a `RangeProbeKind` never separately tracks or re-derives which index family it
+ * probes). A point-in-range or interval-overlap join always probes with `overlapping`; a
+ * partial range (single inequality) probes [[PointIndex]] / [[LongPointIndex]]'s `upTo`
+ * (when `isUpTo` is true) or `from` (otherwise) method, with the predicate's strictness
+ * traveling beside it as `strict`. Replaces an `Option[(Boolean, Boolean)]` that forced
+ * every caller to `.get` it back out inside a [[PointIndexKind]] branch: an interval probe
+ * can never reach that branch, but the Option's type didn't say so - this type does, since
+ * only [[RangeProbeKind.Point]] carries a scan direction at all.
  */
-private[joins] sealed abstract class PointScan(val methodName: String)
+private[joins] sealed trait RangeProbeKind {
+  def indexKind: RangeIndexKind
+}
 
-private[joins] object PointScan {
-  case object UpTo extends PointScan("upTo")
-  case object From extends PointScan("from")
+private[joins] object RangeProbeKind {
+  case object Interval extends RangeProbeKind {
+    override def indexKind: RangeIndexKind = IntervalIndexKind
+  }
 
   /**
-   * The scan direction a partial-range join's build side probes with, and the
-   * predicate's strictness. Lower bound build side uses `UpTo`, upper bound
-   * uses `From`. Throws for any other range-join shape; callers only touch
-   * this for a [[PointIndexKind]] build.
+   * `isUpTo` selects which of [[PointIndex]] / [[LongPointIndex]]'s two scan methods probes
+   * this join's partial-range predicate: true for `upTo` (this side holds the lower bound),
+   * false for `from`. Generated probe code can't reference a Scala method value directly, so
+   * [[RangeIndexProbeCodegen.genCandidateExpr]] splices the method name into the Java source
+   * it emits from this same flag by hand; a mismatch there would only surface as a Janino
+   * compile failure at query-run time, not a compile-time error here. RangeJoinSuite's codegen
+   * point-scan tests cover the long point-index methods (int keys); RangeJoinSQLSuite's
+   * wide-decimal and string partial-range queries are what catch a stale boxed `PointIndex`
+   * method name, since DOUBLE keys build a `LongPointIndex` instead.
    */
-  def forJoin(rangeJoinKind: RangeJoinKind, buildSide: BuildSide): (PointScan, Boolean) =
-    rangeJoinKind match {
-      case partial: PartialRangeJoin =>
-        val isLower = partial.leftIsLower == (buildSide == BuildLeft)
-        (if (isLower) UpTo else From, partial.strict)
-      case other =>
-        throw SparkException.internalError(
-          s"Point index is only built for a partial range, got $other.")
-    }
+  final case class Point(isUpTo: Boolean, strict: Boolean) extends RangeProbeKind {
+    override def indexKind: RangeIndexKind = PointIndexKind
+  }
+
+  def forJoin(kind: RangeJoinKind, buildSide: BuildSide): RangeProbeKind = kind match {
+    case partial: PartialRangeJoin =>
+      // Lower bound build side scans `upTo`, upper bound scans `from`.
+      val isUpTo = partial.leftIsLower == (buildSide == BuildLeft)
+      Point(isUpTo, partial.strict)
+    case _ => Interval
+  }
 }
 
 /**
@@ -1319,5 +1331,180 @@ private[execution] object RangeRelationBroadcastMode {
       }
     }
     new RangeRelationBroadcastMode(normalizedKeys, indexKind)
+  }
+}
+
+/**
+ * Shared range-index probe dispatch for broadcast and per-key-group sort-merge joins.
+ */
+private[joins] object RangeRelationProbe {
+
+  /**
+   * Create candidate probe function for a materialized range relation and bound probe keys.
+   * `relation`'s concrete class and `probeKind` both derive from the same join's
+   * `RangeJoinKind` (see `RangeProbeKind.forJoin` and the `RangeRelationBroadcastMode` that
+   * built `relation`), so exactly one of the four cases below ever matches for a given call;
+   * the catch-all exists only because `relation`'s concrete type isn't visible to the compiler
+   * here; it is not a reachable outcome.
+   */
+  def makeCandidateFn(
+      relation: RangeRelation,
+      boundStreamKeys: Seq[Expression],
+      probeKind: RangeProbeKind): InternalRow => Iterator[InternalRow] = {
+    val isOneKey = boundStreamKeys.length == 1
+    val lowExpr = boundStreamKeys.head
+    val highExpr = if (isOneKey) null else boundStreamKeys(1)
+
+    (relation, probeKind) match {
+      case (longs: LongIntervalIndex, RangeProbeKind.Interval) => row =>
+        val low = lowExpr.eval(row)
+        if (low == null) {
+          Iterator.empty
+        } else {
+          val high = if (isOneKey) low else highExpr.eval(row)
+          if (high == null) {
+            Iterator.empty
+          } else {
+            longs.overlapping(longs.toLong(low), longs.toLong(high))
+          }
+        }
+      case (points: LongPointIndex, RangeProbeKind.Point(isUpTo, strict)) =>
+        val scan: Long => Iterator[InternalRow] =
+          if (isUpTo) points.upTo(_, strict) else points.from(_, strict)
+        row =>
+          val low = lowExpr.eval(row)
+          if (low == null) Iterator.empty else scan(points.toLong(low))
+      case (intervals: IntervalIndex, RangeProbeKind.Interval) => row =>
+        val low = lowExpr.eval(row)
+        if (low == null) {
+          Iterator.empty
+        } else {
+          val high = if (isOneKey) low else highExpr.eval(row)
+          intervals.overlapping(low, high)
+        }
+      case (points: PointIndex, RangeProbeKind.Point(isUpTo, strict)) =>
+        val scan: Any => Iterator[InternalRow] =
+          if (isUpTo) points.upTo(_, strict) else points.from(_, strict)
+        row =>
+          val low = lowExpr.eval(row)
+          if (low == null) Iterator.empty else scan(low)
+      case (other, kind) =>
+        throw SparkException.internalError(
+          s"RangeRelation ${other.getClass.getSimpleName} does not match probe kind $kind; " +
+          "both must derive from the same join's RangeJoinKind.")
+    }
+  }
+}
+
+/**
+ * Shared whole-stage codegen for probing a [[RangeRelation]], used by both
+ * [[BroadcastRangeJoinExec]] (one relation per plan) and [[SortMergeJoinExec]]'s per-equi-key-
+ * group range index (one relation per group, type fixed for the life of the plan). Both callers
+ * know the concrete index class and key family statically at codegen time
+ * ([[RangeIndexKind]] plus whether the build keys map to one order-preserving long, see
+ * [[RangeIndex.longKey]]), so generated code can cast directly to it and call its scan method,
+ * with probe keys evaluated into primitive `long` locals for the long-keyed families and boxed
+ * `Object` locals otherwise - mirroring [[RangeRelationProbe.makeCandidateFn]]'s interpreted
+ * dispatch, but without a closure or per-row boxing on the long-keyed path.
+ */
+private[joins] object RangeIndexProbeCodegen {
+
+  /** Generated probe-key evaluation: setup code plus one local variable name per key. */
+  final case class ProbeKeys(code: String, keyVars: Seq[String], nullVars: Seq[String])
+
+  /**
+   * Evaluate `boundKeys` (already bound to the producing side's output, with `ctx.currentVars`
+   * set to `inputVars` matching that output) into generated locals. `usesLongKeys` selects
+   * primitive `long` locals, converted via [[RangeIndex.longKey]]'s generated code and null-
+   * tracked in `nullVars` (a primitive `long` has no null to carry through), or boxed `Object`
+   * locals whose null case is encoded as a Java `null` the index method itself treats as
+   * "no candidates" - so `nullVars` is empty for the boxed family.
+   */
+  def genProbeKeys(
+      ctx: CodegenContext,
+      inputVars: Seq[ExprCode],
+      boundKeys: Seq[Expression],
+      usesLongKeys: Boolean): ProbeKeys = {
+    ctx.currentVars = inputVars
+    if (usesLongKeys) {
+      val keys = boundKeys.map { bound =>
+        val ev = bound.genCode(ctx)
+        val toLong = RangeIndex.requiredLongKey(bound.dataType)
+        val name = ctx.freshName("probeKey")
+        val code =
+          s"""
+             |${ev.code}
+             |long $name = ${ev.isNull} ? 0L : ${toLong.code(ev.value)};
+           """.stripMargin
+        (code, name, ev.isNull.toString)
+      }
+      ProbeKeys(keys.map(_._1).mkString("\n"), keys.map(_._2), keys.map(_._3))
+    } else {
+      val keys = boundKeys.map { bound =>
+        val ev = bound.genCode(ctx)
+        val name = ctx.freshName("probeKey")
+        val javaType = CodeGenerator.javaType(bound.dataType)
+        val boxed = CodeGenerator.boxedType(bound.dataType)
+        val valueExpr = if (javaType == boxed) {
+          s"${ev.value}"
+        } else {
+          s"$boxed.valueOf(${ev.value})"
+        }
+        val code =
+          s"""
+             |${ev.code}
+             |Object $name = ${ev.isNull} ? null : $valueExpr;
+           """.stripMargin
+        (code, name)
+      }
+      ProbeKeys(keys.map(_._1).mkString("\n"), keys.map(_._2), Nil)
+    }
+  }
+
+  /**
+   * The concrete [[RangeRelation]] class `indexKind`/`usesLongKeys` selects -- the single
+   * source both `genCandidateExpr` (for the cast it splices into generated code) and
+   * [[BroadcastRangeJoinExec.prepareBroadcast]] (for its mutable field's declared type)
+   * consult, so the two cannot name different classes for the same relation.
+   */
+  def indexClassName(indexKind: RangeIndexKind, usesLongKeys: Boolean): String = indexKind match {
+    case PointIndexKind =>
+      (if (usesLongKeys) classOf[LongPointIndex] else classOf[PointIndex]).getName
+    case IntervalIndexKind =>
+      (if (usesLongKeys) classOf[LongIntervalIndex] else classOf[IntervalIndex]).getName
+  }
+
+  /**
+   * The Java expression that probes `relationTerm` - already known at codegen time to be an
+   * instance of the concrete class `probeKind.indexKind`/`usesLongKeys` selects - and yields a
+   * `scala.collection.Iterator`. Returns only the expression, not a declaration: callers decide
+   * whether to declare a new variable or assign into one already declared (e.g. inside an
+   * `if`/`else` branch). Unlike the interpreted `RangeRelationProbe.makeCandidateFn`, this match
+   * is exhaustive with no unreachable case: codegen never inspects `relationTerm`'s actual class,
+   * so there is nothing here that could disagree with `probeKind`.
+   */
+  def genCandidateExpr(
+      ctx: CodegenContext,
+      relationTerm: String,
+      probeKind: RangeProbeKind,
+      usesLongKeys: Boolean,
+      keys: ProbeKeys): String = {
+    val className = indexClassName(probeKind.indexKind, usesLongKeys)
+    val call = probeKind match {
+      case RangeProbeKind.Point(isUpTo, strict) =>
+        val methodName = if (isUpTo) "upTo" else "from"
+        s"(($className) $relationTerm).$methodName(${keys.keyVars.head}, $strict)"
+      case RangeProbeKind.Interval =>
+        // A point probe has one key. Reuse it as both ends so it is evaluated once.
+        val high = if (keys.keyVars.length == 1) keys.keyVars.head else keys.keyVars(1)
+        s"(($className) $relationTerm).overlapping(${keys.keyVars.head}, $high)"
+    }
+    if (keys.nullVars.isEmpty) {
+      call
+    } else {
+      val iterCls = classOf[Iterator[InternalRow]].getName
+      val emptyScan = s"${classOf[RowSlice].getName}$$.MODULE$$.empty()"
+      s"${keys.nullVars.mkString(" || ")} ? ($iterCls) $emptyScan : $call"
+    }
   }
 }
