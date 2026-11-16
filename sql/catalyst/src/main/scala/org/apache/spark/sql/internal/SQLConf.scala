@@ -1313,6 +1313,38 @@ object SQLConf {
     .booleanConf
     .createWithDefault(false)
 
+  val SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD =
+    buildConf("spark.sql.join.sortMergeJoin.rangeIndex.threshold")
+      .internal()
+      .doc("Minimum buffered-side row count for an equi-key group before a sort-merge join " +
+        "whose residual condition contains a recognizable range predicate indexes it with a " +
+        "range index budgeted via TaskMemoryManager, probing that index per streamed row " +
+        "instead of linearly rescanning the group. The index is built only once a group has " +
+        "also been probed often enough to amortize its one-time build cost; groups below " +
+        "that keep the linear scan at parity with the feature disabled. Supported on both " +
+        "interpreted and whole-stage codegen paths. Unlike the broadcast range join " +
+        "(spark.sql.join.broadcastRangeJoinEnabled), this does not change the chosen join " +
+        "strategy or its planning-time cost estimate, and the full join condition is always " +
+        "re-evaluated on every candidate the index returns, so an incorrect index can only " +
+        "produce extra candidates to filter, never drop a match; it is therefore enabled by " +
+        "default. Set to -1 to disable range indexing entirely.")
+      .version("4.5.0")
+      .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
+      .intConf
+      .checkValue(_ >= -1, "value should be -1 (disabled) or non-negative")
+      .createWithDefault(16)
+
+  val SORT_MERGE_JOIN_RANGE_INDEX_MAX_BYTES =
+    buildConf("spark.sql.join.sortMergeJoin.rangeIndex.maxBytes")
+      .internal()
+      .doc("Maximum memory in bytes that an equi-key group range index may allocate from " +
+        "TaskMemoryManager before falling back to linear scan.")
+      .version("4.5.0")
+      .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(_ > 0, "value should be positive")
+      .createWithDefaultString("8MB")
+
   val SHUFFLE_HASH_JOIN_FACTOR =
     buildConfFromConfigFile[Int]("spark.sql.shuffledHashJoinFactor")
       .checkValue(_ >= 1, "The shuffle hash join factor must be at least 1.")
@@ -10288,6 +10320,10 @@ class SQLConf extends Serializable with Logging with SqlApiConf {
   def autoBroadcastJoinThreshold: Long = getConf(AUTO_BROADCASTJOIN_THRESHOLD)
 
   def broadcastRangeJoinEnabled: Boolean = getConf(BROADCAST_RANGE_JOIN_ENABLED)
+
+  def sortMergeJoinRangeIndexThreshold: Int = getConf(SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD)
+
+  def sortMergeJoinRangeIndexMaxBytes: Long = getConf(SORT_MERGE_JOIN_RANGE_INDEX_MAX_BYTES)
 
   def limitInitialNumPartitions: Int = getConf(LIMIT_INITIAL_NUM_PARTITIONS)
 

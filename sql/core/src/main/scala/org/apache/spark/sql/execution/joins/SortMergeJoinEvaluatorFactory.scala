@@ -19,7 +19,7 @@ package org.apache.spark.sql.execution.joins
 
 import org.apache.spark.{PartitionEvaluator, PartitionEvaluatorFactory}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, JoinedRow, Predicate, Projection, RowOrdering, UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, JoinedRow, Predicate, Projection, RowOrdering, UnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.{ExistenceJoin, FullOuter, InnerLike, JoinType, LeftAnti, LeftOuter, LeftSemi, RightOuter}
 import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, RowIterator, SparkPlan}
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -39,7 +39,8 @@ class SortMergeJoinEvaluatorFactory(
     spillSize: SQLMetric,
     onlyBufferFirstMatchedRow: Boolean,
     streamedOnlyCondition: Option[Expression] = None,
-    restCondition: Option[Expression] = None)
+    restCondition: Option[Expression] = None,
+    rangeProbeSessionFactory: Option[RangeGroupProbe.SessionFactory] = None)
     extends PartitionEvaluatorFactory[InternalRow, InternalRow] {
   override def createEvaluator(): PartitionEvaluator[InternalRow, InternalRow] =
     new SortMergeJoinEvaluator
@@ -74,29 +75,46 @@ class SortMergeJoinEvaluatorFactory(
       val keyOrdering = RowOrdering.createNaturalAscendingOrdering(leftKeys.map(_.dataType))
       val resultProj: InternalRow => InternalRow = UnsafeProjection.create(output, output)
 
+      val probeSession = rangeProbeSessionFactory.map(_.createSession()).orNull
+
+      def createScanner(
+          streamedKeyGen: Projection,
+          bufferedKeyGen: Projection,
+          streamedIter: RowIterator,
+          bufferedIter: RowIterator,
+          onlyBufferFirstMatch: Boolean = false): SortMergeJoinScanner = {
+        new SortMergeJoinScanner(
+          streamedKeyGen,
+          bufferedKeyGen,
+          keyOrdering,
+          streamedIter,
+          bufferedIter,
+          inMemoryThreshold,
+          spillThreshold,
+          sizeInBytesSpillThreshold,
+          spillSize,
+          cleanupResources,
+          onlyBufferFirstMatch,
+          probeSession)
+      }
+
       joinType match {
         case _: InnerLike =>
           new RowIterator {
             private[this] var currentLeftRow: InternalRow = _
             private[this] var currentRightMatches: ExternalAppendOnlyUnsafeRowArray = _
-            private[this] var rightMatchesIterator: Iterator[UnsafeRow] = null
-            private[this] val smjScanner = new SortMergeJoinScanner(
+            private[this] var rightMatchesIterator: Iterator[InternalRow] = null
+            private[this] val smjScanner = createScanner(
               createLeftKeyGenerator(),
               createRightKeyGenerator(),
-              keyOrdering,
               RowIterator.fromScala(leftIter),
-              RowIterator.fromScala(rightIter),
-              inMemoryThreshold,
-              spillThreshold,
-              sizeInBytesSpillThreshold,
-              spillSize,
-              cleanupResources)
+              RowIterator.fromScala(rightIter))
             private[this] val joinRow = new JoinedRow
 
             if (smjScanner.findNextInnerJoinRows()) {
               currentRightMatches = smjScanner.getBufferedMatches
               currentLeftRow = smjScanner.getStreamedRow
-              rightMatchesIterator = currentRightMatches.generateIterator()
+              rightMatchesIterator = smjScanner.candidatesFor(smjScanner.getStreamedRow)
             }
 
             override def advanceNext(): Boolean = {
@@ -105,7 +123,7 @@ class SortMergeJoinEvaluatorFactory(
                   if (smjScanner.findNextInnerJoinRows()) {
                     currentRightMatches = smjScanner.getBufferedMatches
                     currentLeftRow = smjScanner.getStreamedRow
-                    rightMatchesIterator = currentRightMatches.generateIterator()
+                    rightMatchesIterator = smjScanner.candidatesFor(currentLeftRow)
                   } else {
                     currentRightMatches = null
                     currentLeftRow = null
@@ -126,17 +144,11 @@ class SortMergeJoinEvaluatorFactory(
           }.toScala
 
         case LeftOuter =>
-          val smjScanner = new SortMergeJoinScanner(
-            streamedKeyGenerator = createLeftKeyGenerator(),
-            bufferedKeyGenerator = createRightKeyGenerator(),
-            keyOrdering,
-            streamedIter = RowIterator.fromScala(leftIter),
-            bufferedIter = RowIterator.fromScala(rightIter),
-            inMemoryThreshold,
-            spillThreshold,
-            sizeInBytesSpillThreshold,
-            spillSize,
-            cleanupResources)
+          val smjScanner = createScanner(
+            createLeftKeyGenerator(),
+            createRightKeyGenerator(),
+            RowIterator.fromScala(leftIter),
+            RowIterator.fromScala(rightIter))
           val rightNullRow = new GenericInternalRow(right.output.length)
           val boundStreamedOnly: InternalRow => Boolean = streamedOnlyCondition.map {
             Predicate.create(_, left.output).eval _
@@ -153,17 +165,11 @@ class SortMergeJoinEvaluatorFactory(
             numOutputRows).toScala
 
         case RightOuter =>
-          val smjScanner = new SortMergeJoinScanner(
-            streamedKeyGenerator = createRightKeyGenerator(),
-            bufferedKeyGenerator = createLeftKeyGenerator(),
-            keyOrdering,
-            streamedIter = RowIterator.fromScala(rightIter),
-            bufferedIter = RowIterator.fromScala(leftIter),
-            inMemoryThreshold,
-            spillThreshold,
-            sizeInBytesSpillThreshold,
-            spillSize,
-            cleanupResources)
+          val smjScanner = createScanner(
+            createRightKeyGenerator(),
+            createLeftKeyGenerator(),
+            RowIterator.fromScala(rightIter),
+            RowIterator.fromScala(leftIter))
           val leftNullRow = new GenericInternalRow(left.output.length)
           val boundStreamedOnly: InternalRow => Boolean = streamedOnlyCondition.map {
             Predicate.create(_, right.output).eval _
@@ -197,17 +203,11 @@ class SortMergeJoinEvaluatorFactory(
         case LeftSemi =>
           new RowIterator {
             private[this] var currentLeftRow: InternalRow = _
-            private[this] val smjScanner = new SortMergeJoinScanner(
+            private[this] val smjScanner = createScanner(
               createLeftKeyGenerator(),
               createRightKeyGenerator(),
-              keyOrdering,
               RowIterator.fromScala(leftIter),
               RowIterator.fromScala(rightIter),
-              inMemoryThreshold,
-              spillThreshold,
-              sizeInBytesSpillThreshold,
-              spillSize,
-              cleanupResources,
               onlyBufferFirstMatchedRow)
             private[this] val joinRow = new JoinedRow
 
@@ -216,7 +216,7 @@ class SortMergeJoinEvaluatorFactory(
                 val currentRightMatches = smjScanner.getBufferedMatches
                 currentLeftRow = smjScanner.getStreamedRow
                 if (currentRightMatches != null && currentRightMatches.length > 0) {
-                  val rightMatchesIterator = currentRightMatches.generateIterator()
+                  val rightMatchesIterator = smjScanner.candidatesFor(currentLeftRow)
                   while (rightMatchesIterator.hasNext) {
                     joinRow(currentLeftRow, rightMatchesIterator.next())
                     if (boundCondition(joinRow)) {
@@ -241,17 +241,11 @@ class SortMergeJoinEvaluatorFactory(
           }.getOrElse((_: InternalRow) => true)
           new RowIterator {
             private[this] var currentLeftRow: InternalRow = _
-            private[this] val smjScanner = new SortMergeJoinScanner(
+            private[this] val smjScanner = createScanner(
               createLeftKeyGenerator(),
               createRightKeyGenerator(),
-              keyOrdering,
               RowIterator.fromScala(leftIter),
               RowIterator.fromScala(rightIter),
-              inMemoryThreshold,
-              spillThreshold,
-              sizeInBytesSpillThreshold,
-              spillSize,
-              cleanupResources,
               onlyBufferFirstMatchedRow)
             private[this] val joinRow = new JoinedRow
 
@@ -269,7 +263,7 @@ class SortMergeJoinEvaluatorFactory(
                   return true
                 }
                 var found = false
-                val rightMatchesIterator = currentRightMatches.generateIterator()
+                val rightMatchesIterator = smjScanner.candidatesFor(currentLeftRow)
                 while (!found && rightMatchesIterator.hasNext) {
                   joinRow(currentLeftRow, rightMatchesIterator.next())
                   if (boundRest(joinRow)) {
@@ -297,17 +291,11 @@ class SortMergeJoinEvaluatorFactory(
           new RowIterator {
             private[this] var currentLeftRow: InternalRow = _
             private[this] val result: InternalRow = new GenericInternalRow(Array[Any](null))
-            private[this] val smjScanner = new SortMergeJoinScanner(
+            private[this] val smjScanner = createScanner(
               createLeftKeyGenerator(),
               createRightKeyGenerator(),
-              keyOrdering,
               RowIterator.fromScala(leftIter),
               RowIterator.fromScala(rightIter),
-              inMemoryThreshold,
-              spillThreshold,
-              sizeInBytesSpillThreshold,
-              spillSize,
-              cleanupResources,
               onlyBufferFirstMatchedRow)
             private[this] val joinRow = new JoinedRow
 
@@ -324,7 +312,7 @@ class SortMergeJoinEvaluatorFactory(
                 val currentRightMatches = smjScanner.getBufferedMatches
                 var found = false
                 if (currentRightMatches != null && currentRightMatches.length > 0) {
-                  val rightMatchesIterator = currentRightMatches.generateIterator()
+                  val rightMatchesIterator = smjScanner.candidatesFor(currentLeftRow)
                   while (!found && rightMatchesIterator.hasNext) {
                     joinRow(currentLeftRow, rightMatchesIterator.next())
                     if (boundRest(joinRow)) {
