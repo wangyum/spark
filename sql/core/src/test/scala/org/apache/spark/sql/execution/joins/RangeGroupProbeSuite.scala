@@ -142,6 +142,28 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     }
   }
 
+  test("build skips the index for a group one row short of the threshold") {
+    withRowArray(inMemoryRows = 1000, totalRows = 9) { (array, tc) =>
+      assert(!array.isSpillBacked, "test setup must keep this array in-memory")
+      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager())
+      val handle = RangeGroupProbe.build(array, pointInRangeSpec(threshold = 10), consumer)
+      assert(handle == null,
+        "a group of threshold - 1 rows must fall back to a linear scan")
+    }
+  }
+
+  test("build indexes a group exactly at the threshold") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
+      assert(!array.isSpillBacked, "test setup must keep this array in-memory")
+      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager())
+      // The config's doc says "minimum ... row count", so a group of exactly `threshold` rows
+      // (not threshold + 1) must already be eligible.
+      val handle = RangeGroupProbe.build(array, pointInRangeSpec(threshold = 10), consumer)
+      assert(handle != null, "a group of exactly threshold rows must be indexed")
+      RangeGroupProbe.release(handle, consumer)
+    }
+  }
+
   test("build indexes an in-memory group above the row threshold and probes correctly") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
       assert(!array.isSpillBacked, "test setup must keep this array in-memory")

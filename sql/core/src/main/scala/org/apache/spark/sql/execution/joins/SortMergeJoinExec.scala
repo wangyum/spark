@@ -268,10 +268,10 @@ case class SortMergeJoinExec(
         val fallbackMetric = metricTerm(ctx, "numRangeIndexFallbackGroups")
         // Construct the session eagerly (mirroring SortMergeJoinScanner's interpreted-path
         // probeSession) rather than lazily on first group build: createIterator below calls
-        // candidates() unconditionally for every streamed row, including rows with no buffered
-        // match at all (e.g. LeftOuter/LeftAnti/ExistenceJoin's eager-return-on-no-match path),
-        // which would NPE on a still-null session if construction were deferred until the first
-        // non-empty group.
+        // onProbe()/currentRelationOrNull() unconditionally for every streamed row, including
+        // rows with no buffered match at all (e.g. LeftOuter/LeftAnti/ExistenceJoin's
+        // eager-return-on-no-match path), which would NPE on a still-null session if
+        // construction were deferred until the first non-empty group.
         val sessionTerm = ctx.addMutableState(sessionCls, "probeSession",
           v => s"$v = new $sessionCls($specTerm, $indexedMetric, $fallbackMetric);",
           forceInline = true)
@@ -603,8 +603,10 @@ case class SortMergeJoinExec(
     // evaluated directly into generated locals (primitive `long` or boxed `Object`, matching
     // the index's key family) and a direct call to the concrete index class, decided statically
     // here since `rangeProbeSpec`'s index kind and key family are fixed for the life of the
-    // plan. `currentRelationOrNull` is null exactly when a group fell back to a linear scan
-    // (below threshold, over budget, or spilled); that case keeps today's behavior unchanged.
+    // plan. `onProbe` builds the index lazily, deferred until a second probe of the same group
+    // confirms it is reused; `currentRelationOrNull` is null until then, or when a group fell
+    // back to a linear scan (below threshold, over budget, spilled, or evicted under memory
+    // pressure); that case keeps today's behavior unchanged.
     val createIterator = probeSessionTerm match {
       case Some(sessionTerm) =>
         val spec = rangeProbeSpec.get
@@ -614,6 +616,7 @@ case class SortMergeJoinExec(
         val candidateExpr = RangeIndexProbeCodegen.genCandidateExpr(
           ctx, relVar, spec.mode.indexKind, spec.usesLongKeys, spec.pointScan, keys)
         s"""
+           |$sessionTerm.onProbe($matches);
            |${classOf[RangeRelation].getName} $relVar = $sessionTerm.currentRelationOrNull();
            |scala.collection.Iterator $iterator;
            |if ($relVar != null) {

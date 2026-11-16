@@ -487,6 +487,22 @@ final case class GreaterPartialRangeJoin(override val strict: Boolean) extends P
 object ExtractRangeJoinKeys extends PredicateHelper {
   type ReturnType = (Seq[Expression], Seq[Expression], RangeJoinKind)
 
+  def unapply(plan: LogicalPlan): Option[ReturnType] = plan match {
+    case Join(left, right, _, Some(condition), _) =>
+      val predicates = splitConjunctivePredicates(condition)
+      val rangePreds = predicates.collect {
+        case RangePredicate(dt, low, high, strict) if supportedType(dt) => (dt, low, high, strict)
+      }
+      if (rangePreds.isEmpty) {
+        None
+      } else {
+        pointInRange(rangePreds, left, right)
+          .orElse(intervalOverlap(rangePreds, left, right))
+          .orElse(partialRange(rangePreds, left, right))
+      }
+    case _ => None
+  }
+
   /**
    * Recognize a range shape in a residual join condition given child outputs, for physical
    * operators that already fixed the equi-keys and only need the range predicate extracted.
@@ -502,22 +518,6 @@ object ExtractRangeJoinKeys extends PredicateHelper {
       Some(condition),
       JoinHint.NONE)
     unapply(synthetic)
-  }
-
-  def unapply(plan: LogicalPlan): Option[ReturnType] = plan match {
-    case Join(left, right, _, Some(condition), _) =>
-      val predicates = splitConjunctivePredicates(condition)
-      val rangePreds = predicates.collect {
-        case RangePredicate(dt, low, high, strict) if supportedType(dt) => (dt, low, high, strict)
-      }
-      if (rangePreds.isEmpty) {
-        None
-      } else {
-        pointInRange(rangePreds, left, right)
-          .orElse(intervalOverlap(rangePreds, left, right))
-          .orElse(partialRange(rangePreds, left, right))
-      }
-    case _ => None
   }
 
   /**

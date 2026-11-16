@@ -202,6 +202,21 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
       expectFallback = true)
   }
 
+  test("sort merge join falls back to a linear scan when maxRows is exceeded") {
+    // Unlike the spill-triggered fallback test above, this drives the fallback through
+    // SORT_MERGE_JOIN_RANGE_INDEX_MAX_ROWS end to end (via SortMergeJoinExec/codegen), rather
+    // than only unit-testing RangeGroupProbe.build directly as RangeGroupProbeSuite does.
+    val events = largeGroupEvents()
+    val spans = largeGroupSpans()
+    val cond = pointCond(events, spans)
+    val maxRowsConfigs = smjConfigs :+
+      (SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_MAX_ROWS.key -> (largeGroupSize - 1).toString)
+    checkAgainstBaseline(
+      events.hint("merge").join(spans.hint("merge"), cond),
+      maxRowsConfigs,
+      expectFallback = true)
+  }
+
   test("sort merge point-in-range inner join engages index (buffered spans)") {
     val events = largeGroupEvents()
     val spans = largeGroupSpans()
@@ -222,45 +237,41 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
     val events = largeGroupEvents()
     val spans = largeGroupSpans()
     val cond = pointCond(events, spans)
-    checkAgainstBaseline(
-      events.hint("merge").join(spans.hint("merge"), cond, "left"),
-      smjConfigs,
-      expectIndexed = true)
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond, "left")
+    checkAgainstBaseline(joined, smjConfigs, expectIndexed = true)
+    assertDirectIndexProbe(joined, classOf[LongIntervalIndex])
   }
 
   test("sort merge point-in-range right outer join engages the index for a large group") {
     val events = largeGroupEvents()
     val spans = largeGroupSpans()
     val cond = pointCond(events, spans)
-    checkAgainstBaseline(
-      spans.hint("merge").join(events.hint("merge"), cond, "right"),
-      smjConfigs,
-      expectIndexed = true)
+    def joined: DataFrame = spans.hint("merge").join(events.hint("merge"), cond, "right")
+    checkAgainstBaseline(joined, smjConfigs, expectIndexed = true)
+    assertDirectIndexProbe(joined, classOf[LongIntervalIndex])
   }
 
   test("sort merge point-in-range left semi join engages the index for a large group") {
     val events = largeGroupEvents()
     val spans = largeGroupSpans()
     val cond = pointCond(events, spans)
-    // Pass the join expression inline rather than through an intermediate val: `joined` is a
-    // by-name parameter of checkAgainstBaseline, and a pre-built Dataset would memoize its
-    // executedPlan (and the rangeProbeSpec lazily resolved from the FIRST conf under which the
-    // plan was built) on first access, reusing the baseline (index-disabled) plan instance even
-    // after the conf is flipped back to enabled.
-    checkAgainstBaseline(
-      events.hint("merge").join(spans.hint("merge"), cond, "leftsemi"),
-      smjConfigs,
-      expectIndexed = true)
+    // `joined` is a `def` rather than an intermediate val: `joined` is a by-name parameter of
+    // checkAgainstBaseline, and a pre-built Dataset would memoize its executedPlan (and the
+    // rangeProbeSpec lazily resolved from the FIRST conf under which the plan was built) on
+    // first access, reusing the baseline (index-disabled) plan instance even after the conf is
+    // flipped back to enabled.
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond, "leftsemi")
+    checkAgainstBaseline(joined, smjConfigs, expectIndexed = true)
+    assertDirectIndexProbe(joined, classOf[LongIntervalIndex])
   }
 
   test("sort merge point-in-range left anti join engages the index for a large group") {
     val events = largeGroupMisses()
     val spans = largeGroupSpans()
     val cond = pointCond(events, spans)
-    checkAgainstBaseline(
-      events.hint("merge").join(spans.hint("merge"), cond, "leftanti"),
-      smjConfigs,
-      expectIndexed = true)
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond, "leftanti")
+    checkAgainstBaseline(joined, smjConfigs, expectIndexed = true)
+    assertDirectIndexProbe(joined, classOf[LongIntervalIndex])
   }
 
   test("sort merge existence join engages the index for a large group") {
@@ -294,7 +305,9 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
       assert(collectSortMergeJoin(plan).exists(_.joinType.isInstanceOf[ExistenceJoin]),
         s"expected the plan to use an ExistenceJoin sort-merge join:\n$plan")
     }
-    checkAgainstBaseline(spark.sql(existsQuery), smjConfigs, expectIndexed = true)
+    def joined: DataFrame = spark.sql(existsQuery)
+    checkAgainstBaseline(joined, smjConfigs, expectIndexed = true)
+    assertDirectIndexProbe(joined, classOf[LongIntervalIndex])
   }
 
   test("sort merge interval overlap inner join engages the index for a large group") {
@@ -309,8 +322,11 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
       s"(id div $equiKeyBuckets) * $rangeSpanWidth + 15 as ahi")
     val cond = events("e_id") === spans("s_id") &&
       events("alo") <= spans("bhi") && spans("blo") <= events("ahi")
-    checkAgainstBaseline(
-      events.hint("merge").join(spans.hint("merge"), cond), smjConfigs, expectIndexed = true)
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond)
+    checkAgainstBaseline(joined, smjConfigs, expectIndexed = true)
+    // Two range keys per side (alo/ahi vs blo/bhi), unlike the point-in-range tests' single
+    // probe key: exercises genCandidateExpr's two-key `else` branch in RangeIndexProbeCodegen.
+    assertDirectIndexProbe(joined, classOf[LongIntervalIndex])
   }
 
   test("sort merge partial < inner join engages the index for a large group") {
@@ -337,6 +353,28 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
     val cond = events("e_id") === spans("s_id") && events("e_a") > spans("s_b")
     checkAgainstBaseline(
       events.hint("merge").join(spans.hint("merge"), cond), smjConfigs, expectIndexed = true)
+  }
+
+  test("sort merge partial < right outer join engages the index for a large group " +
+    "(buffered side is physically left, i.e. BuildLeft)") {
+    // RightOuter is the only join type whose buffered side is the physical left child
+    // (SortMergeJoinExec.buildSide == BuildLeft). PointScan.forJoin's `isLower` computation
+    // (`partial.leftIsLower == (buildSide == BuildLeft)`) is otherwise only ever exercised
+    // with buildSide == BuildRight by the Inner-join partial-range tests above; passing `spans`
+    // as the left argument to `.join` and `events` as the right, with "right" as the join type,
+    // puts the buffered side (spans) on the physical left and exercises that branch.
+    val n = equiKeyBuckets.toLong * largeGroupSize
+    val spans = spark.range(n).selectExpr(
+      s"id % $equiKeyBuckets as s_id",
+      s"id div $equiKeyBuckets as s_b")
+    val events = spark.range(n).selectExpr(
+      s"id % $equiKeyBuckets as e_id",
+      s"(id div $equiKeyBuckets) - 1 as e_a")
+    val cond = events("e_id") === spans("s_id") && events("e_a") < spans("s_b")
+    checkAgainstBaseline(
+      spans.hint("merge").join(events.hint("merge"), cond, "right"),
+      smjConfigs,
+      expectIndexed = true)
   }
 
   /**
