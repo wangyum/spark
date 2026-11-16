@@ -593,9 +593,30 @@ case class SortMergeJoinExec(
 
     val existsVarDecl = existsVar.map(v => s"boolean $v = false;").getOrElse("")
 
+    // When a range index is in play, probe it the same way BroadcastRangeJoinExec does: keys
+    // evaluated directly into generated locals (primitive `long` or boxed `Object`, matching
+    // the index's key family) and a direct call to the concrete index class, decided statically
+    // here since `rangeProbeSpec`'s index kind and key family are fixed for the life of the
+    // plan. `currentRelationOrNull` is null exactly when a group fell back to a linear scan
+    // (below threshold, over budget, or spilled); that case keeps today's behavior unchanged.
     val createIterator = probeSessionTerm match {
       case Some(sessionTerm) =>
-        s"scala.collection.Iterator $iterator = $sessionTerm.candidates($matches, $streamedRow);"
+        val spec = rangeProbeSpec.get
+        val relVar = ctx.freshName("rangeRelation")
+        val keys = RangeIndexProbeCodegen.genProbeKeys(
+          ctx, streamedVars, spec.boundStreamKeys, spec.usesLongKeys)
+        val candidateExpr = RangeIndexProbeCodegen.genCandidateExpr(
+          ctx, relVar, spec.mode.indexKind, spec.usesLongKeys, spec.pointScan, keys)
+        s"""
+           |${classOf[RangeRelation].getName} $relVar = $sessionTerm.currentRelationOrNull();
+           |scala.collection.Iterator $iterator;
+           |if ($relVar != null) {
+           |  ${keys.code}
+           |  $iterator = $candidateExpr;
+           |} else {
+           |  $iterator = $matches.generateIterator();
+           |}
+         """.stripMargin
       case None =>
         s"scala.collection.Iterator<UnsafeRow> $iterator = $matches.generateIterator();"
     }

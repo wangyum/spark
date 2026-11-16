@@ -49,6 +49,14 @@ private[joins] object RangeGroupProbe {
       val maxBytes: Long) extends Serializable {
 
     /**
+     * Whether the build keys map to one order-preserving long (`RangeIndex.longKey`), fixed
+     * for the life of the plan. Computed once here instead of per group build, and consulted
+     * by codegen (`RangeIndexProbeCodegen`) to pick the concrete index class and key encoding
+     * without re-deriving it from `mode.buildKeys` on every probe.
+     */
+    val usesLongKeys: Boolean = RangeIndex.canMapKeysToLong(mode.buildKeys)
+
+    /**
      * A cheap pre-admission estimate used to reserve memory before the index is built (the
      * real footprint, `RangeRelation.estimatedSize`, only exists once the relation has been
      * constructed). `build()` trues this up against the real size afterward.
@@ -114,6 +122,15 @@ private[joins] object RangeGroupProbe {
         matches.generateIterator()
       }
     }
+
+    /**
+     * The current group's materialized index, or `null` when the group fell back to a linear
+     * scan (below `threshold`, over a row/byte budget, or buffered-side spilled). Used by
+     * `SortMergeJoinExec`'s whole-stage codegen to generate a direct, specialized probe call
+     * via `RangeIndexProbeCodegen` instead of going through `candidates`' interpreted dispatch.
+     */
+    def currentRelationOrNull: RangeRelation =
+      if (currentHandle != null) currentHandle.relation else null
 
     def resetGroup(): Unit = {
       if (currentHandle != null) {

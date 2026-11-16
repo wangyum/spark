@@ -281,75 +281,6 @@ case class BroadcastRangeJoinExec(
   }
 
   /**
-   * Box each streamed range key. The index compares the same boxed values
-   * each build key expression evaluates to on the build side.
-   */
-  private def genProbeKeys(
-      ctx: CodegenContext,
-      input: Seq[ExprCode]): (String, Seq[String]) = {
-    ctx.currentVars = input
-    val keys = streamedKeys.map { key =>
-      val bound = BindReferences.bindReference(key, streamed.output)
-      val ev = bound.genCode(ctx)
-      val name = ctx.freshName("probeKey")
-      val javaType = CodeGenerator.javaType(key.dataType)
-      val boxed = CodeGenerator.boxedType(key.dataType)
-      val valueExpr = if (javaType == boxed) {
-        s"${ev.value}"
-      } else {
-        s"$boxed.valueOf(${ev.value})"
-      }
-      val code =
-        s"""
-           |${ev.code}
-           |Object $name = ${ev.isNull} ? null : $valueExpr;
-         """.stripMargin
-      (code, name)
-    }
-    (keys.map(_._1).mkString("\n"), keys.map(_._2))
-  }
-
-  /**
-   * Probe the broadcast index. The index kind and scan direction are fixed
-   * when the plan is built, so generated code calls the concrete index
-   * method directly. Keys either stay boxed per `genProbeKeys`, or arrive as
-   * primitive longs from `genLongProbeKeys` with a null term each that the
-   * long indexes cannot see; the call then yields the shared empty scan for
-   * a null key. Generated code does not allocate a key array. An interval
-   * probe owns its walk stack.
-   */
-  private def genCandidateIterator(
-      ctx: CodegenContext,
-      relationTerm: String,
-      keyVars: Seq[String],
-      nullVars: Seq[String]): (String, String) = {
-    val matches = ctx.freshName("matches")
-    val iterCls = classOf[Iterator[InternalRow]].getName
-    // Dispatches on RangeIndexKind, the same source `requiredChildDistribution` uses to
-    // decide which structure got built, instead of re-deriving "point or interval" from
-    // rangeJoinKind a second time.
-    val call = RangeIndexKind(rangeJoinKind) match {
-      case PointIndexKind =>
-        val points = (if (usesLongKeys) classOf[LongPointIndex] else classOf[PointIndex]).getName
-        val (scan, strict) = pointScan
-        s"(($points) $relationTerm).${scan.methodName}(${keyVars.head}, $strict)"
-      case IntervalIndexKind =>
-        val intervals =
-          (if (usesLongKeys) classOf[LongIntervalIndex] else classOf[IntervalIndex]).getName
-        // A point probe has one key. Reuse it as both ends so it is evaluated once.
-        val high = if (keyVars.length == 1) keyVars.head else keyVars(1)
-        s"(($intervals) $relationTerm).overlapping(${keyVars.head}, $high)"
-    }
-    val code = if (nullVars.isEmpty) {
-      s"$iterCls $matches = $call;"
-    } else {
-      val emptyScan = s"${classOf[RowSlice].getName}$$.MODULE$$.empty()"
-      s"$iterCls $matches = ${nullVars.mkString(" || ")} ? ($iterCls) $emptyScan : $call;"
-    }
-    (matches, code)
-  }
-
-  /**
    * Keys that map to one order-preserving long (`RangeIndex.longKey`) route
    * to the long indexes: build and probe keys then cross as raw longs, with
    * no boxing on either side, and every other supported key stays boxed.
@@ -359,42 +290,22 @@ case class BroadcastRangeJoinExec(
   private[this] lazy val usesLongKeys: Boolean = RangeIndex.canMapKeysToLong(buildKeys)
 
   /**
-   * Evaluate each streamed key into a primitive long. Each key keeps the null
-   * term of its expression; the candidate call turns a null into an empty scan.
-   */
-  private def genLongProbeKeys(
-      ctx: CodegenContext,
-      input: Seq[ExprCode]): (String, Seq[String], Seq[String]) = {
-    ctx.currentVars = input
-    val keys = streamedKeys.map { key =>
-      val bound = BindReferences.bindReference(key, streamed.output)
-      val ev = bound.genCode(ctx)
-      val toLong = RangeIndex.requiredLongKey(key.dataType)
-      val name = ctx.freshName("probeKey")
-      val code =
-        s"""
-           |${ev.code}
-           |long $name = ${ev.isNull} ? 0L : ${toLong.code(ev.value)};
-         """.stripMargin
-      (code, name, ev.isNull)
-    }
-    (keys.map(_._1).mkString("\n"), keys.map(_._2), keys.map(_._3))
-  }
-
-  /**
    * Shared init for every doConsume path: broadcasts the relation, evaluates the
-   * streamed probe keys, and opens the candidate iterator over it.
+   * streamed probe keys, and opens the candidate iterator over it. The index kind and
+   * scan direction are fixed when the plan is built, so `RangeIndexProbeCodegen` generates
+   * code that calls the concrete index method directly; see its documentation for how keys
+   * are evaluated and how a null key becomes an empty scan.
    */
   private def prepareProbe(ctx: CodegenContext, input: Seq[ExprCode]): (String, String, String) = {
     val relationTerm = prepareBroadcast(ctx)
-    val (keyCode, keyVars, nullVars) = if (usesLongKeys) {
-      genLongProbeKeys(ctx, input)
-    } else {
-      val (code, vars) = genProbeKeys(ctx, input)
-      (code, vars, Nil)
-    }
-    val (matches, iteratorCode) = genCandidateIterator(ctx, relationTerm, keyVars, nullVars)
-    (keyCode, iteratorCode, matches)
+    val boundStreamedKeys = BindReferences.bindReferences(streamedKeys, streamed.output)
+    val keys = RangeIndexProbeCodegen.genProbeKeys(ctx, input, boundStreamedKeys, usesLongKeys)
+    val candidateExpr = RangeIndexProbeCodegen.genCandidateExpr(
+      ctx, relationTerm, RangeIndexKind(rangeJoinKind), usesLongKeys, pointScan, keys)
+    val matches = ctx.freshName("matches")
+    val iterCls = classOf[Iterator[InternalRow]].getName
+    val iteratorCode = s"$iterCls $matches = $candidateExpr;"
+    (keys.code, iteratorCode, matches)
   }
 
   private def orderResultVars(

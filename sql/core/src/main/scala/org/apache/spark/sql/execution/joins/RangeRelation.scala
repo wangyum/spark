@@ -27,6 +27,7 @@ import com.esotericsoftware.kryo.io.{Input, Output}
 import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
+import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, CodeGenerator, ExprCode}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildSide}
 import org.apache.spark.sql.catalyst.planning.{IntervalOverlapJoin, PartialRangeJoin, PointInRangeJoin, RangeJoinKind}
 import org.apache.spark.sql.catalyst.plans.physical.BroadcastMode
@@ -1378,6 +1379,108 @@ private[joins] object RangeRelationProbe {
         row =>
           val low = lowExpr.eval(row)
           if (low == null) Iterator.empty else scan(low)
+    }
+  }
+}
+
+/**
+ * Shared whole-stage codegen for probing a [[RangeRelation]], used by both
+ * [[BroadcastRangeJoinExec]] (one relation per plan) and [[SortMergeJoinExec]]'s per-equi-key-
+ * group range index (one relation per group, type fixed for the life of the plan). Both callers
+ * know the concrete index class and key family statically at codegen time
+ * ([[RangeIndexKind]] plus whether the build keys map to one order-preserving long, see
+ * [[RangeIndex.longKey]]), so generated code can cast directly to it and call its scan method,
+ * with probe keys evaluated into primitive `long` locals for the long-keyed families and boxed
+ * `Object` locals otherwise - mirroring [[RangeRelationProbe.makeCandidateFn]]'s interpreted
+ * dispatch, but without a closure or per-row boxing on the long-keyed path.
+ */
+private[joins] object RangeIndexProbeCodegen {
+
+  /** Generated probe-key evaluation: setup code plus one local variable name per key. */
+  final case class ProbeKeys(code: String, keyVars: Seq[String], nullVars: Seq[String])
+
+  /**
+   * Evaluate `boundKeys` (already bound to the producing side's output, with `ctx.currentVars`
+   * set to `inputVars` matching that output) into generated locals. `usesLongKeys` selects
+   * primitive `long` locals, converted via [[RangeIndex.longKey]]'s generated code and null-
+   * tracked in `nullVars` (a primitive `long` has no null to carry through), or boxed `Object`
+   * locals whose null case is encoded as a Java `null` the index method itself treats as
+   * "no candidates" - so `nullVars` is empty for the boxed family.
+   */
+  def genProbeKeys(
+      ctx: CodegenContext,
+      inputVars: Seq[ExprCode],
+      boundKeys: Seq[Expression],
+      usesLongKeys: Boolean): ProbeKeys = {
+    ctx.currentVars = inputVars
+    if (usesLongKeys) {
+      val keys = boundKeys.map { bound =>
+        val ev = bound.genCode(ctx)
+        val toLong = RangeIndex.requiredLongKey(bound.dataType)
+        val name = ctx.freshName("probeKey")
+        val code =
+          s"""
+             |${ev.code}
+             |long $name = ${ev.isNull} ? 0L : ${toLong.code(ev.value)};
+           """.stripMargin
+        (code, name, ev.isNull.toString)
+      }
+      ProbeKeys(keys.map(_._1).mkString("\n"), keys.map(_._2), keys.map(_._3))
+    } else {
+      val keys = boundKeys.map { bound =>
+        val ev = bound.genCode(ctx)
+        val name = ctx.freshName("probeKey")
+        val javaType = CodeGenerator.javaType(bound.dataType)
+        val boxed = CodeGenerator.boxedType(bound.dataType)
+        val valueExpr = if (javaType == boxed) {
+          s"${ev.value}"
+        } else {
+          s"$boxed.valueOf(${ev.value})"
+        }
+        val code =
+          s"""
+             |${ev.code}
+             |Object $name = ${ev.isNull} ? null : $valueExpr;
+           """.stripMargin
+        (code, name)
+      }
+      ProbeKeys(keys.map(_._1).mkString("\n"), keys.map(_._2), Nil)
+    }
+  }
+
+  /**
+   * The Java expression that probes `relationTerm` - already known at codegen time to be an
+   * instance of the concrete class `indexKind`/`usesLongKeys` selects - and yields a
+   * `scala.collection.Iterator`. Returns only the expression, not a declaration: callers decide
+   * whether to declare a new variable or assign into one already declared (e.g. inside an
+   * `if`/`else` branch). `pointScan` is by-name so it is only forced for a [[PointIndexKind]]
+   * probe.
+   */
+  def genCandidateExpr(
+      ctx: CodegenContext,
+      relationTerm: String,
+      indexKind: RangeIndexKind,
+      usesLongKeys: Boolean,
+      pointScan: => (PointScan, Boolean),
+      keys: ProbeKeys): String = {
+    val call = indexKind match {
+      case PointIndexKind =>
+        val points = (if (usesLongKeys) classOf[LongPointIndex] else classOf[PointIndex]).getName
+        val (scan, strict) = pointScan
+        s"(($points) $relationTerm).${scan.methodName}(${keys.keyVars.head}, $strict)"
+      case IntervalIndexKind =>
+        val intervals =
+          (if (usesLongKeys) classOf[LongIntervalIndex] else classOf[IntervalIndex]).getName
+        // A point probe has one key. Reuse it as both ends so it is evaluated once.
+        val high = if (keys.keyVars.length == 1) keys.keyVars.head else keys.keyVars(1)
+        s"(($intervals) $relationTerm).overlapping(${keys.keyVars.head}, $high)"
+    }
+    if (keys.nullVars.isEmpty) {
+      call
+    } else {
+      val iterCls = classOf[Iterator[InternalRow]].getName
+      val emptyScan = s"${classOf[RowSlice].getName}$$.MODULE$$.empty()"
+      s"${keys.nullVars.mkString(" || ")} ? ($iterCls) $emptyScan : $call"
     }
   }
 }

@@ -19,7 +19,7 @@ package org.apache.spark.sql.execution.joins
 
 import org.apache.spark.sql.{DataFrame, QueryTest}
 import org.apache.spark.sql.catalyst.plans.ExistenceJoin
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
 
@@ -43,6 +43,13 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
 
   private def collectSortMergeJoin(plan: SparkPlan): Seq[SortMergeJoinExec] =
     plan.collect { case j: SortMergeJoinExec => j }
+
+  /** The generated Java source for every whole-stage codegen stage in `df`'s plan. */
+  private def generatedCode(df: DataFrame): String = {
+    df.queryExecution.executedPlan.collect {
+      case stage: WholeStageCodegenExec => stage.doCodeGen()._2.body
+    }.mkString("\n")
+  }
 
   /**
    * Checks `joined` against a range-index-disabled baseline across codegen on and off.
@@ -111,6 +118,37 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
   private def pointCond(events: DataFrame, spans: DataFrame) =
     events("e_id") === spans("s_id") &&
       events("event_pt") >= spans("lo") && events("event_pt") <= spans("hi")
+
+  // Zero-padded string columns: `RangeIndex.longKey` has no order-preserving long encoding for
+  // strings, so these route to the boxed `IntervalIndex`/`PointIndex` family instead of the
+  // long-keyed `LongIntervalIndex`/`LongPointIndex` family every other test above exercises.
+  // Zero-padding keeps string ordering consistent with the underlying numeric ordering.
+  private def largeGroupSpansString(): DataFrame =
+    spark.range(equiKeyBuckets.toLong * largeGroupSize).selectExpr(
+      s"id % $equiKeyBuckets as s_id",
+      s"lpad(cast((id div $equiKeyBuckets) * $rangeSpanWidth as string), 6, '0') as lo",
+      s"lpad(cast((id div $equiKeyBuckets) * $rangeSpanWidth + ${rangeSpanWidth - 1} " +
+        s"as string), 6, '0') as hi")
+
+  private def largeGroupEventsString(): DataFrame =
+    spark.range(equiKeyBuckets.toLong * largeGroupSize).selectExpr(
+      s"id % $equiKeyBuckets as e_id",
+      s"lpad(cast(((id div $equiKeyBuckets) % $largeGroupSize) * $rangeSpanWidth + " +
+        s"${rangeSpanWidth / 2} as string), 6, '0') as event_pt")
+
+  // String-keyed partial-range builders (boxed PointIndex family). Uses `+ 1` rather than the
+  // Long partial-range test's `- 1` so every value stays non-negative: lpad pads a negative
+  // number's string form (e.g. "-1") on the left with zeros, which does not preserve numeric
+  // ordering.
+  private def largeGroupSpansStringPartial(): DataFrame =
+    spark.range(equiKeyBuckets.toLong * largeGroupSize).selectExpr(
+      s"id % $equiKeyBuckets as s_id",
+      s"lpad(cast(id div $equiKeyBuckets as string), 6, '0') as s_b")
+
+  private def largeGroupEventsStringPartial(): DataFrame =
+    spark.range(equiKeyBuckets.toLong * largeGroupSize).selectExpr(
+      s"id % $equiKeyBuckets as e_id",
+      s"lpad(cast((id div $equiKeyBuckets) + 1 as string), 6, '0') as e_a")
 
   test("sort merge range join keeps whole-stage codegen when range index is enabled") {
     val events = spark.range(0, 5, 1, 1)
@@ -299,6 +337,68 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
     val cond = events("e_id") === spans("s_id") && events("e_a") > spans("s_b")
     checkAgainstBaseline(
       events.hint("merge").join(spans.hint("merge"), cond), smjConfigs, expectIndexed = true)
+  }
+
+  /**
+   * Asserts that whole-stage codegen probes `relationClass` directly (a cast-and-call spliced
+   * into generated code by `RangeIndexProbeCodegen`), not through the interpreted
+   * `RangeGroupProbe.Session.candidates` dispatch, and that the linear-scan fallback branch
+   * (`matches.generateIterator()`) is still present alongside it for groups that don't qualify
+   * for indexing. Fully-qualified class names are used (not simple names) so e.g. `PointIndex`
+   * cannot accidentally match inside `LongPointIndex`.
+   */
+  private def assertDirectIndexProbe(joined: => DataFrame, relationClass: Class[_]): Unit = {
+    withSQLConf(smjConfigs :+ SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true": _*) {
+      val code = generatedCode(joined)
+      assert(code.contains(s"(${relationClass.getName})"),
+        s"expected a direct cast to ${relationClass.getName} in generated code:\n$code")
+      assert(!code.contains(".candidates("),
+        s"expected no interpreted Session.candidates dispatch in generated code:\n$code")
+      assert(code.contains(".generateIterator()"),
+        s"expected the linear-scan fallback branch to still be generated:\n$code")
+    }
+  }
+
+  test("sort merge point-in-range inner join generates a direct LongIntervalIndex probe") {
+    val events = largeGroupEvents()
+    val spans = largeGroupSpans()
+    val cond = pointCond(events, spans)
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond)
+    checkAgainstBaseline(joined, smjConfigs, expectIndexed = true)
+    assertDirectIndexProbe(joined, classOf[LongIntervalIndex])
+  }
+
+  test("sort merge partial < inner join generates a direct LongPointIndex probe") {
+    val n = equiKeyBuckets.toLong * largeGroupSize
+    val spans = spark.range(n).selectExpr(
+      s"id % $equiKeyBuckets as s_id",
+      s"id div $equiKeyBuckets as s_b")
+    val events = spark.range(n).selectExpr(
+      s"id % $equiKeyBuckets as e_id",
+      s"(id div $equiKeyBuckets) - 1 as e_a")
+    val cond = events("e_id") === spans("s_id") && events("e_a") < spans("s_b")
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond)
+    checkAgainstBaseline(joined, smjConfigs, expectIndexed = true)
+    assertDirectIndexProbe(joined, classOf[LongPointIndex])
+  }
+
+  test("sort merge point-in-range inner join generates a direct IntervalIndex probe " +
+    "for string keys") {
+    val events = largeGroupEventsString()
+    val spans = largeGroupSpansString()
+    val cond = pointCond(events, spans)
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond)
+    checkAgainstBaseline(joined, smjConfigs, expectIndexed = true)
+    assertDirectIndexProbe(joined, classOf[IntervalIndex])
+  }
+
+  test("sort merge partial > inner join generates a direct PointIndex probe for string keys") {
+    val spans = largeGroupSpansStringPartial()
+    val events = largeGroupEventsStringPartial()
+    val cond = events("e_id") === spans("s_id") && events("e_a") > spans("s_b")
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond)
+    checkAgainstBaseline(joined, smjConfigs, expectIndexed = true)
+    assertDirectIndexProbe(joined, classOf[PointIndex])
   }
 
   test("sort merge join nodeName reports rangeIndex=true and stacks after skew=true") {
