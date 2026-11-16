@@ -20,6 +20,7 @@ package org.apache.spark.sql.execution.joins
 import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.TaskContext
+import org.apache.spark.memory.MemoryConsumer
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
@@ -202,7 +203,7 @@ case class SortMergeJoinExec(
    * 2. the term for matched one row from streamed side
    * 3. the term for buffered rows from buffered side
    */
-  private def genScanner(ctx: CodegenContext): (String, String, String) = {
+  private def genScanner(ctx: CodegenContext): (String, String, String, Option[String]) = {
     // Create class member for next row from both sides.
     // Inline mutable state since not many join operations in a task
     val streamedRow = ctx.addMutableState("InternalRow", "streamedRow", forceInline = true)
@@ -240,6 +241,52 @@ case class SortMergeJoinExec(
     // Copy the streamed keys as class members so they could be used in next function call.
     val matchedKeyVars = copyKeys(ctx, streamedKeyVars)
 
+    val (groupProbeTerm: Option[String], rangeProbeBuildCode: String,
+        rangeProbeClearCode: String) = rangeProbeSpec match {
+      case Some(spec) =>
+        val probeCls = classOf[RangeGroupProbe.Handle].getName
+        val consumerCls = classOf[RangeIndexMemoryConsumer].getName
+        val probeTerm = ctx.addMutableState(probeCls, "groupProbe", forceInline = true)
+        val helperCls = RangeGroupProbe.getClass.getName.stripSuffix("$")
+        val consumerTerm = ctx.addMutableState(consumerCls, "rangeConsumer",
+          v =>
+            s"""
+               |$v = (org.apache.spark.TaskContext.get() != null) ?
+               |  new $consumerCls(org.apache.spark.TaskContext.get().taskMemoryManager()) : null;
+               |if (org.apache.spark.TaskContext.get() != null) {
+               |  org.apache.spark.TaskContext.get().addTaskCompletionListener(
+               |    new org.apache.spark.util.TaskCompletionListener() {
+               |      @Override
+               |      public void onTaskCompletion(org.apache.spark.TaskContext context) {
+               |        if ($probeTerm != null) {
+               |          $helperCls.release($probeTerm, context.taskMemoryManager(), $v);
+               |          $probeTerm = null;
+               |        }
+               |      }
+               |    });
+               |}
+             """.stripMargin,
+          forceInline = true)
+        val specTerm = ctx.addReferenceObj("rangeProbeSpec", spec)
+        val tcExpr = "(org.apache.spark.TaskContext.get() != null) ? " +
+          "org.apache.spark.TaskContext.get().taskMemoryManager() : null"
+        val buildCode =
+          s"""
+             |$probeTerm = $helperCls.build($matches, $specTerm, $tcExpr, $consumerTerm);
+           """.stripMargin
+        val clearCode =
+          s"""
+             |if ($probeTerm != null) {
+             |  $helperCls.release($probeTerm, $tcExpr, $consumerTerm);
+             |  $probeTerm = null;
+             |}
+             |$matches.clear();
+           """.stripMargin
+        (Some(probeTerm), buildCode, clearCode)
+      case None =>
+        (None, "", s"$matches.clear();")
+    }
+
     // Handle the case when streamed rows has any NULL keys.
     val handleStreamedAnyNull = joinType match {
       case _: InnerLike | LeftSemi =>
@@ -253,7 +300,7 @@ case class SortMergeJoinExec(
         // false, to reduce unnecessary computation.
         s"""
            |if (!$matches.isEmpty()) {
-           |  $matches.clear();
+           |  $rangeProbeClearCode
            |}
            |return false;
          """.stripMargin
@@ -307,36 +354,6 @@ case class SortMergeJoinExec(
       ""
     }
 
-    // Generate a function to scan both streamed and buffered sides to find a match.
-    // Return whether a match is found.
-    //
-    // `streamedIter`: the iterator for streamed side.
-    // `bufferedIter`: the iterator for buffered side.
-    // `streamedRow`: the current row from streamed side.
-    //                When `streamedIter` is empty, `streamedRow` is null.
-    // `matches`: the rows from buffered side already matched with `streamedRow`.
-    //            `matches` is buffered and reused for all `streamedRow`s having same join keys.
-    //            If there is no match with `streamedRow`, `matches` is empty.
-    // `bufferedRow`: the current matched row from buffered side.
-    //
-    // The function has the following step:
-    //  - Step 1: Find the next `streamedRow` with non-null join keys.
-    //            For `streamedRow` with null join keys (`handleStreamedAnyNull`):
-    //            1. Inner and Left Semi join: skip the row. `matches` will be cleared later when
-    //                                         hitting the next `streamedRow` with non-null join
-    //                                         keys.
-    //            2. Left/Right Outer, Left Anti and Existence join: clear the previous `matches`
-    //                                                               if needed, keep the row, and
-    //                                                               return false.
-    //
-    //  - Step 2: Find the `matches` from buffered side having same join keys with `streamedRow`.
-    //            Clear `matches` if we hit a new `streamedRow`, as we need to find new matches.
-    //            Use `bufferedRow` to iterate buffered side to put all matched rows into
-    //            `matches` (`addRowToBuffer`). Return true when getting all matched rows.
-    //            For `streamedRow` without `matches` (`handleStreamedWithoutMatch`):
-    //            1. Inner and Left Semi join: skip the row.
-    //            2. Left/Right Outer, Left Anti and Existence join: keep the row and return false
-    //                                                               (with `matches` being empty).
     val findNextJoinRowsFuncName = ctx.freshName("findNextJoinRows")
     ctx.addNewFunction(findNextJoinRowsFuncName,
       s"""
@@ -355,13 +372,14 @@ case class SortMergeJoinExec(
          |      if (comp == 0) {
          |        return true;
          |      }
-         |      $matches.clear();
+         |      $rangeProbeClearCode
          |    }
          |
          |    do {
          |      if ($bufferedRow == null) {
          |        if (!bufferedIter.hasNext()) {
          |          ${matchedKeyVars.map(_.code).mkString("\n")}
+         |          $rangeProbeBuildCode
          |          return !$matches.isEmpty();
          |        }
          |        $bufferedRow = (InternalRow) bufferedIter.next();
@@ -375,6 +393,7 @@ case class SortMergeJoinExec(
          |      } else if (comp < 0) {
          |        if (!$matches.isEmpty()) {
          |          ${matchedKeyVars.map(_.code).mkString("\n")}
+         |          $rangeProbeBuildCode
          |          return true;
          |        } else {
          |          $handleStreamedWithoutMatch
@@ -389,7 +408,7 @@ case class SortMergeJoinExec(
          |}
        """.stripMargin, inlineToOuterClass = true)
 
-    (findNextJoinRowsFuncName, streamedRow, matches)
+    (findNextJoinRowsFuncName, streamedRow, matches, groupProbeTerm)
   }
 
   /**
@@ -468,7 +487,7 @@ case class SortMergeJoinExec(
     val bufferedInput = ctx.addMutableState("scala.collection.Iterator", "bufferedInput",
       v => s"$v = inputs[1];", forceInline = true)
 
-    val (findNextJoinRowsFuncName, streamedRow, matches) = genScanner(ctx)
+    val (findNextJoinRowsFuncName, streamedRow, matches, groupProbeTerm) = genScanner(ctx)
 
     // Create variables for row from both sides.
     val (streamedVars, streamedVarDecl) = createStreamedVars(ctx, streamedRow)
@@ -581,13 +600,21 @@ case class SortMergeJoinExec(
 
     val existsVarDecl = existsVar.map(v => s"boolean $v = false;").getOrElse("")
 
+    val createIterator = groupProbeTerm match {
+      case Some(probeTerm) =>
+        s"scala.collection.Iterator $iterator = ($probeTerm != null) ? " +
+          s"$probeTerm.candidates($streamedRow) : $matches.generateIterator();"
+      case None =>
+        s"scala.collection.Iterator<UnsafeRow> $iterator = $matches.generateIterator();"
+    }
+
     val beforeLoopWithoutGuard =
       s"""
          |${streamedVarDecl.mkString("\n")}
          |${streamedBeforeLoop.trim}
          |$streamedOnlyPre
          |$existsVarDecl
-         |scala.collection.Iterator<UnsafeRow> $iterator = $matches.generateIterator();
+         |$createIterator
        """.stripMargin
     val outputRow =
       s"""
@@ -1144,6 +1171,12 @@ private[joins] class SortMergeJoinScanner(
     eagerCleanupResources: () => Unit,
     onlyBufferFirstMatch: Boolean = false,
     rangeProbeSpec: Option[RangeGroupProbe.Spec] = None) {
+  private[this] val memoryConsumer: MemoryConsumer = if (rangeProbeSpec.isDefined) {
+    val tc = TaskContext.get()
+    if (tc != null) new RangeIndexMemoryConsumer(tc.taskMemoryManager()) else null
+  } else {
+    null
+  }
   private[this] var streamedRow: InternalRow = _
   private[this] var groupProbe: RangeGroupProbe.Handle = _
   private[this] var streamedRowKey: InternalRow = _
@@ -1167,6 +1200,7 @@ private[joins] class SortMergeJoinScanner(
   // At the end of the task, update the task's spill size for buffered side.
   TaskContext.get().addTaskCompletionListener[Unit](_ => {
     spillSize += bufferedMatches.spillSize
+    resetBufferedGroup()
   })
 
   // Initialization (note: do _not_ want to advance streamed here).
@@ -1180,16 +1214,15 @@ private[joins] class SortMergeJoinScanner(
 
   /** Buffered-side rows matching the streamed row, using a per-group range index when enabled. */
   def candidatesFor(streamedRow: InternalRow): Iterator[InternalRow] = {
-    if (groupProbe != null) {
-      RangeGroupProbe.candidates(groupProbe, streamedRow)
-    } else {
-      bufferedMatches.generateIterator()
-    }
+    RangeGroupProbe.candidates(groupProbe, bufferedMatches, streamedRow)
   }
 
   private def resetBufferedGroup(): Unit = {
-    bufferedMatches.clear()
+    val tc = TaskContext.get()
+    val tmm = if (tc != null) tc.taskMemoryManager() else null
+    RangeGroupProbe.release(groupProbe, tmm, memoryConsumer)
     groupProbe = null
+    bufferedMatches.clear()
   }
 
   /**
@@ -1347,7 +1380,9 @@ private[joins] class SortMergeJoinScanner(
       advancedBufferedToRowWithNullFreeJoinKey()
     } while (bufferedRow != null && keyOrdering.compare(streamedRowKey, bufferedRowKey) == 0)
     rangeProbeSpec.foreach { spec =>
-      groupProbe = RangeGroupProbe.build(bufferedMatches, spec)
+      val tc = TaskContext.get()
+      val tmm = if (tc != null) tc.taskMemoryManager() else null
+      groupProbe = RangeGroupProbe.build(bufferedMatches, spec, tmm, memoryConsumer)
     }
   }
 }

@@ -30,29 +30,43 @@ import org.apache.spark.sql.types.{DataType, LongType}
 class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
 
   private val streamId = AttributeReference("e_id", LongType)()
-  private val streamP = AttributeReference("e_p", LongType)()
+  private val streamLo = AttributeReference("lo", LongType)()
+  private val streamHi = AttributeReference("hi", LongType)()
   private val bufferId = AttributeReference("s_id", LongType)()
-  private val bufferLo = AttributeReference("lo", LongType)()
-  private val bufferHi = AttributeReference("hi", LongType)()
+  private val bufferP = AttributeReference("s_p", LongType)()
 
   private def pointInRangeSpec(threshold: Int): RangeGroupProbe.Spec = {
     val conf = new SQLConf
     conf.setConf(SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD, threshold)
-    val condition = Some(streamP >= bufferLo && streamP <= bufferHi)
+    val condition = Some(bufferP >= streamLo && bufferP <= streamHi)
     SortMergeJoinRangePhysical.createProbeSpec(
       condition,
       Inner,
       Seq(streamId),
       Seq(bufferId),
-      Seq(streamId, streamP),
-      Seq(bufferId, bufferLo, bufferHi),
+      Seq(streamId, streamLo, streamHi),
+      Seq(bufferId, bufferP),
       conf).getOrElse(fail("expected a recognized point-in-range spec"))
+  }
+
+  private def partialRangeSpec(threshold: Int): RangeGroupProbe.Spec = {
+    val conf = new SQLConf
+    conf.setConf(SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD, threshold)
+    val condition = Some(streamLo < bufferP)
+    SortMergeJoinRangePhysical.createProbeSpec(
+      condition,
+      Inner,
+      Seq(streamId),
+      Seq(bufferId),
+      Seq(streamId, streamLo),
+      Seq(bufferId, bufferP),
+      conf).getOrElse(fail("expected a recognized partial-range spec"))
   }
 
   /** Builds an array with `totalRows` identical rows, switching to spill mode after
    * `inMemoryRows` rows. */
   private def withRowArray(inMemoryRows: Int, totalRows: Int)
-      (f: ExternalAppendOnlyUnsafeRowArray => Unit): Unit = {
+      (f: (ExternalAppendOnlyUnsafeRowArray, TaskContext) => Unit): Unit = {
     sc = new SparkContext("local", "test", new SparkConf(false))
     val taskContext = MemoryTestingUtils.fakeTaskContext(SparkEnv.get)
     TaskContext.setTaskContext(taskContext)
@@ -69,11 +83,11 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
         1,
         Long.MaxValue)
       try {
-        val proj = UnsafeProjection.create(Array[DataType](LongType, LongType, LongType))
-        (0 until totalRows).foreach { _ =>
-          array.add(proj(InternalRow(1L, 0L, 100L)))
+        val proj = UnsafeProjection.create(Array[DataType](LongType, LongType))
+        (0 until totalRows).foreach { i =>
+          array.add(proj(InternalRow(1L, i.toLong * 10L)))
         }
-        f(array)
+        f(array, taskContext)
       } finally {
         array.clear()
       }
@@ -83,24 +97,47 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   }
 
   test("build skips the index for a spilled group even above the row threshold") {
-    // inMemoryRows (4) is well below totalRows (10), so this array is really spill-backed;
-    // threshold (2) is below totalRows too, so without the isSpillBacked gate, build() would
-    // materialize an index over that spilled data.
-    withRowArray(inMemoryRows = 4, totalRows = 10) { array =>
+    withRowArray(inMemoryRows = 4, totalRows = 10) { (array, tc) =>
       assert(array.isSpillBacked, "test setup must force a real spill")
-      val handle = RangeGroupProbe.build(array, pointInRangeSpec(threshold = 2))
-      assert(handle.relation.isEmpty,
-        "a spilled group must never be re-materialized into an in-memory range index")
-      assert(handle.candidateFn.isEmpty)
+      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager())
+      val handle = RangeGroupProbe.build(
+        array, pointInRangeSpec(threshold = 2), tc.taskMemoryManager(), consumer)
+      assert(handle == null,
+        "a spilled group must never be materialized into an in-memory range index")
     }
   }
 
-  test("build still indexes an in-memory group above the row threshold") {
-    withRowArray(inMemoryRows = 1000, totalRows = 10) { array =>
+  test("build indexes an in-memory group above the row threshold and probes correctly") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
       assert(!array.isSpillBacked, "test setup must keep this array in-memory")
-      val handle = RangeGroupProbe.build(array, pointInRangeSpec(threshold = 2))
-      assert(handle.relation.isDefined)
-      assert(handle.candidateFn.isDefined)
+      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager())
+      val handle = RangeGroupProbe.build(
+        array, pointInRangeSpec(threshold = 2), tc.taskMemoryManager(), consumer)
+      assert(handle != null)
+      assert(handle.index.length == 10)
+
+      // Probe [25, 55]: should match points 30, 40, 50 (3 matches)
+      val candidates = handle.candidates(InternalRow(1L, 25L, 55L)).toSeq
+      assert(candidates.length == 3)
+      assert(candidates.map(_.getLong(1)) == Seq(30L, 40L, 50L))
+
+      RangeGroupProbe.release(handle, tc.taskMemoryManager(), consumer)
+    }
+  }
+
+  test("partial range probe operates correctly") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
+      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager())
+      val handle = RangeGroupProbe.build(
+        array, partialRangeSpec(threshold = 2), tc.taskMemoryManager(), consumer)
+      assert(handle != null)
+
+      // streamLo < bufferP: for streamLo = 65, buffer points > 65 are 70, 80, 90 (3 matches)
+      val candidates = handle.candidates(InternalRow(1L, 65L)).toSeq
+      assert(candidates.length == 3)
+      assert(candidates.map(_.getLong(1)) == Seq(70L, 80L, 90L))
+
+      RangeGroupProbe.release(handle, tc.taskMemoryManager(), consumer)
     }
   }
 }

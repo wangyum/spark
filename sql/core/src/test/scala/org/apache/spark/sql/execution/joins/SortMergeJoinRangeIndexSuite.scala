@@ -43,16 +43,21 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
   private def collectSortMergeJoin(plan: SparkPlan): Seq[SortMergeJoinExec] =
     plan.collect { case j: SortMergeJoinExec => j }
 
-  /** Checks `joined` against a range-index-disabled baseline, under a real SortMergeJoinExec. */
+  /** Checks `joined` against a range-index-disabled baseline across codegen on and off. */
   private def checkAgainstBaseline(joined: => DataFrame, configs: Seq[(String, String)]): Unit = {
-    val baseline = withSQLConf(
-      configs :+ SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_ENABLED.key -> "false": _*) {
-      joined.collect()
-    }
-    withSQLConf(configs: _*) {
-      val plan = joined.queryExecution.executedPlan
-      assert(collectSortMergeJoin(plan).nonEmpty, plan)
-      checkAnswer(joined, baseline)
+    for (codegen <- Seq(true, false)) {
+      val runConfigs = configs :+ (SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString)
+      val baseline = withSQLConf(
+        runConfigs :+ SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_ENABLED.key -> "false": _*) {
+        joined.collect()
+      }
+      withSQLConf(runConfigs: _*) {
+        val plan = joined.queryExecution.executedPlan
+        val smj = collectSortMergeJoin(plan)
+        assert(smj.nonEmpty, plan)
+        assert(smj.forall(_.supportCodegen))
+        checkAnswer(joined, baseline)
+      }
     }
   }
 
@@ -103,20 +108,16 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
       "(id + 5) as hi")
     val cond = events("e_id") === spans("s_id") &&
       events("event_pt") >= spans("lo") && events("event_pt") <= spans("hi")
-    val joined = events.hint("merge").join(spans.hint("merge"), cond)
+    val joined = spans.hint("merge").join(events.hint("merge"), cond)
     checkAgainstBaseline(joined, smjConfigs)
   }
 
   test("sort merge join falls back to a linear scan for a spilled buffered group") {
-    // A single equi-key group far larger than SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD (16),
-    // forced to actually spill to disk (in-memory/spill thresholds of 1 row): confirms the
-    // index is skipped for a spilled group (see RangeGroupProbe.build's isSpillBacked gate)
-    // and that the resulting linear-scan fallback still produces correct answers.
     val spans = spark.range(0, 200, 1, 1)
       .selectExpr("id as s_id", "cast(0 as int) as lo", "cast(1000 as int) as hi")
     val events = spark.range(0, 200, 1, 1)
       .selectExpr("id as e_id", "cast(id as int) as event_pt")
-    val joined = events.hint("merge").join(spans.hint("merge"),
+    val joined = spans.hint("merge").join(events.hint("merge"),
       events("e_id") === spans("s_id") &&
         events("event_pt") >= spans("lo") && events("event_pt") <= spans("hi"))
     val spillConfigs = smjConfigs ++ Seq(
@@ -129,50 +130,37 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
     val events = largeGroupEvents()
     val spans = largeGroupSpans()
     val cond = pointCond(events, spans)
-    checkAgainstBaseline(events.hint("merge").join(spans.hint("merge"), cond), smjConfigs)
+    checkAgainstBaseline(spans.hint("merge").join(events.hint("merge"), cond), smjConfigs)
   }
 
   test("sort merge point-in-range left outer join engages the index for a large group") {
     val events = largeGroupEvents()
     val spans = largeGroupSpans()
     val cond = pointCond(events, spans)
-    checkAgainstBaseline(events.hint("merge").join(spans.hint("merge"), cond, "left"), smjConfigs)
+    checkAgainstBaseline(spans.hint("merge").join(events.hint("merge"), cond, "left"), smjConfigs)
   }
 
   test("sort merge point-in-range right outer join engages the index for a large group") {
     val events = largeGroupEvents()
     val spans = largeGroupSpans()
     val cond = pointCond(events, spans)
-    checkAgainstBaseline(spans.hint("merge").join(events.hint("merge"), cond, "right"), smjConfigs)
+    checkAgainstBaseline(events.hint("merge").join(spans.hint("merge"), cond, "right"), smjConfigs)
   }
 
   test("sort merge point-in-range left semi join engages the index for a large group") {
     val events = largeGroupEvents()
     val spans = largeGroupSpans()
     val cond = pointCond(events, spans)
-    checkAgainstBaseline(events.hint("merge").join(spans.hint("merge"), cond, "leftsemi"), smjConfigs)
+    val joined = spans.hint("merge").join(events.hint("merge"), cond, "leftsemi")
+    checkAgainstBaseline(joined, smjConfigs)
   }
 
   test("sort merge point-in-range left anti join engages the index for a large group") {
     val events = largeGroupMisses()
     val spans = largeGroupSpans()
     val cond = pointCond(events, spans)
-    checkAgainstBaseline(events.hint("merge").join(spans.hint("merge"), cond, "leftanti"), smjConfigs)
-  }
-
-  test("sort merge interval overlap inner join engages the index for a large group") {
-    val n = equiKeyBuckets.toLong * largeGroupSize
-    val spans = spark.range(n).selectExpr(
-      s"id % $equiKeyBuckets as s_id",
-      s"(id div $equiKeyBuckets) * $rangeSpanWidth as blo",
-      s"(id div $equiKeyBuckets) * $rangeSpanWidth + 15 as bhi")
-    val events = spark.range(n).selectExpr(
-      s"id % $equiKeyBuckets as e_id",
-      s"(id div $equiKeyBuckets) * $rangeSpanWidth as alo",
-      s"(id div $equiKeyBuckets) * $rangeSpanWidth + 15 as ahi")
-    val cond = events("e_id") === spans("s_id") &&
-      events("alo") <= spans("bhi") && spans("blo") <= events("ahi")
-    checkAgainstBaseline(events.hint("merge").join(spans.hint("merge"), cond), smjConfigs)
+    val joined = spans.hint("merge").join(events.hint("merge"), cond, "leftanti")
+    checkAgainstBaseline(joined, smjConfigs)
   }
 
   test("sort merge partial < inner join engages the index for a large group") {
