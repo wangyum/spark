@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -187,6 +188,10 @@ case class SortMergeJoinExec(
   private lazy val streamedOutput = streamedPlan.output
   private lazy val bufferedOutput = bufferedPlan.output
 
+  // Same split as streamedPlan/bufferedPlan above, read off by identity instead of
+  // re-matching joinType a second time.
+  private lazy val buildSide: BuildSide = if (streamedPlan eq left) BuildRight else BuildLeft
+
   private lazy val rangeProbeSpec: Option[RangeGroupProbe.Spec] =
     RangeGroupProbe.createSpec(
       condition,
@@ -195,6 +200,7 @@ case class SortMergeJoinExec(
       rightKeys,
       left.output,
       right.output,
+      buildSide,
       conf)
 
   override def supportCodegen: Boolean = joinType match {

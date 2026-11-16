@@ -275,7 +275,7 @@ case class BroadcastRangeJoinExec(
   private def prepareBroadcast(ctx: CodegenContext): String = {
     val broadcastRelation = broadcast.executeBroadcast[RangeRelation]()
     val broadcastTerm = ctx.addReferenceObj("broadcast", broadcastRelation)
-    val clsName = broadcastRelation.value.getClass.getName
+    val clsName = RangeIndexProbeCodegen.indexClassName(RangeIndexKind(rangeJoinKind), usesLongKeys)
     ctx.addMutableState(clsName, "rangeRelation",
       v => s"$v = ($clsName) $broadcastTerm.value();", forceInline = true)
   }

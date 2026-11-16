@@ -358,6 +358,5 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
       originalPrCaseCodegen()
       originalPrCase()
     }
-    Thread.sleep(10000000)
   }
 }

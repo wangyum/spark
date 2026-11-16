@@ -23,7 +23,7 @@ import org.apache.spark.TaskContext
 import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, BindReferences, Expression}
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.planning.{ExtractRangeJoinKeys, PartialRangeJoin}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.execution.ExternalAppendOnlyUnsafeRowArray
@@ -140,6 +140,10 @@ private[joins] object RangeGroupProbe {
     }
   }
 
+  /**
+   * `buildSide` names the caller's streamed/buffered split (e.g. `SortMergeJoinExec.buildSide`),
+   * passed in instead of re-derived from `joinType` here so the two can't drift apart.
+   */
   def createSpec(
       condition: Option[Expression],
       joinType: JoinType,
@@ -147,6 +151,7 @@ private[joins] object RangeGroupProbe {
       equiRightKeys: Seq[Expression],
       leftOutput: Seq[Attribute],
       rightOutput: Seq[Attribute],
+      buildSide: BuildSide,
       conf: SQLConf): Option[Spec] = {
     if (!conf.sortMergeJoinRangeIndexEnabled) {
       return None
@@ -161,15 +166,10 @@ private[joins] object RangeGroupProbe {
               if (AttributeSet(leftRange ++ rightRange).intersect(equiRefs).nonEmpty) {
                 None
               } else {
-                val (streamOutput, bufferOutput, streamRange, bufferRange, buildSide) =
-                  joinType match {
-                    case _: InnerLike | LeftOuter | LeftExistence(_) =>
-                      (leftOutput, rightOutput, leftRange, rightRange, BuildRight)
-                    case RightOuter =>
-                      (rightOutput, leftOutput, rightRange, leftRange, BuildLeft)
-                    case other =>
-                      throw new IllegalArgumentException(s"Unsupported join type: $other")
-                  }
+                val (streamOutput, bufferOutput, streamRange, bufferRange) = buildSide match {
+                  case BuildRight => (leftOutput, rightOutput, leftRange, rightRange)
+                  case BuildLeft => (rightOutput, leftOutput, rightRange, leftRange)
+                }
                 val boundBufferKeys = BindReferences.bindReferences(bufferRange, bufferOutput)
                 val boundStreamKeys = BindReferences.bindReferences(streamRange, streamOutput)
                 val mode = RangeRelationBroadcastMode(boundBufferKeys, RangeIndexKind(kind))
@@ -206,7 +206,7 @@ private[joins] object RangeGroupProbe {
       return null
     }
 
-    val relation = spec.mode.transform(matches.generateIterator(), Some(n))
+    val relation = spec.mode.transform(matches.generateIterator(), Some(n), spec.usesLongKeys)
     // The nominal estimate above is a cheap per-row heuristic; true it up against the real,
     // SizeEstimator-based footprint of the relation we just built so the TaskMemoryManager
     // budget reflects actual heap usage rather than a fixed-bytes-per-row guess.

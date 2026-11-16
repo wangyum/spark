@@ -1280,13 +1280,25 @@ private[execution] case class RangeRelationBroadcastMode private (
 
   override def transform(
       rows: Iterator[InternalRow],
-      sizeHint: Option[Long]): RangeRelation = {
-    val longKeys = RangeIndex.canMapKeysToLong(buildKeys)
+      sizeHint: Option[Long]): RangeRelation =
+    transform(rows, sizeHint, RangeIndex.canMapKeysToLong(buildKeys))
+
+  /**
+   * As the two-argument `transform` above, but `usesLongKeys` is supplied by a caller that
+   * already has it cached (e.g. `RangeGroupProbe.Spec.usesLongKeys`) instead of being
+   * recomputed from `buildKeys` here. A broadcast relation is built once per plan, so
+   * recomputing it there costs nothing extra; a per-equi-key-group index (`RangeGroupProbe`)
+   * is built once per group, so the caller's cached value avoids redoing it every time.
+   */
+  def transform(
+      rows: Iterator[InternalRow],
+      sizeHint: Option[Long],
+      usesLongKeys: Boolean): RangeRelation = {
     indexKind match {
       case IntervalIndexKind =>
         require(buildKeys.nonEmpty && buildKeys.length <= 2,
           "An interval index expects (low, high), or one point used as both ends.")
-        if (longKeys) {
+        if (usesLongKeys) {
           LongIntervalIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint)
         } else {
           IntervalIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint)
@@ -1294,7 +1306,7 @@ private[execution] case class RangeRelationBroadcastMode private (
 
       case PointIndexKind =>
         require(buildKeys.length == 1, "A point index expects one build key.")
-        if (longKeys) {
+        if (usesLongKeys) {
           LongPointIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint)
         } else {
           PointIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint)
@@ -1449,6 +1461,19 @@ private[joins] object RangeIndexProbeCodegen {
   }
 
   /**
+   * The concrete [[RangeRelation]] class `indexKind`/`usesLongKeys` selects -- the single
+   * source both `genCandidateExpr` (for the cast it splices into generated code) and
+   * [[BroadcastRangeJoinExec.prepareBroadcast]] (for its mutable field's declared type)
+   * consult, so the two cannot name different classes for the same relation.
+   */
+  def indexClassName(indexKind: RangeIndexKind, usesLongKeys: Boolean): String = indexKind match {
+    case PointIndexKind =>
+      (if (usesLongKeys) classOf[LongPointIndex] else classOf[PointIndex]).getName
+    case IntervalIndexKind =>
+      (if (usesLongKeys) classOf[LongIntervalIndex] else classOf[IntervalIndex]).getName
+  }
+
+  /**
    * The Java expression that probes `relationTerm` - already known at codegen time to be an
    * instance of the concrete class `indexKind`/`usesLongKeys` selects - and yields a
    * `scala.collection.Iterator`. Returns only the expression, not a declaration: callers decide
@@ -1463,17 +1488,15 @@ private[joins] object RangeIndexProbeCodegen {
       usesLongKeys: Boolean,
       pointScan: => (PointScan, Boolean),
       keys: ProbeKeys): String = {
+    val className = indexClassName(indexKind, usesLongKeys)
     val call = indexKind match {
       case PointIndexKind =>
-        val points = (if (usesLongKeys) classOf[LongPointIndex] else classOf[PointIndex]).getName
         val (scan, strict) = pointScan
-        s"(($points) $relationTerm).${scan.methodName}(${keys.keyVars.head}, $strict)"
+        s"(($className) $relationTerm).${scan.methodName}(${keys.keyVars.head}, $strict)"
       case IntervalIndexKind =>
-        val intervals =
-          (if (usesLongKeys) classOf[LongIntervalIndex] else classOf[IntervalIndex]).getName
         // A point probe has one key. Reuse it as both ends so it is evaluated once.
         val high = if (keys.keyVars.length == 1) keys.keyVars.head else keys.keyVars(1)
-        s"(($intervals) $relationTerm).overlapping(${keys.keyVars.head}, $high)"
+        s"(($className) $relationTerm).overlapping(${keys.keyVars.head}, $high)"
     }
     if (keys.nullVars.isEmpty) {
       call

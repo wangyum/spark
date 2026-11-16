@@ -22,6 +22,7 @@ import org.apache.spark.memory.{MemoryTestingUtils, TaskMemoryManager, TestMemor
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.dsl.expressions._
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, UnsafeProjection}
+import org.apache.spark.sql.catalyst.optimizer.BuildRight
 import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.execution.ExternalAppendOnlyUnsafeRowArray
 import org.apache.spark.sql.internal.SQLConf
@@ -53,6 +54,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       Seq(bufferId),
       Seq(streamId, streamLo, streamHi),
       Seq(bufferId, bufferP),
+      BuildRight,
       conf).getOrElse(fail("expected a recognized point-in-range spec"))
   }
 
@@ -78,6 +80,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       Seq(bufferId),
       Seq(streamId, streamLo),
       Seq(bufferId, bufferLo, bufferHi),
+      BuildRight,
       conf).getOrElse(fail("expected a recognized point-in-interval spec"))
   }
 
@@ -92,6 +95,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       Seq(bufferId),
       Seq(streamId, streamLo),
       Seq(bufferId, bufferP),
+      BuildRight,
       conf).getOrElse(fail("expected a recognized partial-range spec"))
   }
 
