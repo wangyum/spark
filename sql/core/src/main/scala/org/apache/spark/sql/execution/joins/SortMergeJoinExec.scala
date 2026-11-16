@@ -20,7 +20,6 @@ package org.apache.spark.sql.execution.joins
 import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.TaskContext
-import org.apache.spark.memory.MemoryConsumer
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
@@ -47,7 +46,9 @@ case class SortMergeJoinExec(
 
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
-    "spillSize" -> SQLMetrics.createSizeMetric(sparkContext, "spill size"))
+    "spillSize" -> SQLMetrics.createSizeMetric(sparkContext, "spill size"),
+    "numRangeIndexedGroups" ->
+      SQLMetrics.createMetric(sparkContext, "number of range-indexed groups"))
 
   override def outputOrdering: Seq[SortOrder] = joinType match {
     // For inner join, orders of both sides keys should be kept.
@@ -154,7 +155,8 @@ case class SortMergeJoinExec(
       onlyBufferFirstMatchedRow,
       streamedOnlyCondition,
       restCondition,
-      rangeProbeSpec)
+      rangeProbeSpec,
+      numRangeIndexedGroups = longMetric("numRangeIndexedGroups"))
     if (conf.usePartitionEvaluator) {
       left.execute().zipPartitionsWithEvaluator(right.execute(), evaluatorFactory)
     } else {
@@ -270,9 +272,13 @@ case class SortMergeJoinExec(
         val specTerm = ctx.addReferenceObj("rangeProbeSpec", spec)
         val tcExpr = "(org.apache.spark.TaskContext.get() != null) ? " +
           "org.apache.spark.TaskContext.get().taskMemoryManager() : null"
+        val metricTermName = metricTerm(ctx, "numRangeIndexedGroups")
         val buildCode =
           s"""
              |$probeTerm = $helperCls.build($matches, $specTerm, $tcExpr, $consumerTerm);
+             |if ($probeTerm != null) {
+             |  $metricTermName.add(1);
+             |}
            """.stripMargin
         val clearCode =
           s"""
@@ -1170,8 +1176,9 @@ private[joins] class SortMergeJoinScanner(
     spillSize: SQLMetric,
     eagerCleanupResources: () => Unit,
     onlyBufferFirstMatch: Boolean = false,
-    rangeProbeSpec: Option[RangeGroupProbe.Spec] = None) {
-  private[this] val memoryConsumer: MemoryConsumer = if (rangeProbeSpec.isDefined) {
+    rangeProbeSpec: Option[RangeGroupProbe.Spec] = None,
+    numRangeIndexedGroups: SQLMetric = null) {
+  private[this] val memoryConsumer: RangeIndexMemoryConsumer = if (rangeProbeSpec.isDefined) {
     val tc = TaskContext.get()
     if (tc != null) new RangeIndexMemoryConsumer(tc.taskMemoryManager()) else null
   } else {
@@ -1383,6 +1390,9 @@ private[joins] class SortMergeJoinScanner(
       val tc = TaskContext.get()
       val tmm = if (tc != null) tc.taskMemoryManager() else null
       groupProbe = RangeGroupProbe.build(bufferedMatches, spec, tmm, memoryConsumer)
+      if (groupProbe != null && numRangeIndexedGroups != null) {
+        numRangeIndexedGroups += 1
+      }
     }
   }
 }

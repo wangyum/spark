@@ -40,7 +40,8 @@ class SortMergeJoinEvaluatorFactory(
     onlyBufferFirstMatchedRow: Boolean,
     streamedOnlyCondition: Option[Expression] = None,
     restCondition: Option[Expression] = None,
-    rangeProbeSpec: Option[RangeGroupProbe.Spec] = None)
+    rangeProbeSpec: Option[RangeGroupProbe.Spec] = None,
+    numRangeIndexedGroups: SQLMetric = null)
     extends PartitionEvaluatorFactory[InternalRow, InternalRow] {
   override def createEvaluator(): PartitionEvaluator[InternalRow, InternalRow] =
     new SortMergeJoinEvaluator
@@ -92,7 +93,8 @@ class SortMergeJoinEvaluatorFactory(
               sizeInBytesSpillThreshold,
               spillSize,
               cleanupResources,
-              rangeProbeSpec = rangeProbeSpec)
+              rangeProbeSpec = rangeProbeSpec,
+              numRangeIndexedGroups = numRangeIndexedGroups)
             private[this] val joinRow = new JoinedRow
 
             if (smjScanner.findNextInnerJoinRows()) {
@@ -139,7 +141,8 @@ class SortMergeJoinEvaluatorFactory(
             sizeInBytesSpillThreshold,
             spillSize,
             cleanupResources,
-            rangeProbeSpec = rangeProbeSpec)
+            rangeProbeSpec = rangeProbeSpec,
+            numRangeIndexedGroups = numRangeIndexedGroups)
           val rightNullRow = new GenericInternalRow(right.output.length)
           val boundStreamedOnly: InternalRow => Boolean = streamedOnlyCondition.map {
             Predicate.create(_, left.output).eval _
@@ -167,7 +170,8 @@ class SortMergeJoinEvaluatorFactory(
             sizeInBytesSpillThreshold,
             spillSize,
             cleanupResources,
-            rangeProbeSpec = rangeProbeSpec)
+            rangeProbeSpec = rangeProbeSpec,
+            numRangeIndexedGroups = numRangeIndexedGroups)
           val leftNullRow = new GenericInternalRow(left.output.length)
           val boundStreamedOnly: InternalRow => Boolean = streamedOnlyCondition.map {
             Predicate.create(_, right.output).eval _
@@ -213,7 +217,8 @@ class SortMergeJoinEvaluatorFactory(
               spillSize,
               cleanupResources,
               onlyBufferFirstMatchedRow,
-              rangeProbeSpec = rangeProbeSpec)
+              rangeProbeSpec = rangeProbeSpec,
+              numRangeIndexedGroups = numRangeIndexedGroups)
             private[this] val joinRow = new JoinedRow
 
             override def advanceNext(): Boolean = {
@@ -258,7 +263,8 @@ class SortMergeJoinEvaluatorFactory(
               spillSize,
               cleanupResources,
               onlyBufferFirstMatchedRow,
-              rangeProbeSpec = rangeProbeSpec)
+              rangeProbeSpec = rangeProbeSpec,
+              numRangeIndexedGroups = numRangeIndexedGroups)
             private[this] val joinRow = new JoinedRow
 
             override def advanceNext(): Boolean = {
@@ -315,7 +321,8 @@ class SortMergeJoinEvaluatorFactory(
               spillSize,
               cleanupResources,
               onlyBufferFirstMatchedRow,
-              rangeProbeSpec = rangeProbeSpec)
+              rangeProbeSpec = rangeProbeSpec,
+              numRangeIndexedGroups = numRangeIndexedGroups)
             private[this] val joinRow = new JoinedRow
 
             override def advanceNext(): Boolean = {

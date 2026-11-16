@@ -37,16 +37,26 @@ private[joins] final class CompactLongPointIndex(
   def getRow(i: Int): UnsafeRow = rows(i)
 
   def upTo(value: Long, strict: Boolean): Iterator[InternalRow] = {
+    if (length == 0 || (strict && value <= keys(0)) || (!strict && value < keys(0))) {
+      return Iterator.empty
+    }
     val end = searchBound(value, skipEquals = !strict)
     new RowSlice(rows.asInstanceOf[Array[InternalRow]], 0, end)
   }
 
   def from(value: Long, strict: Boolean): Iterator[InternalRow] = {
+    val maxKey = keys(length - 1)
+    if (length == 0 || (strict && value >= maxKey) || (!strict && value > maxKey)) {
+      return Iterator.empty
+    }
     val start = searchBound(value, skipEquals = strict)
     new RowSlice(rows.asInstanceOf[Array[InternalRow]], start, length)
   }
 
   def between(low: Long, high: Long): Iterator[InternalRow] = {
+    if (high < low || length == 0 || high < keys(0) || low > keys(length - 1)) {
+      return Iterator.empty
+    }
     val start = searchBound(low, skipEquals = false)
     val end = searchBound(high, skipEquals = true)
     if (start < end) {
@@ -61,8 +71,12 @@ private[joins] final class CompactLongPointIndex(
     var hi = length
     while (lo < hi) {
       val mid = (lo + hi) >>> 1
-      val c = java.lang.Long.compare(keys(mid), value)
-      if (c < 0 || (skipEquals && c == 0)) lo = mid + 1 else hi = mid
+      val k = keys(mid)
+      if (k < value || (skipEquals && k == value)) {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
     }
     lo
   }
@@ -127,6 +141,27 @@ private[joins] object CompactLongPointIndex {
 
 private[joins] class RangeIndexMemoryConsumer(taskMemoryManager: TaskMemoryManager)
   extends MemoryConsumer(taskMemoryManager, MemoryMode.ON_HEAP) {
+
+  private[this] var reusableKeys: Array[Long] = _
+  private[this] var reusableRows: Array[UnsafeRow] = _
+  private[this] var lastUsedLength: Int = 0
+
+  def allocateArrays(n: Int): (Array[Long], Array[UnsafeRow]) = {
+    if (reusableKeys == null || reusableKeys.length < n) {
+      reusableKeys = new Array[Long](n)
+      reusableRows = new Array[UnsafeRow](n)
+    }
+    lastUsedLength = n
+    (reusableKeys, reusableRows)
+  }
+
+  def clearReferences(): Unit = {
+    if (reusableRows != null && lastUsedLength > 0) {
+      java.util.Arrays.fill(reusableRows.asInstanceOf[Array[AnyRef]], 0, lastUsedLength, null)
+      lastUsedLength = 0
+    }
+  }
+
   override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
 }
 
@@ -164,7 +199,7 @@ private[joins] object RangeGroupProbe {
       matches: ExternalAppendOnlyUnsafeRowArray,
       spec: Spec,
       taskMemoryManager: TaskMemoryManager,
-      consumer: MemoryConsumer): Handle = {
+      consumer: RangeIndexMemoryConsumer): Handle = {
     val n = matches.length
     if (n <= spec.threshold || n > spec.maxRows || matches.isSpillBacked) {
       return null
@@ -189,8 +224,11 @@ private[joins] object RangeGroupProbe {
     }
 
     val length = n.toInt
-    val keys = new Array[Long](length)
-    val rows = new Array[UnsafeRow](length)
+    val (keys, rows) = if (consumer != null) {
+      consumer.allocateArrays(length)
+    } else {
+      (new Array[Long](length), new Array[UnsafeRow](length))
+    }
     val iter = matches.generateIterator()
     var i = 0
     val toLong = spec.toLong
@@ -240,7 +278,10 @@ private[joins] object RangeGroupProbe {
   def release(
       handle: Handle,
       taskMemoryManager: TaskMemoryManager,
-      consumer: MemoryConsumer): Unit = {
+      consumer: RangeIndexMemoryConsumer): Unit = {
+    if (consumer != null) {
+      consumer.clearReferences()
+    }
     if (handle != null && taskMemoryManager != null &&
         consumer != null && handle.allocatedBytes > 0) {
       taskMemoryManager.releaseExecutionMemory(handle.allocatedBytes, consumer)
