@@ -188,7 +188,7 @@ case class SortMergeJoinExec(
   private lazy val bufferedOutput = bufferedPlan.output
 
   private lazy val rangeProbeSpec: Option[RangeGroupProbe.Spec] =
-    SortMergeJoinRangePhysical.createProbeSpec(
+    RangeGroupProbe.createSpec(
       condition,
       joinType,
       leftKeys,

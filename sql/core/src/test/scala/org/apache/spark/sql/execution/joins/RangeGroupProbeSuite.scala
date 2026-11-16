@@ -41,7 +41,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     val conf = new SQLConf
     conf.setConf(SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD, threshold)
     val condition = Some(bufferP >= streamLo && bufferP <= streamHi)
-    SortMergeJoinRangePhysical.createProbeSpec(
+    RangeGroupProbe.createSpec(
       condition,
       Inner,
       Seq(streamId),
@@ -55,7 +55,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     val conf = new SQLConf
     conf.setConf(SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD, threshold)
     val condition = Some(streamLo >= bufferLo && streamLo <= bufferHi)
-    SortMergeJoinRangePhysical.createProbeSpec(
+    RangeGroupProbe.createSpec(
       condition,
       Inner,
       Seq(streamId),
@@ -69,7 +69,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     val conf = new SQLConf
     conf.setConf(SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD, threshold)
     val condition = Some(streamLo < bufferP)
-    SortMergeJoinRangePhysical.createProbeSpec(
+    RangeGroupProbe.createSpec(
       condition,
       Inner,
       Seq(streamId),
