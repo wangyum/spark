@@ -18,7 +18,9 @@
 package org.apache.spark.sql.execution.benchmark
 
 import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.sql.{DataFrame, Row}
+import org.apache.spark.internal.config.MAX_RESULT_SIZE
+import org.apache.spark.internal.config.UI.UI_ENABLED
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.internal.SQLConf
@@ -60,6 +62,17 @@ import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
  * }}}
  */
 object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
+
+  override def getSparkSession: SparkSession = {
+    SparkSession.builder()
+      .master("local[1]")
+      .appName(this.getClass.getCanonicalName)
+      .config(SQLConf.SHUFFLE_PARTITIONS.key, 1)
+      .config(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, 1)
+      .config(UI_ENABLED.key, true)
+      .config(MAX_RESULT_SIZE.key, "3g")
+      .getOrCreate()
+  }
 
   // An optional regex in the environment variable SMJ_RANGE_BENCH_FILTER runs only the
   // sections whose name matches, e.g. SMJ_RANGE_BENCH_FILTER=".*reuse.*|.*full overlap.*".
@@ -231,19 +244,33 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     }
   }
 
+  private def originalPrCaseCodegen(): Unit = {
+    val name = s"sort merge inner range join with codegen, (n=$originalPrN, m=$originalPrM)"
+    if (!shouldRun(name)) return
+    val rows = originalPrN.toLong * originalPrM
+    val benchmark = new Benchmark(name, rows, output = output)
+    benchmark.addCase("Range index disabled, wholestage on") { _ =>
+      runOriginalPr(indexEnabled = false, wholeStageEnabled = true)
+    }
+    benchmark.addCase("Range index enabled, wholestage on") { _ =>
+      runOriginalPr(indexEnabled = true, wholeStageEnabled = true)
+    }
+    benchmark.run()
+  }
+
   private def originalPrCase(): Unit = {
-    val name = s"sort merge inner range join, PR-21109 shape (n=$originalPrN, m=$originalPrM)"
+    val name = s"sort merge inner range join, (n=$originalPrN, m=$originalPrM)"
     if (!shouldRun(name)) return
     val rows = originalPrN.toLong * originalPrM
     val benchmark = new Benchmark(name, rows, output = output)
     benchmark.addCase("Range index disabled, wholestage off") { _ =>
       runOriginalPr(indexEnabled = false, wholeStageEnabled = false)
     }
-    benchmark.addCase("Range index disabled, wholestage on") { _ =>
-      runOriginalPr(indexEnabled = false, wholeStageEnabled = true)
-    }
     benchmark.addCase("Range index enabled, wholestage off") { _ =>
       runOriginalPr(indexEnabled = true, wholeStageEnabled = false)
+    }
+    benchmark.addCase("Range index disabled, wholestage on") { _ =>
+      runOriginalPr(indexEnabled = false, wholeStageEnabled = true)
     }
     benchmark.addCase("Range index enabled, wholestage on") { _ =>
       runOriginalPr(indexEnabled = true, wholeStageEnabled = true)
@@ -328,7 +355,9 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
       fullOverlapCase()
       otherShapeCases()
       joinTypeCases()
+      originalPrCaseCodegen()
       originalPrCase()
     }
+    Thread.sleep(10000000)
   }
 }
