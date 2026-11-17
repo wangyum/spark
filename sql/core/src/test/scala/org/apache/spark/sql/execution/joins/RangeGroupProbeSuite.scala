@@ -21,11 +21,11 @@ import org.apache.spark._
 import org.apache.spark.memory.{MemoryTestingUtils, TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.dsl.expressions._
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, RowOrdering, UnsafeProjection}
 import org.apache.spark.sql.catalyst.optimizer.BuildRight
 import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical.statsEstimation.EstimationUtils
-import org.apache.spark.sql.execution.ExternalAppendOnlyUnsafeRowArray
+import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, RowIterator}
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, LongType, StringType}
@@ -458,6 +458,212 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
         "a self-triggered spill must return 0 without releasing the index")
       assert(session.currentRelationOrNull != null,
         "a self-triggered spill must not release the index")
+    }
+  }
+
+  test("Session.memoryConsumer.spill() declines to release while a candidate iterator is " +
+    "still in-flight, and executes pending spill once probe completes") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
+      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      probeThroughGate(session, array)
+      assert(session.currentRelationOrNull != null, "the group must be indexed by now")
+
+      // Mirrors a caller like OneSideOuterIterator.rightMatchesIterator: obtain the candidate
+      // iterator and partially consume it, holding a live reference across the spill attempt
+      // below instead of draining it in one step.
+      val candidates = session.candidates(array, InternalRow(1L, 25L, 55L))
+      assert(candidates.hasNext, "test setup needs at least one match to keep the iterator open")
+      candidates.next()
+
+      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      assert(session.memoryConsumer.spill(1L, otherConsumer) == 0L,
+        "a spill must not release memory that an in-flight candidate iterator can still reach")
+      assert(session.currentRelationOrNull != null,
+        "the index must survive a spill request while its candidate iterator is in-flight")
+
+      while (candidates.hasNext) candidates.next()
+      assert(session.currentRelationOrNull == null,
+        "once the in-flight iterator completes, pending spill must be executed")
+    }
+  }
+
+  test("Session.finishProbe allows immediate spill after an iterator is abandoned early") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
+      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      probeThroughGate(session, array)
+      assert(session.currentRelationOrNull != null)
+
+      // Iterator abandoned early without being drained to empty (e.g. LeftSemi):
+      val candidates = session.candidates(array, InternalRow(1L, 25L, 55L))
+      assert(candidates.hasNext)
+      candidates.next()
+      session.finishProbe()
+
+      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      assert(session.memoryConsumer.spill(1L, otherConsumer) > 0L,
+        "an early-exited probe must not block subsequent spills")
+      assert(session.currentRelationOrNull == null)
+    }
+  }
+
+  test("SortMergeJoinScanner.finishProbe forwards to the underlying Session") {
+    // Unit-level on SortMergeJoinScanner, not just RangeGroupProbe.Session directly: the
+    // Session-level mechanism is covered above, but nothing exercises that the Scanner the
+    // real join operators call through actually forwards to it -- which is exactly the kind
+    // of gap that let LeftSemi/LeftAnti/ExistenceJoin ship without ever calling finishProbe.
+    sc = new SparkContext("local", "test", new SparkConf(false))
+    val taskContext = MemoryTestingUtils.fakeTaskContext(SparkEnv.get)
+    TaskContext.setTaskContext(taskContext)
+    try {
+      val probeSession = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+
+      val streamProj = UnsafeProjection.create(Array[DataType](LongType, LongType, LongType))
+      val streamRows = (0 until RangeGroupProbe.PROBE_THRESHOLD).map { _ =>
+        streamProj(InternalRow(1L, 25L, 55L)).copy()
+      }
+      val bufferProj = UnsafeProjection.create(Array[DataType](LongType, LongType))
+      // 10 buffered points, matching pointInRangeSpec's condition (s_p in [lo, hi]): probing
+      // [25, 55] above must match 30, 40, 50 (3 rows), same as the Session-level tests.
+      val bufferRows = (0 until 10).map(i => bufferProj(InternalRow(1L, i.toLong * 10L)).copy())
+
+      val scanner = new SortMergeJoinScanner(
+        streamedKeyGenerator = UnsafeProjection.create(Seq(streamId), Seq(streamId, streamLo, streamHi)),
+        bufferedKeyGenerator = UnsafeProjection.create(Seq(bufferId), Seq(bufferId, bufferP)),
+        keyOrdering = RowOrdering.createNaturalAscendingOrdering(Seq(LongType)),
+        streamedIter = RowIterator.fromScala(streamRows.iterator),
+        bufferedIter = RowIterator.fromScala(bufferRows.iterator),
+        inMemoryThreshold = 1000,
+        spillThreshold = Int.MaxValue,
+        sizeInBytesSpillThreshold = Long.MaxValue,
+        spillSize = SQLMetrics.createSizeMetric(sc, "spill"),
+        eagerCleanupResources = () => (),
+        probeSession = probeSession)
+
+      // Drive the scanner through PROBE_THRESHOLD probes of the same equi-key group, draining
+      // each candidate iterator fully, to cross the deferred-build gate.
+      var i = 0
+      while (i < RangeGroupProbe.PROBE_THRESHOLD - 1) {
+        assert(scanner.findNextInnerJoinRows())
+        val it = scanner.candidatesFor(scanner.getStreamedRow)
+        while (it.hasNext) it.next()
+        i += 1
+      }
+      assert(probeSession.currentRelationOrNull == null, "must not build before the gate")
+      assert(scanner.findNextInnerJoinRows())
+
+      // The gate-crossing probe: obtain the candidate iterator and abandon it early, exactly
+      // as LeftSemi/LeftAnti/ExistenceJoin do on a match, then signal completion via the
+      // Scanner's finishProbe -- not RangeGroupProbe.Session's directly.
+      val candidates = scanner.candidatesFor(scanner.getStreamedRow)
+      assert(candidates.hasNext, "test setup needs at least one match to keep the iterator open")
+      candidates.next()
+      assert(probeSession.currentRelationOrNull != null, "the gate-crossing probe must build")
+      scanner.finishProbe()
+
+      val otherConsumer = new RangeIndexMemoryConsumer(taskContext.taskMemoryManager(), () => 0L)
+      assert(probeSession.memoryConsumer.spill(1L, otherConsumer) > 0L,
+        "SortMergeJoinScanner.finishProbe must forward to the Session, allowing an immediate " +
+          "spill despite the abandoned, undrained candidate iterator")
+      assert(probeSession.currentRelationOrNull == null)
+    } finally {
+      TaskContext.unset()
+    }
+  }
+
+  test("SortMergeJoinScanner.finishProbe is a no-op when range indexing isn't configured") {
+    sc = new SparkContext("local", "test", new SparkConf(false))
+    val taskContext = MemoryTestingUtils.fakeTaskContext(SparkEnv.get)
+    TaskContext.setTaskContext(taskContext)
+    try {
+      val scanner = new SortMergeJoinScanner(
+        streamedKeyGenerator =
+          UnsafeProjection.create(Seq(streamId), Seq(streamId, streamLo, streamHi)),
+        bufferedKeyGenerator = UnsafeProjection.create(Seq(bufferId), Seq(bufferId, bufferP)),
+        keyOrdering = RowOrdering.createNaturalAscendingOrdering(Seq(LongType)),
+        streamedIter = RowIterator.fromScala(Iterator.empty),
+        bufferedIter = RowIterator.fromScala(Iterator.empty),
+        inMemoryThreshold = 1000,
+        spillThreshold = Int.MaxValue,
+        sizeInBytesSpillThreshold = Long.MaxValue,
+        spillSize = SQLMetrics.createSizeMetric(sc, "spill"),
+        eagerCleanupResources = () => ())
+      scanner.finishProbe() // must not throw when probeSession is null
+    } finally {
+      TaskContext.unset()
+    }
+  }
+
+  test("Session.resetGroup releases the index even while a candidate iterator from the " +
+    "group just left behind is still outstanding") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
+      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      probeThroughGate(session, array)
+      assert(session.currentRelationOrNull != null, "the group must be indexed by now")
+
+      val candidates = session.candidates(array, InternalRow(1L, 25L, 55L))
+      assert(candidates.hasNext)
+      candidates.next()
+
+      // A normal group transition (or task completion) must reclaim unconditionally: the
+      // in-flight iterator guard only applies to an unprompted TaskMemoryManager spill, not
+      // to this explicit lifecycle boundary.
+      session.resetGroup()
+      assert(session.currentRelationOrNull == null,
+        "resetGroup must release the index regardless of any in-flight candidate iterator")
+    }
+  }
+
+  test("Session.resetGroup clears a pending spill flag so the next group's first probe " +
+    "is not immediately evicted") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
+      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      probeThroughGate(session, array)
+      assert(session.currentRelationOrNull != null, "the group must be indexed by now")
+
+      // Hold a live candidate iterator open, then decline a spill against it: this leaves
+      // `pendingSpill = true` on the session while the index itself stays in place.
+      val candidates = session.candidates(array, InternalRow(1L, 25L, 55L))
+      assert(candidates.hasNext, "test setup needs at least one match to keep the iterator open")
+      candidates.next()
+      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      assert(session.memoryConsumer.spill(1L, otherConsumer) == 0L,
+        "spill must be declined while the candidate iterator is in-flight")
+
+      // A group transition abandons the outstanding iterator instead of draining it. If
+      // resetGroup didn't also clear pendingSpill, the stale flag would survive into the next
+      // group and evict its brand-new index on the very first probe (see wrapOutstanding).
+      session.resetGroup()
+      assert(session.currentRelationOrNull == null, "resetGroup must release the index")
+
+      probeThroughGate(session, array)
+      assert(session.currentRelationOrNull != null, "the new group must be indexed")
+      session.candidates(array, InternalRow(1L, 25L, 55L))
+      assert(session.currentRelationOrNull != null,
+        "a stale pendingSpill left over from the abandoned group must not evict the new " +
+          "group's index on its first probe")
+    }
+  }
+
+  test("abandoned candidate iterator does not permanently block subsequent spills") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
+      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      probeThroughGate(session, array)
+      assert(session.currentRelationOrNull != null)
+
+      // Row 1 abandoned early without draining or calling finishProbe:
+      val candidates1 = session.candidates(array, InternalRow(1L, 25L, 55L))
+      assert(candidates1.hasNext)
+      candidates1.next()
+
+      // Row 2 probes and drains to completion:
+      val candidates2 = session.candidates(array, InternalRow(1L, 25L, 55L))
+      while (candidates2.hasNext) candidates2.next()
+
+      // A spill now must succeed because row 1's abandoned iterator does not leak:
+      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      assert(session.memoryConsumer.spill(1L, otherConsumer) > 0L,
+        "abandoned candidate iterator from an earlier row must not permanently block spills")
+      assert(session.currentRelationOrNull == null)
     }
   }
 }

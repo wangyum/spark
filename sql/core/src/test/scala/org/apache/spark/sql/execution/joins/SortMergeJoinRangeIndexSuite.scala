@@ -618,10 +618,12 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
   }
 
   test("non-range sort merge join does not register range-index metrics") {
-    val df = spark.range(10).join(spark.range(10), "id")
-    val smj = collectSortMergeJoin(df.queryExecution.executedPlan)
-    assert(smj.nonEmpty)
-    assert(smj.forall(!_.metrics.contains("numRangeIndexedGroups")))
-    assert(smj.forall(!_.metrics.contains("numRangeIndexFallbackGroups")))
+    withSQLConf(smjConfigs: _*) {
+      val df = spark.range(10).hint("merge").join(spark.range(10).hint("merge"), "id")
+      val smj = collectSortMergeJoin(df.queryExecution.executedPlan)
+      assert(smj.nonEmpty)
+      assert(smj.forall(!_.metrics.contains("numRangeIndexedGroups")))
+      assert(smj.forall(!_.metrics.contains("numRangeIndexFallbackGroups")))
+    }
   }
 }

@@ -151,6 +151,16 @@ private[joins] object RangeGroupProbe extends Logging {
     private[this] var probeCount: Int = 0
     private[this] var buildAttempted: Boolean = false
 
+    /**
+     * An active candidate iterator handed out from `currentHandle` that a caller may still be
+     * reading from (see `wrapOutstanding`). While an iterator is in-flight, `currentHandle`'s
+     * relation stays reachable - and thus heap-resident - so `releaseForSpill` declines to free
+     * TaskMemoryManager accounting immediately, setting `pendingSpill` instead to reclaim the
+     * index as soon as the in-flight probe finishes.
+     */
+    private[this] var activeIterator: Iterator[InternalRow] = _
+    private[this] var pendingSpill: Boolean = false
+
     if (taskContext != null) {
       taskContext.addTaskCompletionListener[Unit](_ => resetGroup())
     }
@@ -196,9 +206,58 @@ private[joins] object RangeGroupProbe extends Logging {
         streamedRow: InternalRow): Iterator[InternalRow] = {
       onProbe(matches)
       if (currentHandle != null) {
-        currentHandle.candidates(streamedRow)
+        wrapOutstanding(currentHandle.candidates(streamedRow))
       } else {
         matches.generateIterator()
+      }
+    }
+
+    /**
+     * Wraps a candidate iterator sourced from `currentHandle`'s relation so `releaseForSpill`
+     * can tell it is still being read from. Whole-stage codegen's generated probe calls this
+     * directly (see `SortMergeJoinExec.genScanner`'s `createIterator`) since it builds its own
+     * candidate iterator straight from `currentRelationOrNull` rather than going through
+     * `candidates` above; both call sites need the same tracking, since either one can hold a
+     * live reference to the relation's backing arrays across a nested `consume()` call that
+     * triggers a TaskMemoryManager spill elsewhere in the same task.
+     */
+    def wrapOutstanding(it: Iterator[InternalRow]): Iterator[InternalRow] = {
+      if (pendingSpill && currentHandle != null) {
+        pendingSpill = false
+        doReleaseForSpill()
+      }
+      val wrapped = new Iterator[InternalRow] {
+        private[this] var drained = false
+        override def hasNext: Boolean = {
+          val has = it.hasNext
+          if (!has && !drained) {
+            drained = true
+            if (activeIterator eq this) {
+              activeIterator = null
+            }
+            if (pendingSpill && currentHandle != null) {
+              pendingSpill = false
+              doReleaseForSpill()
+            }
+          }
+          has
+        }
+        override def next(): InternalRow = it.next()
+      }
+      activeIterator = wrapped
+      wrapped
+    }
+
+    /**
+     * Marks the completion of a candidate probe for the current streamed row early, e.g. when
+     * an operator like `LeftSemi` finds a match and breaks out without draining the iterator.
+     * Reclaims the index immediately if a spill request arrived while the probe was in-flight.
+     */
+    def finishProbe(): Unit = {
+      activeIterator = null
+      if (pendingSpill && currentHandle != null) {
+        pendingSpill = false
+        doReleaseForSpill()
       }
     }
 
@@ -215,6 +274,8 @@ private[joins] object RangeGroupProbe extends Logging {
       if (currentHandle != null) currentHandle.relation else null
 
     def resetGroup(): Unit = {
+      activeIterator = null
+      pendingSpill = false
       if (currentHandle != null) {
         release(currentHandle, memoryConsumer)
         currentHandle = null
@@ -229,8 +290,31 @@ private[joins] object RangeGroupProbe extends Logging {
      * as a fallback: the group was successfully indexed (already counted in `numIndexedMetric`)
      * but now reverts to a linear scan for its remaining probes, matching what
      * `numFallbackMetric` otherwise counts for a group whose build was rejected outright.
+     *
+     * Declines (returns 0, leaving `currentHandle` in place) while a candidate iterator from
+     * `wrapOutstanding` is still in-flight (`activeIterator.hasNext` is true): the relation's
+     * backing arrays stay reachable on the heap, so freeing TaskMemoryManager accounting
+     * immediately would cause a transient accounting divergence. Instead, sets `pendingSpill`
+     * so that the index is reclaimed as soon as the in-flight probe completes.
      */
     private def releaseForSpill(): Long = {
+      if (currentHandle != null) {
+        if (activeIterator != null && activeIterator.hasNext) {
+          pendingSpill = true
+          logDebug(log"spill declined for a buffered group's range index: a candidate " +
+            log"iterator is still in-flight; reclaiming once it completes")
+          0L
+        } else {
+          activeIterator = null
+          pendingSpill = false
+          doReleaseForSpill()
+        }
+      } else {
+        0L
+      }
+    }
+
+    private def doReleaseForSpill(): Long = {
       if (currentHandle != null) {
         val bytes = currentHandle.allocatedBytes
         release(currentHandle, memoryConsumer)
@@ -376,14 +460,6 @@ private[joins] object RangeGroupProbe extends Logging {
         if (consumer != null && heldBytes > 0) consumer.freeMemory(heldBytes)
         logWarning(log"range index build failed for a buffered group of " +
           log"${MDC(NUM_ROWS, n)} rows; falling back to a linear scan", e)
-        null
-      case oom: OutOfMemoryError =>
-        // A schema-driven estimate (`estimateMemoryBytes`) still cannot predict every row's
-        // real size (e.g. unusually large variable-length values), so this is a last-resort
-        // safety net: fall back to a linear scan instead of failing the task.
-        if (consumer != null && heldBytes > 0) consumer.freeMemory(heldBytes)
-        logWarning(log"range index build ran out of memory for a buffered group of " +
-          log"${MDC(NUM_ROWS, n)} rows; falling back to a linear scan", oom)
         null
     }
   }

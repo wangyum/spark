@@ -98,6 +98,29 @@ class SortMergeJoinEvaluatorFactory(
           probeSession)
       }
 
+      /**
+       * Scans `smjScanner.candidatesFor(streamedRow)` until `matchCondition` is satisfied or the
+       * candidates are exhausted, signaling early completion via `finishProbe` either way -
+       * shared by LeftSemi, LeftAnti, and ExistenceJoin, which differ only in what they do with
+       * the result.
+       */
+      def probeForMatch(
+          smjScanner: SortMergeJoinScanner,
+          streamedRow: InternalRow,
+          joinRow: JoinedRow,
+          matchCondition: InternalRow => Boolean): Boolean = {
+        var found = false
+        val rightMatchesIterator = smjScanner.candidatesFor(streamedRow)
+        while (!found && rightMatchesIterator.hasNext) {
+          joinRow(streamedRow, rightMatchesIterator.next())
+          found = matchCondition(joinRow)
+        }
+        // A match stops reading before rightMatchesIterator drains; a no-match already drained
+        // it to hasNext() == false, so this is a harmless no-op in that case.
+        smjScanner.finishProbe()
+        found
+      }
+
       joinType match {
         case _: InnerLike =>
           new RowIterator {
@@ -216,13 +239,9 @@ class SortMergeJoinEvaluatorFactory(
                 val currentRightMatches = smjScanner.getBufferedMatches
                 currentLeftRow = smjScanner.getStreamedRow
                 if (currentRightMatches != null && currentRightMatches.length > 0) {
-                  val rightMatchesIterator = smjScanner.candidatesFor(currentLeftRow)
-                  while (rightMatchesIterator.hasNext) {
-                    joinRow(currentLeftRow, rightMatchesIterator.next())
-                    if (boundCondition(joinRow)) {
-                      numOutputRows += 1
-                      return true
-                    }
+                  if (probeForMatch(smjScanner, currentLeftRow, joinRow, boundCondition)) {
+                    numOutputRows += 1
+                    return true
                   }
                 }
               }
@@ -262,14 +281,7 @@ class SortMergeJoinEvaluatorFactory(
                   numOutputRows += 1
                   return true
                 }
-                var found = false
-                val rightMatchesIterator = smjScanner.candidatesFor(currentLeftRow)
-                while (!found && rightMatchesIterator.hasNext) {
-                  joinRow(currentLeftRow, rightMatchesIterator.next())
-                  if (boundRest(joinRow)) {
-                    found = true
-                  }
-                }
+                val found = probeForMatch(smjScanner, currentLeftRow, joinRow, boundRest)
                 if (!found) {
                   numOutputRows += 1
                   return true
@@ -310,15 +322,10 @@ class SortMergeJoinEvaluatorFactory(
                   return true
                 }
                 val currentRightMatches = smjScanner.getBufferedMatches
-                var found = false
-                if (currentRightMatches != null && currentRightMatches.length > 0) {
-                  val rightMatchesIterator = smjScanner.candidatesFor(currentLeftRow)
-                  while (!found && rightMatchesIterator.hasNext) {
-                    joinRow(currentLeftRow, rightMatchesIterator.next())
-                    if (boundRest(joinRow)) {
-                      found = true
-                    }
-                  }
+                val found = if (currentRightMatches != null && currentRightMatches.length > 0) {
+                  probeForMatch(smjScanner, currentLeftRow, joinRow, boundRest)
+                } else {
+                  false
                 }
                 result.setBoolean(0, found)
                 numOutputRows += 1

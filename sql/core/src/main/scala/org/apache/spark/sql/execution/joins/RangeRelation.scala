@@ -1219,7 +1219,7 @@ private[joins] object LongPointIndex {
  * two scan directions a [[PointIndex]] / [[LongPointIndex]] expose, with the
  * predicate's strictness traveling beside it as the scan methods' `strict`
  * argument. The compiler's exhaustiveness check on this sealed hierarchy covers
- * only the interpreted matches in [[BroadcastRangeJoinExec]]'s
+ * only the interpreted matches in [[RangeRelationProbe]]'s
  * `makeCandidateFn`: it is the compiler, not a developer re-reading string
  * literals, that notices when a new case is added there. Generated probe code
  * never matches on the hierarchy. It still has to splice `methodName` into the
