@@ -19,7 +19,8 @@ package org.apache.spark.sql.execution.window
 
 import java.util.Properties
 
-import org.apache.spark.{SparkConf, SparkFunSuite, TaskContext, TaskContextImpl}
+import org.apache.spark.{SparkConf, SparkFunSuite, SparkUnsupportedOperationException, TaskContext,
+  TaskContextImpl}
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection, UnsafeRow}
@@ -132,6 +133,24 @@ class UnsafeRowArenaSuite extends SparkFunSuite {
     withArena(budgetBytes = 1024 * 512) { (arena, _) =>
       val caught = intercept[SparkOutOfMemoryError] {
         (0 until 100000).foreach(i => arena.append(row(i, "x" * 100)))
+      }
+      assert(caught.getMessage != null)
+      arena.free()
+    }
+  }
+
+  test("append throws SparkUnsupportedOperationException (not an uncaught" +
+      " IllegalArgumentException) for a row at or beyond the 256MB address-packing limit") {
+    withArena() { (arena, _) =>
+      // UnsafeRow.pointTo(Object, long, int) only validates sizeInBytes against the backing
+      // array's length when baseObject is a byte[]; a null baseObject (as every off-heap
+      // UnsafeRow already uses) skips that check, so this exercises append's size check --
+      // which runs, and throws, before ever touching the page or calling copyMemory -- without
+      // really allocating ~256MB.
+      val oversized = new UnsafeRow(2)
+      oversized.pointTo(null, 0L, 1 << 28)
+      val caught = intercept[SparkUnsupportedOperationException] {
+        arena.append(oversized)
       }
       assert(caught.getMessage != null)
       arena.free()

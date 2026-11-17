@@ -5394,7 +5394,7 @@ object SQLConf {
         "limits of 1, when the order key's type supports it. Defaults to false, " +
         "matching the rollout posture of the analogous " +
         s"'${ADAPTIVE_PARTIAL_AGGREGATION_ENABLED.key}'.")
-      .version("4.4.0")
+      .version("4.5.0")
       .booleanConf
       .createWithDefault(false)
 
@@ -5410,7 +5410,7 @@ object SQLConf {
         "the accumulator falls back to the same sort-based path it already uses when the hash " +
         "map runs out of memory. Setting this to 0 disables the periodic check (the hash map " +
         "running out of memory remains a fallback trigger regardless).")
-      .version("4.4.0")
+      .version("4.5.0")
       .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
       .longConf
       .checkValue(_ >= 0, "The minimum row count must not be negative.")
@@ -5426,7 +5426,7 @@ object SQLConf {
         "over just sorting. When a periodic evaluation (see " +
         s"'${WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key}') finds the ratio below this " +
         "value, the accumulator falls back to the sort-based path for the rest of the input.")
-      .version("4.4.0")
+      .version("4.5.0")
       .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
       .doubleConf
       .checkValue(v => v >= 1.0 && v.isFinite,

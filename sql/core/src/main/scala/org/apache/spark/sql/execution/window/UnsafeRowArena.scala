@@ -68,15 +68,19 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager)
    * Appends `row`'s bytes and returns a stable address usable with [[getRow]] for the remaining
    * lifetime of this arena. Throws `org.apache.spark.memory.SparkOutOfMemoryError` -- either
    * because no more execution memory is available, or because growing the current page further
-   * would exceed `TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES` (see [[grow]]) -- callers that want
-   * to degrade gracefully (as [[HashRowNumberGroupLimitAccumulator]] does) must catch it
-   * themselves.
+   * would exceed `TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES` (see [[grow]]) -- or, if `row` itself
+   * is too large for this arena's address packing to represent (see [[UnsafeRowArena.SIZE_BITS]]),
+   * `SparkUnsupportedOperationException` from
+   * [[org.apache.spark.sql.errors.QueryExecutionErrors.rowLargerThan256MUnsupportedError]], the
+   * same error [[org.apache.spark.sql.execution.joins.HashedRelation.LongToUnsafeRowMap.append]]
+   * raises for the identical bound. Callers that want to degrade gracefully (as
+   * [[HashRowNumberGroupLimitAccumulator]] does) must catch both themselves.
    */
   def append(row: UnsafeRow): Long = {
     val sizeInBytes = row.getSizeInBytes
-    require(sizeInBytes < (1 << UnsafeRowArena.SIZE_BITS),
-      s"Cannot store a row of $sizeInBytes bytes in UnsafeRowArena " +
-        s"(limit ${1 << UnsafeRowArena.SIZE_BITS} bytes).")
+    if (sizeInBytes >= (1 << UnsafeRowArena.SIZE_BITS)) {
+      throw QueryExecutionErrors.rowLargerThan256MUnsupportedError()
+    }
     grow(sizeInBytes)
     val offset = cursor
     Platform.copyMemory(
@@ -99,13 +103,17 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager)
 
   /**
    * Grows the current page to fit `inputRowSize` more bytes, doubling (at minimum) like
-   * [[org.apache.spark.sql.execution.joins.HashedRelation.LongToUnsafeRowMap.grow]]. Mirrors that
-   * method's own cap, which exists because `TaskMemoryManager.allocatePage` enforces
-   * `MAXIMUM_PAGE_SIZE_BYTES` (~17.18 GB) unconditionally -- i.e. independent of whether memory is
-   * actually under pressure -- and throws the uncatchable, unaccounted `TooLargePageException`
-   * rather than `SparkOutOfMemoryError` if asked for more. Checking the cap here first lets a
-   * single task's accumulated state exceed that limit degrade through the normal
-   * `SparkOutOfMemoryError` fallback path instead of crashing the task.
+   * [[org.apache.spark.sql.execution.joins.HashedRelation.LongToUnsafeRowMap.grow]] -- only the
+   * doubling strategy is shared, not the cap below: that sibling instead caps at a lower, fixed
+   * 8 GB (`1 << 30` words) and throws a plain, non-degradable `SparkUnsupportedOperationException`
+   * via `QueryExecutionErrors.cannotBuildHashedRelationLargerThan8GError`, since a hash join has no
+   * fallback for an oversized build side. This arena caps at `TaskMemoryManager
+   * .MAXIMUM_PAGE_SIZE_BYTES` (~17.18 GB) instead, because that is the limit
+   * `TaskMemoryManager.allocatePage` itself enforces unconditionally -- i.e. independent of
+   * whether memory is actually under pressure -- throwing the uncatchable, unaccounted
+   * `TooLargePageException` rather than `SparkOutOfMemoryError` if asked for more. Checking the
+   * cap here first lets a single task's accumulated state exceed that limit degrade through the
+   * normal `SparkOutOfMemoryError` fallback path instead of crashing the task.
    */
   private def grow(inputRowSize: Int): Unit = {
     val usedBytes = cursor - page.getBaseOffset
@@ -115,10 +123,12 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager)
       val newNumWords = math.max(neededNumWords, doubledNumWords)
       val newPageSizeBytes = newNumWords * 8L
       if (newPageSizeBytes > TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES) {
+        // No bytes were ever requested from/granted by the allocator -- this is a pre-check that
+        // fires before allocatePage would even be attempted -- so receivedBytes is 0, matching
+        // WindowSegmentTree's use of this same error for its own failed-acquisition case.
         // scalastyle:off throwerror
         throw QueryExecutionErrors.cannotAcquireMemoryForWindowAggregateError(
-          newPageSizeBytes, TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES,
-          taskMemoryManager.getMemoryConsumptionBreakdown())
+          newPageSizeBytes, 0L, taskMemoryManager.getMemoryConsumptionBreakdown())
         // scalastyle:on throwerror
       }
       val newPage = allocatePage(newPageSizeBytes)

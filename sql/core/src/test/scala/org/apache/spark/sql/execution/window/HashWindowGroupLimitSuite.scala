@@ -328,7 +328,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       // isolating this test to the genuine-OOM fallback path only.
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBacked, minCompactionRatio = 0.0, compactionCheckInterval = 0L)
+        numTasksFallBacked, minCompactionRatio = 0.0, minRowsBetweenCompactionChecks = 0L)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
       val n = 2000
@@ -373,7 +373,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       // isolating this test to the genuine-OOM fallback path only.
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBacked, minCompactionRatio = 0.0, compactionCheckInterval = 0L)
+        numTasksFallBacked, minCompactionRatio = 0.0, minRowsBetweenCompactionChecks = 0L)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
       val pad = UTF8String.fromString("x" * 100)
@@ -419,9 +419,10 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
   //    genuine OOM strikes, not on some earlier row -- otherwise a healthy, correct proactive
   //    bail-out consumes the fallback first and the arena never gets a chance to genuinely OOM at
   //    all. Since every key here is distinct (ratio == 1.0 throughout, comfortably below
-  //    minCompactionRatio whenever the check is actually evaluated), compactionCheckInterval is
-  //    tuned to the exact row count at which rowArena.append happens to first throw under this
-  //    budget/padding (empirically found to be 482; see the comment below), so the check's first
+  //    minCompactionRatio whenever the check is actually evaluated),
+  //    minRowsBetweenCompactionChecks is tuned to the exact row count at which rowArena.append
+  //    happens to first throw under this budget/padding (empirically found to be 482; see the
+  //    comment below), so the check's first
   //    and only evaluation for the whole test lands on exactly that row. If an unrelated change
   //    to row/page layout shifts that row count, this test still passes/fails correctly for
   //    *some* nearby value -- rerun with a temporary debug print of `rowsConsumed` in
@@ -444,13 +445,13 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
       // rowArena.append empirically first throws SparkOutOfMemoryError once rowsConsumed reaches
       // 481 (i.e. while processing the 482nd distinct key), under this exact budget/padding/page
-      // configuration. compactionCheckInterval = 482 makes the periodic check's first-ever
+      // configuration. minRowsBetweenCompactionChecks = 482 makes the periodic check's first-ever
       // evaluation land exactly there (rowsConsumed == nextCompactionCheckAt == 482 right after
       // that row's would-be rowsConsumed increment), instead of firing (harmlessly, on a still-
       // live map) on any earlier row.
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBacked, minCompactionRatio = 1.05, compactionCheckInterval = 482L)
+        numTasksFallBacked, minCompactionRatio = 1.05, minRowsBetweenCompactionChecks = 482L)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
       val pad = UTF8String.fromString("x" * 100)

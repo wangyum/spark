@@ -20,6 +20,7 @@ package org.apache.spark.sql.execution.window
 import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.{PartitionEvaluator, PartitionEvaluatorFactory, TaskContext}
+import org.apache.spark.SparkUnsupportedOperationException
 import org.apache.spark.internal.Logging
 import org.apache.spark.memory.SparkOutOfMemoryError
 import org.apache.spark.sql.catalyst.InternalRow
@@ -76,7 +77,7 @@ class HashRowNumberGroupLimitAccumulator(
     spillSize: SQLMetric,
     numTasksFallBacked: SQLMetric,
     minCompactionRatio: Double = 1.05,
-    compactionCheckInterval: Long = 100000L,
+    minRowsBetweenCompactionChecks: Long = 100000L,
     enableRadixSort: Boolean = true) extends Logging {
 
   private val numOrderCols = orderSpec.length
@@ -140,7 +141,7 @@ class HashRowNumberGroupLimitAccumulator(
   // Rows consumed by the hash path (not counting rows already routed to fallbackSorter), used
   // only to decide when to run the next periodic compaction-ratio check.
   private var rowsConsumed: Long = 0L
-  private var nextCompactionCheckAt: Long = compactionCheckInterval
+  private var nextCompactionCheckAt: Long = minRowsBetweenCompactionChecks
 
   // Non-null once the map or the row arena could no longer acquire memory, or the compaction
   // ratio proved too low; from then on every row -- including ones already recorded as winners --
@@ -169,9 +170,9 @@ class HashRowNumberGroupLimitAccumulator(
       }
     }
     rowsConsumed += 1
-    if (compactionCheckInterval > 0 && rowsConsumed >= nextCompactionCheckAt) {
+    if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
       maybeBailOutForLowCompaction()
-      nextCompactionCheckAt = rowsConsumed + compactionCheckInterval
+      nextCompactionCheckAt = rowsConsumed + minRowsBetweenCompactionChecks
     }
   }
 
@@ -181,13 +182,19 @@ class HashRowNumberGroupLimitAccumulator(
    * as it was (either the untouched -1L sentinel for a new key, or the previous winner's valid
    * state for a replacement), since [[switchToFallback]] -- reached right after this throws --
    * drains the map's current, still-consistent state as part of its fallback seed set.
+   *
+   * Falls back on either of `rowArena.append`'s two failure modes: genuine OOM
+   * (`SparkOutOfMemoryError`), or `row` itself being too large for the arena's address packing
+   * (`SparkUnsupportedOperationException`, see [[UnsafeRowArena.append]]) -- the sort-based
+   * fallback sorter has no analogous per-row size limit, so a row that defeats the arena can
+   * still be handled by falling back, same as a genuine OOM.
    */
   private def storeWinner(row: UnsafeRow, buffer: UnsafeRow): Unit = {
     val address =
       try {
         rowArena.append(row)
       } catch {
-        case _: SparkOutOfMemoryError =>
+        case _: SparkOutOfMemoryError | _: SparkUnsupportedOperationException =>
           switchToFallback(row)
           return
       }
@@ -380,7 +387,7 @@ class HashRowNumberGroupLimitEvaluatorFactory(
     spillSize: SQLMetric,
     numTasksFallBacked: SQLMetric,
     minCompactionRatio: Double,
-    compactionCheckInterval: Long,
+    minRowsBetweenCompactionChecks: Long,
     enableRadixSort: Boolean)
   extends PartitionEvaluatorFactory[InternalRow, InternalRow] {
 
@@ -395,7 +402,7 @@ class HashRowNumberGroupLimitEvaluatorFactory(
   def createAccumulator(): HashRowNumberGroupLimitAccumulator =
     new HashRowNumberGroupLimitAccumulator(
       partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-      numTasksFallBacked, minCompactionRatio, compactionCheckInterval, enableRadixSort)
+      numTasksFallBacked, minCompactionRatio, minRowsBetweenCompactionChecks, enableRadixSort)
 
   class HashRowNumberGroupLimitPartitionEvaluator
     extends PartitionEvaluator[InternalRow, InternalRow] {
