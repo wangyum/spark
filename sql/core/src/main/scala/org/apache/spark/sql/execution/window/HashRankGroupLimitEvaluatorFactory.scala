@@ -301,10 +301,20 @@ class HashRankGroupLimitAccumulator(
   private val spillSizeBefore = TaskContext.get().taskMetrics().memoryBytesSpilled
 
   private var rowsConsumed: Long = 0L
-  private var nextCompactionCheckAt: Long = minRowsBetweenCompactionChecks
+  // See the identical field (and its doc) in HashRowNumberGroupLimitAccumulator.
+  private var currentCheckInterval: Long =
+    if (minRowsBetweenCompactionChecks >
+        HashRowNumberGroupLimitAccumulator.COMPACTION_CHECK_RAMP_UP_THRESHOLD) {
+      math.max(1L, minRowsBetweenCompactionChecks / 4)
+    } else {
+      minRowsBetweenCompactionChecks
+    }
+  private var nextCompactionCheckAt: Long = currentCheckInterval
   private var appendsSinceLastCheck: Long = 0L
 
   private var fallbackSorter: UnsafeExternalRowSorter = null
+
+  override def fallbackSorterOrNull: UnsafeExternalRowSorter = fallbackSorter
 
   /** Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input. */
   def consumeRow(row: UnsafeRow): Unit = {
@@ -350,8 +360,9 @@ class HashRankGroupLimitAccumulator(
     }
     rowsConsumed += 1
     if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
-      maybeBailOutForPoorEfficiency()
-      nextCompactionCheckAt = rowsConsumed + minRowsBetweenCompactionChecks
+      maybeBailOutForPoorEfficiency(currentCheckInterval)
+      currentCheckInterval = math.min(currentCheckInterval * 2, minRowsBetweenCompactionChecks)
+      nextCompactionCheckAt = rowsConsumed + currentCheckInterval
       appendsSinceLastCheck = 0L
     }
   }
@@ -454,7 +465,7 @@ class HashRankGroupLimitAccumulator(
   }
 
   /** Mirrors [[HashRowNumberGroupLimitAccumulator.maybeBailOutForPoorEfficiency]]. */
-  private def maybeBailOutForPoorEfficiency(): Unit = {
+  private def maybeBailOutForPoorEfficiency(completedWindowSize: Long): Unit = {
     val numKeys = map.getNumKeys()
     if (numKeys > 0 && rowsConsumed.toDouble / numKeys < minCompactionRatio) {
       val ratio = rowsConsumed.toDouble / numKeys
@@ -463,10 +474,10 @@ class HashRankGroupLimitAccumulator(
       switchToFallbackProactively()
       return
     }
-    val appendRatio = appendsSinceLastCheck.toDouble / minRowsBetweenCompactionChecks
+    val appendRatio = appendsSinceLastCheck.toDouble / completedWindowSize
     if (appendRatio > maxAppendRatio) {
       logInfo(s"Hash-based window group limit falling back to sort-based: $appendRatio of the " +
-        s"last $minRowsBetweenCompactionChecks rows triggered a candidate append, above the " +
+        s"last $completedWindowSize rows triggered a candidate append, above the " +
         s"maximum $maxAppendRatio.")
       switchToFallbackProactively()
     }

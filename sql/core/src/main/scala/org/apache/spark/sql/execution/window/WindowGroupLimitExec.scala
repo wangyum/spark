@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCo
 import org.apache.spark.sql.catalyst.plans.physical.{AllTuples, ClusteredDistribution,
   Distribution, Partitioning}
 import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport, SparkPlan,
-  UnaryExecNode}
+  UnaryExecNode, UnsafeExternalRowSorter}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
 sealed trait WindowGroupLimitMode
@@ -46,6 +46,16 @@ case object Final extends WindowGroupLimitMode
 trait HashGroupLimitAccumulator {
   def consumeRow(row: UnsafeRow): Unit
   def finish(): Iterator[InternalRow]
+
+  /**
+   * Non-null once this accumulator has permanently fallen back to sort-based output (see the
+   * concrete implementations' class docs for the possible triggers). Exposed so `doConsume`'s
+   * generated code can, once a task enters permanent fallback, insert directly into this sorter
+   * -- the same direct dispatch [[org.apache.spark.sql.execution.SortExec]]'s own `doConsume`
+   * uses -- instead of paying `consumeRow`'s extra virtual dispatch (through this trait) plus its
+   * own internal null check on every one of the, possibly many million, remaining rows.
+   */
+  def fallbackSorterOrNull: UnsafeExternalRowSorter
 }
 
 /**
@@ -253,9 +263,24 @@ case class WindowGroupLimitExec(
   }
 
   override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
+    // Checks fallbackSorterOrNull on every row rather than caching it in a mutable state once seen
+    // non-null: consumeRow() itself needs the identical check (the interpreted path drives it
+    // directly, without going through doConsume at all), so there is no simpler, still-correct
+    // alternative -- but once non-null it stays non-null for the rest of the task (see
+    // HashGroupLimitAccumulator's doc), so the JIT's branch predictor settles on the fallback
+    // branch immediately, leaving sorterTerm.insertRow as a direct dispatch on a concrete class,
+    // exactly like SortExec.doConsume's own insertRow call -- unlike routing every such row through
+    // consumeRow's own virtual dispatch (through this trait) *plus* its internal null check.
+    val sorterTerm = ctx.freshName("fallbackSorter")
+    val sorterClass = classOf[UnsafeExternalRowSorter].getName
     s"""
        |${row.code}
-       |$accumulatorTerm.consumeRow((UnsafeRow) ${row.value});
+       |$sorterClass $sorterTerm = $accumulatorTerm.fallbackSorterOrNull();
+       |if ($sorterTerm != null) {
+       |  $sorterTerm.insertRow((UnsafeRow) ${row.value});
+       |} else {
+       |  $accumulatorTerm.consumeRow((UnsafeRow) ${row.value});
+       |}
      """.stripMargin
   }
 

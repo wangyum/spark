@@ -250,20 +250,41 @@ class HashRowNumberGroupLimitAccumulator(
   // Rows consumed by the hash path (not counting rows already routed to fallbackSorter), used
   // only to decide when to run the next periodic efficiency check.
   private var rowsConsumed: Long = 0L
-  private var nextCompactionCheckAt: Long = minRowsBetweenCompactionChecks
 
-  // Rows, within the current minRowsBetweenCompactionChecks-sized window, that actually triggered
-  // a write into a heap slot (insert or replace) rather than being discarded outright. Reset to 0
-  // every time the periodic check runs (see consumeRow), so this is always a count over exactly
-  // the last minRowsBetweenCompactionChecks rows, not a cumulative total -- a windowed count
-  // reacts to a mid-stream shift from healthy to unhealthy compaction, where a cumulative ratio
-  // would stay diluted by an earlier healthy stretch. See maybeBailOutForPoorEfficiency.
+  // The interval before the next periodic check. Below COMPACTION_CHECK_RAMP_UP_THRESHOLD this
+  // stays pinned at minRowsBetweenCompactionChecks forever (unchanged original behavior). At or
+  // above it, it starts at a quarter of minRowsBetweenCompactionChecks and doubles (capped at
+  // minRowsBetweenCompactionChecks) every time a check doesn't bail out: a task whose true row
+  // count never reaches minRowsBetweenCompactionChecks (e.g. an all-unique-key task under the
+  // large, 100000-row default) would otherwise never run the check at all, paying the full cost of
+  // growing the hash map/table for nothing -- see HashRowNumberGroupLimitAccumulator's class doc's
+  // "periodically" bullet. A genuinely healthy task (e.g. few distinct keys) passes these smaller
+  // early checks just as easily, since their ratio is already high well before minRowsBetween
+  // CompactionChecks, and settles into the original, larger steady-state interval after a few
+  // doublings.
+  private var currentCheckInterval: Long =
+    if (minRowsBetweenCompactionChecks >
+        HashRowNumberGroupLimitAccumulator.COMPACTION_CHECK_RAMP_UP_THRESHOLD) {
+      math.max(1L, minRowsBetweenCompactionChecks / 4)
+    } else {
+      minRowsBetweenCompactionChecks
+    }
+  private var nextCompactionCheckAt: Long = currentCheckInterval
+
+  // Rows, within the just-completed check interval (see currentCheckInterval), that actually
+  // triggered a write into a heap slot (insert or replace) rather than being discarded outright.
+  // Reset to 0 every time the periodic check runs (see consumeRow), so this is always a count over
+  // exactly the interval just completed, not a cumulative total -- a windowed count reacts to a
+  // mid-stream shift from healthy to unhealthy compaction, where a cumulative ratio would stay
+  // diluted by an earlier healthy stretch. See maybeBailOutForPoorEfficiency.
   private var appendsSinceLastCheck: Long = 0L
 
   // Non-null once the map or the row arena could no longer acquire memory, or the compaction
   // ratio proved too low; from then on every row -- including ones already recorded as kept -- is
   // routed here instead, and the hash map/row arena are abandoned.
   private var fallbackSorter: UnsafeExternalRowSorter = null
+
+  override def fallbackSorterOrNull: UnsafeExternalRowSorter = fallbackSorter
 
   /** Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input. */
   def consumeRow(row: UnsafeRow): Unit = {
@@ -299,8 +320,9 @@ class HashRowNumberGroupLimitAccumulator(
     }
     rowsConsumed += 1
     if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
-      maybeBailOutForPoorEfficiency()
-      nextCompactionCheckAt = rowsConsumed + minRowsBetweenCompactionChecks
+      maybeBailOutForPoorEfficiency(currentCheckInterval)
+      currentCheckInterval = math.min(currentCheckInterval * 2, minRowsBetweenCompactionChecks)
+      nextCompactionCheckAt = rowsConsumed + currentCheckInterval
       appendsSinceLastCheck = 0L
     }
   }
@@ -410,8 +432,12 @@ class HashRowNumberGroupLimitAccumulator(
    *     ratio where almost every row still replaces/extends its key's kept state anyway (e.g.
    *     taking the latest `limit` rows per key from a roughly time-ordered stream), which grows
    *     the arena close to linearly in the row count instead of the key count.
+   *
+   * @param completedWindowSize the number of rows in the just-completed check window -- not
+   *                             always `minRowsBetweenCompactionChecks`, see
+   *                             `currentCheckInterval`.
    */
-  private def maybeBailOutForPoorEfficiency(): Unit = {
+  private def maybeBailOutForPoorEfficiency(completedWindowSize: Long): Unit = {
     val numKeys = map.getNumKeys()
     if (numKeys > 0 && rowsConsumed.toDouble / numKeys < minCompactionRatio) {
       val ratio = rowsConsumed.toDouble / numKeys
@@ -420,10 +446,10 @@ class HashRowNumberGroupLimitAccumulator(
       switchToFallbackProactively()
       return
     }
-    val appendRatio = appendsSinceLastCheck.toDouble / minRowsBetweenCompactionChecks
+    val appendRatio = appendsSinceLastCheck.toDouble / completedWindowSize
     if (appendRatio > maxAppendRatio) {
       logInfo(s"Hash-based window group limit falling back to sort-based: $appendRatio of the " +
-        s"last $minRowsBetweenCompactionChecks rows triggered a heap write, above the maximum " +
+        s"last $completedWindowSize rows triggered a heap write, above the maximum " +
         s"$maxAppendRatio.")
       switchToFallbackProactively()
     }
@@ -526,6 +552,16 @@ object HashRowNumberGroupLimitAccumulator {
   // BytesToBytesMap-backed structure expected to often hold little data (see HashedRelation.scala).
   // Shared with HashRankGroupLimitAccumulator, hence package-private rather than private.
   private[window] val INITIAL_PAGE_SIZE_BYTES: Long = 1L << 20
+
+  // Below this, the periodic compaction check always runs at the fixed
+  // minRowsBetweenCompactionChecks interval, unchanged from before ramp-up existed -- several
+  // low-level tests hand-tune small minRowsBetweenCompactionChecks values (down to single digits)
+  // to land the check's first-ever evaluation on an exact row, including one that must coincide
+  // with a specific genuine-OOM row found by trial and error; a value this far below any of those
+  // is guaranteed not to disturb them. At or above it (in particular, the real, much larger
+  // default of 100000), ramp-up's smaller first checks start paying for themselves: see
+  // consumeRow's doc.
+  private[window] val COMPACTION_CHECK_RAMP_UP_THRESHOLD: Long = 1000L
 }
 
 /**
