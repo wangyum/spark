@@ -28,7 +28,7 @@ import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, BindReferences, Expression}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
-import org.apache.spark.sql.catalyst.planning.{ExtractRangeJoinKeys, PartialRangeJoin}
+import org.apache.spark.sql.catalyst.planning.ExtractRangeJoinKeys
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical.statsEstimation.EstimationUtils
 import org.apache.spark.sql.execution.ExternalAppendOnlyUnsafeRowArray
@@ -73,7 +73,7 @@ private[joins] object RangeGroupProbe extends Logging {
   final class Spec(
       val mode: RangeRelationBroadcastMode,
       val boundStreamKeys: Seq[Expression],
-      val pointScan: (PointScan, Boolean),
+      val probeKind: RangeProbeKind,
       val threshold: Int,
       val maxBytes: Long,
       val bufferRowSize: Long) extends Serializable {
@@ -366,14 +366,8 @@ private[joins] object RangeGroupProbe extends Logging {
                 }
                 val boundBufferKeys = BindReferences.bindReferences(bufferRange, bufferOutput)
                 val boundStreamKeys = BindReferences.bindReferences(streamRange, streamOutput)
-                val mode = RangeRelationBroadcastMode(boundBufferKeys, RangeIndexKind(kind))
-                val pointScan = kind match {
-                  case _: PartialRangeJoin => PointScan.forJoin(kind, buildSide)
-                  // Interval-kind modes never force `pointScan`: both probe paths take it
-                  // by name and only read it for a point-index build, so this placeholder
-                  // keeps the field non-optional rather than carrying a meaning.
-                  case _ => (PointScan.UpTo, false)
-                }
+                val probeKind = RangeProbeKind.forJoin(kind, buildSide)
+                val mode = RangeRelationBroadcastMode(boundBufferKeys, probeKind.indexKind)
                 // The index retains a full copy of every buffered row (see `PointIndex`/
                 // `IntervalIndex`), so the memory estimate must scale with the buffered side's
                 // actual schema rather than a fixed per-row constant.
@@ -381,7 +375,7 @@ private[joins] object RangeGroupProbe extends Logging {
                 Some(new Spec(
                   mode,
                   boundStreamKeys,
-                  pointScan,
+                  probeKind,
                   threshold,
                   conf.sortMergeJoinRangeIndexMaxBytes,
                   bufferRowSize))
@@ -453,7 +447,7 @@ private[joins] object RangeGroupProbe extends Logging {
       }
 
       val candidateFn = RangeRelationProbe.makeCandidateFn(
-        relation, spec.boundStreamKeys, spec.pointScan)
+        relation, spec.boundStreamKeys, spec.probeKind)
       new Handle(relation, allocatedBytes, candidateFn)
     } catch {
       case NonFatal(e) =>

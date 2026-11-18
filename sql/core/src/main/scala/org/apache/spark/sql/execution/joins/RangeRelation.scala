@@ -1241,18 +1241,44 @@ private[joins] object PointScan {
   /**
    * The scan direction a partial-range join's build side probes with, and the
    * predicate's strictness. Lower bound build side uses `UpTo`, upper bound
-   * uses `From`. Throws for any other range-join shape; callers only touch
-   * this for a [[PointIndexKind]] build.
+   * uses `From`.
    */
-  def forJoin(rangeJoinKind: RangeJoinKind, buildSide: BuildSide): (PointScan, Boolean) =
-    rangeJoinKind match {
-      case partial: PartialRangeJoin =>
-        val isLower = partial.leftIsLower == (buildSide == BuildLeft)
-        (if (isLower) UpTo else From, partial.strict)
-      case other =>
-        throw SparkException.internalError(
-          s"Point index is only built for a partial range, got $other.")
-    }
+  def forJoin(partial: PartialRangeJoin, buildSide: BuildSide): (PointScan, Boolean) = {
+    val isLower = partial.leftIsLower == (buildSide == BuildLeft)
+    (if (isLower) UpTo else From, partial.strict)
+  }
+}
+
+/**
+ * How a join probes the [[RangeRelation]] its build side materializes, paired 1:1 with the
+ * [[RangeIndexKind]] that relation was built as (`indexKind` projects it out, so a caller
+ * holding a `RangeProbeKind` never separately tracks or re-derives which index family it
+ * probes). A point-in-range or interval-overlap join always probes with `overlapping`; a
+ * partial range (single inequality) probes with the direction and strictness [[PointScan]]
+ * carries. Replaces an `Option[(PointScan, Boolean)]` that forced every caller to `.get` it
+ * back out inside a [[PointIndexKind]] branch: an interval probe can never reach that branch,
+ * but the Option's type didn't say so - this type does, since only [[RangeProbeKind.Point]]
+ * carries a `PointScan` at all.
+ */
+private[joins] sealed trait RangeProbeKind {
+  def indexKind: RangeIndexKind
+}
+
+private[joins] object RangeProbeKind {
+  case object Interval extends RangeProbeKind {
+    override def indexKind: RangeIndexKind = IntervalIndexKind
+  }
+
+  final case class Point(scan: PointScan, strict: Boolean) extends RangeProbeKind {
+    override def indexKind: RangeIndexKind = PointIndexKind
+  }
+
+  def forJoin(kind: RangeJoinKind, buildSide: BuildSide): RangeProbeKind = kind match {
+    case partial: PartialRangeJoin =>
+      val (scan, strict) = PointScan.forJoin(partial, buildSide)
+      Point(scan, strict)
+    case _ => Interval
+  }
 }
 
 /**
@@ -1330,18 +1356,22 @@ private[joins] object RangeRelationProbe {
 
   /**
    * Create candidate probe function for a materialized range relation and bound probe keys.
-   * `pointScan` is by-name so it is only forced inside the point-index branches.
+   * `relation`'s concrete class and `probeKind` both derive from the same join's
+   * `RangeJoinKind` (see `RangeProbeKind.forJoin` and the `RangeRelationBroadcastMode` that
+   * built `relation`), so exactly one of the four cases below ever matches for a given call;
+   * the catch-all exists only because `relation`'s concrete type isn't visible to the compiler
+   * here; it is not a reachable outcome.
    */
   def makeCandidateFn(
       relation: RangeRelation,
       boundStreamKeys: Seq[Expression],
-      pointScan: => (PointScan, Boolean)): InternalRow => Iterator[InternalRow] = {
+      probeKind: RangeProbeKind): InternalRow => Iterator[InternalRow] = {
     val isOneKey = boundStreamKeys.length == 1
     val lowExpr = boundStreamKeys.head
     val highExpr = if (isOneKey) null else boundStreamKeys(1)
 
-    relation match {
-      case longs: LongIntervalIndex => row =>
+    (relation, probeKind) match {
+      case (longs: LongIntervalIndex, RangeProbeKind.Interval) => row =>
         val low = lowExpr.eval(row)
         if (low == null) {
           Iterator.empty
@@ -1353,8 +1383,7 @@ private[joins] object RangeRelationProbe {
             longs.overlapping(longs.toLong(low), longs.toLong(high))
           }
         }
-      case points: LongPointIndex =>
-        val (direction, strict) = pointScan
+      case (points: LongPointIndex, RangeProbeKind.Point(direction, strict)) =>
         val scan: Long => Iterator[InternalRow] = direction match {
           case PointScan.UpTo => points.upTo(_, strict)
           case PointScan.From => points.from(_, strict)
@@ -1362,7 +1391,7 @@ private[joins] object RangeRelationProbe {
         row =>
           val low = lowExpr.eval(row)
           if (low == null) Iterator.empty else scan(points.toLong(low))
-      case intervals: IntervalIndex => row =>
+      case (intervals: IntervalIndex, RangeProbeKind.Interval) => row =>
         val low = lowExpr.eval(row)
         if (low == null) {
           Iterator.empty
@@ -1370,8 +1399,7 @@ private[joins] object RangeRelationProbe {
           val high = if (isOneKey) low else highExpr.eval(row)
           intervals.overlapping(low, high)
         }
-      case points: PointIndex =>
-        val (direction, strict) = pointScan
+      case (points: PointIndex, RangeProbeKind.Point(direction, strict)) =>
         val scan: Any => Iterator[InternalRow] = direction match {
           case PointScan.UpTo => points.upTo(_, strict)
           case PointScan.From => points.from(_, strict)
@@ -1379,6 +1407,10 @@ private[joins] object RangeRelationProbe {
         row =>
           val low = lowExpr.eval(row)
           if (low == null) Iterator.empty else scan(low)
+      case (other, kind) =>
+        throw SparkException.internalError(
+          s"RangeRelation ${other.getClass.getSimpleName} does not match probe kind $kind; " +
+          "both must derive from the same join's RangeJoinKind.")
     }
   }
 }
@@ -1463,25 +1495,24 @@ private[joins] object RangeIndexProbeCodegen {
 
   /**
    * The Java expression that probes `relationTerm` - already known at codegen time to be an
-   * instance of the concrete class `indexKind`/`usesLongKeys` selects - and yields a
+   * instance of the concrete class `probeKind.indexKind`/`usesLongKeys` selects - and yields a
    * `scala.collection.Iterator`. Returns only the expression, not a declaration: callers decide
    * whether to declare a new variable or assign into one already declared (e.g. inside an
-   * `if`/`else` branch). `pointScan` is by-name so it is only forced for a [[PointIndexKind]]
-   * probe.
+   * `if`/`else` branch). Unlike the interpreted `RangeRelationProbe.makeCandidateFn`, this match
+   * is exhaustive with no unreachable case: codegen never inspects `relationTerm`'s actual class,
+   * so there is nothing here that could disagree with `probeKind`.
    */
   def genCandidateExpr(
       ctx: CodegenContext,
       relationTerm: String,
-      indexKind: RangeIndexKind,
+      probeKind: RangeProbeKind,
       usesLongKeys: Boolean,
-      pointScan: => (PointScan, Boolean),
       keys: ProbeKeys): String = {
-    val className = indexClassName(indexKind, usesLongKeys)
-    val call = indexKind match {
-      case PointIndexKind =>
-        val (scan, strict) = pointScan
+    val className = indexClassName(probeKind.indexKind, usesLongKeys)
+    val call = probeKind match {
+      case RangeProbeKind.Point(scan, strict) =>
         s"(($className) $relationTerm).${scan.methodName}(${keys.keyVars.head}, $strict)"
-      case IntervalIndexKind =>
+      case RangeProbeKind.Interval =>
         // A point probe has one key. Reuse it as both ends so it is evaluated once.
         val high = if (keys.keyVars.length == 1) keys.keyVars.head else keys.keyVars(1)
         s"(($className) $relationTerm).overlapping(${keys.keyVars.head}, $high)"

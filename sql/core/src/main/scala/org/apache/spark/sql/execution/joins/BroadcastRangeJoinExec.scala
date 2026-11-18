@@ -76,8 +76,7 @@ case class BroadcastRangeJoinExec(
 
   override def requiredChildDistribution: Seq[Distribution] = {
     val mode = RangeRelationBroadcastMode(
-      BindReferences.bindReferences(buildKeys, broadcast.output),
-      RangeIndexKind(rangeJoinKind))
+      BindReferences.bindReferences(buildKeys, broadcast.output), probeKind.indexKind)
     buildSide match {
       case BuildLeft =>
         BroadcastDistribution(mode) :: UnspecifiedDistribution :: Nil
@@ -105,9 +104,8 @@ case class BroadcastRangeJoinExec(
     }
   }
 
-  // The point-index scan direction and strictness used to probe this join's build
-  // side. See `PointScan.forJoin`.
-  private lazy val pointScan: (PointScan, Boolean) = PointScan.forJoin(rangeJoinKind, buildSide)
+  // How this join probes its build side's materialized RangeRelation. See `RangeProbeKind`.
+  private val probeKind: RangeProbeKind = RangeProbeKind.forJoin(rangeJoinKind, buildSide)
 
   private def perPartition(
       relation: Broadcast[RangeRelation])(
@@ -116,11 +114,11 @@ case class BroadcastRangeJoinExec(
     val cond = condition.get
     val schema = left.output ++ right.output
     val numBuildFields = broadcast.output.length
-    val kind = rangeJoinKind
+    val kind = probeKind
     val side = buildSide
     streamed.execute().mapPartitionsInternal { streamedIter =>
       val candidateFn = RangeRelationProbe.makeCandidateFn(
-        relation.value, boundStreamKeys, PointScan.forJoin(kind, side))
+        relation.value, boundStreamKeys, kind)
       f(new BroadcastRangeJoinExec.ProbeContext(
         streamedIter,
         Predicate.create(cond, schema).eval _,
@@ -275,7 +273,7 @@ case class BroadcastRangeJoinExec(
   private def prepareBroadcast(ctx: CodegenContext): String = {
     val broadcastRelation = broadcast.executeBroadcast[RangeRelation]()
     val broadcastTerm = ctx.addReferenceObj("broadcast", broadcastRelation)
-    val clsName = RangeIndexProbeCodegen.indexClassName(RangeIndexKind(rangeJoinKind), usesLongKeys)
+    val clsName = RangeIndexProbeCodegen.indexClassName(probeKind.indexKind, usesLongKeys)
     ctx.addMutableState(clsName, "rangeRelation",
       v => s"$v = ($clsName) $broadcastTerm.value();", forceInline = true)
   }
@@ -301,7 +299,7 @@ case class BroadcastRangeJoinExec(
     val boundStreamedKeys = BindReferences.bindReferences(streamedKeys, streamed.output)
     val keys = RangeIndexProbeCodegen.genProbeKeys(ctx, input, boundStreamedKeys, usesLongKeys)
     val candidateExpr = RangeIndexProbeCodegen.genCandidateExpr(
-      ctx, relationTerm, RangeIndexKind(rangeJoinKind), usesLongKeys, pointScan, keys)
+      ctx, relationTerm, probeKind, usesLongKeys, keys)
     val matches = ctx.freshName("matches")
     val iterCls = classOf[Iterator[InternalRow]].getName
     val iteratorCode = s"$iterCls $matches = $candidateExpr;"

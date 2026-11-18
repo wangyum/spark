@@ -655,7 +655,7 @@ case class SortMergeJoinExec(
         val keys = RangeIndexProbeCodegen.genProbeKeys(
           ctx, streamedVars, spec.boundStreamKeys, spec.usesLongKeys)
         val candidateExpr = RangeIndexProbeCodegen.genCandidateExpr(
-          ctx, relVar, spec.mode.indexKind, spec.usesLongKeys, spec.pointScan, keys)
+          ctx, relVar, spec.probeKind, spec.usesLongKeys, keys)
         s"""
            |$sessionTerm.onProbe($matches);
            |${classOf[RangeRelation].getName} $relVar = $sessionTerm.currentRelationOrNull();
