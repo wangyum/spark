@@ -149,9 +149,12 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
 
   // Composite (two-column) equi key: `e_id2`/`s_id2` is a deterministic function of
   // `e_id`/`s_id`, so the equi-key grouping is identical to the single-key fixtures above, but
-  // RangeGroupProbe.createSpec now receives two equi expressions per side (exercising its
-  // AttributeSet overlap guard and BindReferences over a multi-column equiLeftKeys/
-  // equiRightKeys), unlike every other test in this suite which only ever binds one.
+  // RangeGroupProbe.createSpec now receives two equi expressions per side (exercising
+  // BindReferences over a multi-column equiLeftKeys/equiRightKeys), unlike every other test in
+  // this suite which only ever binds one. Its range keys (`event_pt`/`lo`/`hi`) are disjoint
+  // from its equi keys, so this does not exercise createSpec's AttributeSet overlap guard --
+  // see "sort merge inner join never engages the index when a range key overlaps an equi key"
+  // below for that.
   private def largeGroupEventsTwoKeyEqui(): DataFrame =
     spark.range(equiKeyBuckets.toLong * probesPerGroup).selectExpr(
       s"id % $equiKeyBuckets as e_id",
@@ -273,6 +276,39 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
     val cond = twoKeyEquiCond(events, spans)
     checkAgainstBaseline(
       events.hint("merge").join(spans.hint("merge"), cond), smjConfigs, expectIndexed = true)
+  }
+
+  test("sort merge inner join never engages the index when a range key overlaps an equi key") {
+    // e_id is both the equi-join key and a range-predicate key (e_id BETWEEN lo AND hi), so
+    // RangeGroupProbe.createSpec's AttributeSet overlap guard must return None: an index whose
+    // probe key is also an already equi-bound attribute would double count that attribute.
+    // Reuses the large, heavily-reused buffered group from the engaged tests above so a
+    // regression that dropped or inverted the guard would actually build/attempt an index here.
+    val events = spark.range(equiKeyBuckets.toLong).selectExpr("id as e_id")
+    val spans = largeGroupSpans()
+    val cond = events("e_id") === spans("s_id") &&
+      events("e_id") >= spans("lo") && events("e_id") <= spans("hi")
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond)
+    for (codegen <- Seq(true, false)) {
+      val runConfigs = smjConfigs :+ (SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString)
+      val baseline = withSQLConf(
+        runConfigs :+ SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD.key -> "-1": _*) {
+        joined.collect()
+      }
+      withSQLConf(runConfigs: _*) {
+        val df = joined
+        val plan = df.queryExecution.executedPlan
+        val smj = collectSortMergeJoin(plan)
+        assert(smj.nonEmpty, plan)
+        checkAnswer(df, baseline)
+        assert(smj.forall(j => !j.nodeName.contains("(rangeIndex=true)")),
+          s"a range key overlapping an equi key must never be recognized " +
+            s"(RangeGroupProbe.createSpec returns None for it):\n$plan")
+        assert(smj.forall(j => !j.metrics.contains("numRangeIndexedGroups") &&
+          !j.metrics.contains("numRangeIndexFallbackGroups")),
+          s"an overlapping range/equi key must never register range-index metrics:\n$plan")
+      }
+    }
   }
 
   test("sort merge join never attempts to build an index for a group probed exactly once") {

@@ -55,9 +55,12 @@ case class SortMergeJoinExec(
       Map(
         "numRangeIndexedGroups" ->
           SQLMetrics.createMetric(sparkContext, "number of range-indexed groups"),
+        // Not exclusive of numRangeIndexedGroups: a group already indexed can later revert to
+        // a linear scan (RangeGroupProbe.Session.releaseForSpill) and increment both.
         "numRangeIndexFallbackGroups" ->
-          SQLMetrics.createMetric(
-            sparkContext, "number of range-index fallback groups (not exclusive of indexed)"))
+          SQLMetrics.createMetric(sparkContext, "number of range-index fallback groups"),
+        "numRangeIndexBuildErrors" ->
+          SQLMetrics.createMetric(sparkContext, "number of range-index build errors"))
     } else {
       Map.empty[String, SQLMetric]
     }
@@ -216,7 +219,8 @@ case class SortMergeJoinExec(
       RangeGroupProbe.SessionFactory(
         spec,
         longMetric("numRangeIndexedGroups"),
-        longMetric("numRangeIndexFallbackGroups"))
+        longMetric("numRangeIndexFallbackGroups"),
+        longMetric("numRangeIndexBuildErrors"))
     }
 
   override def supportCodegen: Boolean = joinType match {

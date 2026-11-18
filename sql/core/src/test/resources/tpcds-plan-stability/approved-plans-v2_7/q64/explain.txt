@@ -2,7 +2,7 @@
 * Sort (181)
 +- Exchange (180)
    +- * Project (179)
-      +- * SortMergeJoin Inner (178)
+      +- * SortMergeJoin(rangeIndex=true) Inner (178)
          :- * Sort (110)
          :  +- Exchange (109)
          :     +- * HashAggregate (108)
@@ -985,7 +985,7 @@ Arguments: hashpartitioning(item_sk#162, store_name#163, store_zip#164, 5), ENSU
 Input [8]: [item_sk#162, store_name#163, store_zip#164, syear#165, cnt#166, s1#167, s2#168, s3#169]
 Arguments: [item_sk#162 ASC NULLS FIRST, store_name#163 ASC NULLS FIRST, store_zip#164 ASC NULLS FIRST], false, 0
 
-(178) SortMergeJoin [codegen id : 53]
+(178) SortMergeJoin(rangeIndex=true) [codegen id : 53]
 Left keys [3]: [item_sk#82, store_name#83, store_zip#84]
 Right keys [3]: [item_sk#162, store_name#163, store_zip#164]
 Join type: Inner

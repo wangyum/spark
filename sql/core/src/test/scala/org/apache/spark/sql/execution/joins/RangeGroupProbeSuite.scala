@@ -153,6 +153,25 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     }
   }
 
+  test("createSpec returns None when a range-predicate key is also an equi-join key") {
+    // e_id = s_id AND e_id BETWEEN b_lo AND b_hi: e_id is both the equi-join key and a
+    // range-predicate key, so the range index must not engage (its probe key would double
+    // count an already equi-bound attribute).
+    val conf = new SQLConf
+    conf.setConf(SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD, 2)
+    val condition = Some(streamId >= bufferLo && streamId <= bufferHi)
+    val spec = RangeGroupProbe.createSpec(
+      condition,
+      Inner,
+      Seq(streamId),
+      Seq(bufferId),
+      Seq(streamId),
+      Seq(bufferId, bufferLo, bufferHi),
+      BuildRight,
+      conf)
+    assert(spec.isEmpty, "expected no spec: the range key overlaps an equi-join key")
+  }
+
   test("build skips the index for a spilled group even above the row threshold") {
     // Unit-level on purpose: driving this through SortMergeJoinExec would need the group
     // probed past the gate, and each probe of a spill-backed group allocates a spill reader
@@ -527,7 +546,8 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       val bufferRows = (0 until 10).map(i => bufferProj(InternalRow(1L, i.toLong * 10L)).copy())
 
       val scanner = new SortMergeJoinScanner(
-        streamedKeyGenerator = UnsafeProjection.create(Seq(streamId), Seq(streamId, streamLo, streamHi)),
+        streamedKeyGenerator =
+          UnsafeProjection.create(Seq(streamId), Seq(streamId, streamLo, streamHi)),
         bufferedKeyGenerator = UnsafeProjection.create(Seq(bufferId), Seq(bufferId, bufferP)),
         keyOrdering = RowOrdering.createNaturalAscendingOrdering(Seq(LongType)),
         streamedIter = RowIterator.fromScala(streamRows.iterator),

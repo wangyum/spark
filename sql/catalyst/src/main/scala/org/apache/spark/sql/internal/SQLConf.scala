@@ -1323,7 +1323,7 @@ object SQLConf {
         "also been probed often enough to amortize its one-time build cost; groups below " +
         "that keep the linear scan at parity with the feature disabled. Supported on both " +
         "interpreted and whole-stage codegen paths. Unlike the broadcast range join " +
-        "(spark.sql.join.broadcastRangeJoinEnabled), this does not change the chosen join " +
+        "(spark.sql.join.broadcastRangeJoin.enabled), this does not change the chosen join " +
         "strategy or its planning-time cost estimate, and the full join condition is always " +
         "re-evaluated on every candidate the index returns, so an incorrect index can only " +
         "produce extra candidates to filter, never drop a match; it is therefore enabled by " +

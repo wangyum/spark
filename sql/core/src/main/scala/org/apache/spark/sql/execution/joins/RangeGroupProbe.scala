@@ -59,14 +59,14 @@ private[joins] object RangeGroupProbe extends Logging {
    * Probes a buffered group must receive before its index is built. Building is a one-time
    * cost that pays for itself only once the linear rescans it replaces have cost about as
    * much as the build, so a group probed fewer times keeps the plain linear scan at parity
-   * with range indexing disabled. SortMergeJoinRangeIndexBenchmark measures the
-   * build-versus-scan break-even at roughly 100 probes for a 1024-row group (a group just
-   * past a lower gate did not amortize: the 100-probe reuse row read 0.8X-1.0X across runs
-   * at a gate of 64), and the constant sits above that point so the index engages only for
-   * groups reused well past it - where the benchmark's 1000-probe row wins about 4X and
-   * the motivating workload, probed thousands of times per group, wins by more. A cost-model
-   * constant rather than a config, like `RangeIndex`'s small-build row cutoff: not a policy
-   * a user tunes, and revisitable with benchmark evidence if the admission math changes.
+   * with range indexing disabled. SortMergeJoinRangeIndexBenchmark's reuse sweep (fixed
+   * groupSize=1024) shows parity (1.0X) at 100 reuses and below, and a 2.5X win at 1000
+   * reuses, so the constant sits above the break-even point between those two measured
+   * points - low enough to engage for the motivating workload (a group probed thousands of
+   * times) while still keeping lightly-reused groups at the disabled-feature baseline. A
+   * cost-model constant rather than a config, like `RangeIndex`'s small-build row cutoff: not
+   * a policy a user tunes, and revisitable with benchmark evidence if the admission math
+   * changes.
    */
   private[joins] val PROBE_THRESHOLD = 128
 
@@ -116,8 +116,10 @@ private[joins] object RangeGroupProbe extends Logging {
   final case class SessionFactory(
       spec: Spec,
       numIndexedMetric: SQLMetric = null,
-      numFallbackMetric: SQLMetric = null) extends Serializable {
-    def createSession(): Session = new Session(spec, numIndexedMetric, numFallbackMetric)
+      numFallbackMetric: SQLMetric = null,
+      numBuildErrorMetric: SQLMetric = null) extends Serializable {
+    def createSession(): Session =
+      new Session(spec, numIndexedMetric, numFallbackMetric, numBuildErrorMetric)
   }
 
   final class Handle private[RangeGroupProbe] (
@@ -135,7 +137,8 @@ private[joins] object RangeGroupProbe extends Logging {
   final class Session(
       val spec: Spec,
       numIndexedMetric: SQLMetric = null,
-      numFallbackMetric: SQLMetric = null) extends Logging {
+      numFallbackMetric: SQLMetric = null,
+      numBuildErrorMetric: SQLMetric = null) extends Logging {
 
     private[this] val taskContext: TaskContext = TaskContext.get()
 
@@ -179,17 +182,30 @@ private[joins] object RangeGroupProbe extends Logging {
      * the same group. Note that a group that never reaches the probe threshold never
      * increments `numIndexedMetric` or `numFallbackMetric`: those two metrics count
      * groups whose build was actually attempted, not every group above `threshold`, so
-     * their sum is not the total count of above-threshold groups. A streamed row that
-     * probes no group at all (an unmatched outer or anti row seeing an empty buffer)
-     * also advances `probeCount`; it cannot leak into a later group, since `resetGroup` runs
-     * before a new group's rows are buffered, and within one group every probing row shares
-     * its key.
+     * their sum is not the total count of above-threshold groups. `numFallbackMetric`
+     * counts every attempted build that didn't produce an index, whether rejected by policy
+     * (over `maxBytes`, insufficient TaskMemoryManager budget) or because `build()` hit a
+     * genuine error (a non-fatal exception or an `OutOfMemoryError`); `numBuildErrorMetric`
+     * additionally counts only the latter, narrower population, so an operator can tell a
+     * build that failed outright apart from one the policy simply declined to attempt. On the
+     * whole-stage-codegen path, a streamed row that probes no group at all (an unmatched
+     * outer or anti row seeing an empty buffer) also advances `probeCount`, since the
+     * generated code calls `onProbe` unconditionally for every streamed row. The interpreted
+     * path does not: it short-circuits
+     * before reaching `onProbe`/`candidates` whenever the buffered group is empty (see
+     * `OneSideOuterIterator.advanceStream`'s `getBufferedMatches.isEmpty` branch, and
+     * `SortMergeJoinEvaluatorFactory`'s `currentRightMatches.length > 0` guards for
+     * LeftSemi/LeftAnti/ExistenceJoin), so `probeCount` progression - and therefore exactly
+     * when a group's index gets built - is not guaranteed to match between the two execution
+     * paths for the same query. Regardless of path, `probeCount` cannot leak into a later
+     * group, since `resetGroup` runs before a new group's rows are buffered, and within one
+     * group every probing row shares its key.
      */
     def onProbe(matches: ExternalAppendOnlyUnsafeRowArray): Unit = {
       probeCount += 1
       if (currentHandle == null && !buildAttempted && probeCount >= PROBE_THRESHOLD) {
         buildAttempted = true
-        currentHandle = build(matches, spec, memoryConsumer)
+        currentHandle = build(matches, spec, memoryConsumer, numBuildErrorMetric)
         if (currentHandle != null) {
           if (numIndexedMetric != null) numIndexedMetric += 1
         } else if (matches.length >= spec.threshold) {
@@ -388,7 +404,8 @@ private[joins] object RangeGroupProbe extends Logging {
   def build(
       matches: ExternalAppendOnlyUnsafeRowArray,
       spec: Spec,
-      consumer: RangeIndexMemoryConsumer): Handle = {
+      consumer: RangeIndexMemoryConsumer,
+      buildErrorMetric: SQLMetric = null): Handle = {
     val n = matches.length
     if (!spec.isEligible(n, matches.isSpillBacked)) {
       return null
@@ -452,8 +469,23 @@ private[joins] object RangeGroupProbe extends Logging {
     } catch {
       case NonFatal(e) =>
         if (consumer != null && heldBytes > 0) consumer.freeMemory(heldBytes)
+        if (buildErrorMetric != null) buildErrorMetric += 1
         logWarning(log"range index build failed for a buffered group of " +
           log"${MDC(NUM_ROWS, n)} rows; falling back to a linear scan", e)
+        null
+      case oom: OutOfMemoryError =>
+        // The pre-admission estimate above is schema-driven (DataType.defaultSize) and cannot
+        // predict every row's real size (e.g. unusually large variable-length values), so a wide
+        // enough buffered group can still exhaust the heap during transform()'s plain (non-
+        // TaskMemoryManager-tracked) row copies. This is a last-resort safety net: fall back to
+        // a linear scan instead of failing the task. Counted separately via `buildErrorMetric`
+        // (distinct from the routine, by-policy fallback counted in `onProbe`) so an operator
+        // can tell a genuine build failure apart from a group that was merely too large or
+        // too-few-times-reused to index by policy.
+        if (consumer != null && heldBytes > 0) consumer.freeMemory(heldBytes)
+        if (buildErrorMetric != null) buildErrorMetric += 1
+        logWarning(log"range index build ran out of memory for a buffered group of " +
+          log"${MDC(NUM_ROWS, n)} rows; falling back to a linear scan", oom)
         null
     }
   }

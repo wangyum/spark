@@ -10,7 +10,7 @@ TakeOrderedAndProject (70)
                :     +- * Project (56)
                :        +- * BroadcastHashJoin LeftOuter BuildRight (55)
                :           :- * Project (50)
-               :           :  +- * SortMergeJoin Inner (49)
+               :           :  +- * SortMergeJoin(rangeIndex=true) Inner (49)
                :           :     :- * Sort (37)
                :           :     :  +- Exchange (36)
                :           :     :     +- * Project (35)
@@ -290,7 +290,7 @@ Arguments: hashpartitioning(inv_item_sk#22, inv_date_sk#25, 5), ENSURE_REQUIREME
 Input [4]: [inv_item_sk#22, inv_quantity_on_hand#24, inv_date_sk#25, w_warehouse_name#27]
 Arguments: [inv_item_sk#22 ASC NULLS FIRST, inv_date_sk#25 ASC NULLS FIRST], false, 0
 
-(49) SortMergeJoin [codegen id : 16]
+(49) SortMergeJoin(rangeIndex=true) [codegen id : 16]
 Left keys [2]: [cs_item_sk#4, d_date_sk#21]
 Right keys [2]: [inv_item_sk#22, inv_date_sk#25]
 Join type: Inner

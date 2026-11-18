@@ -3,7 +3,7 @@ TakeOrderedAndProject (67)
 +- * Filter (66)
    +- * HashAggregate (65)
       +- * Project (64)
-         +- * SortMergeJoin Inner (63)
+         +- * SortMergeJoin(rangeIndex=true) Inner (63)
             :- Window (58)
             :  +- * Sort (57)
             :     +- Exchange (56)
@@ -14,7 +14,7 @@ TakeOrderedAndProject (67)
             :                 :  +- Exchange (25)
             :                 :     +- * HashAggregate (24)
             :                 :        +- * Project (23)
-            :                 :           +- * SortMergeJoin Inner (22)
+            :                 :           +- * SortMergeJoin(rangeIndex=true) Inner (22)
             :                 :              :- * Sort (15)
             :                 :              :  +- Exchange (14)
             :                 :              :     +- * Project (13)
@@ -40,7 +40,7 @@ TakeOrderedAndProject (67)
             :                    +- Exchange (51)
             :                       +- * HashAggregate (50)
             :                          +- * Project (49)
-            :                             +- * SortMergeJoin Inner (48)
+            :                             +- * SortMergeJoin(rangeIndex=true) Inner (48)
             :                                :- * Sort (41)
             :                                :  +- Exchange (40)
             :                                :     +- * Project (39)
@@ -161,7 +161,7 @@ Arguments: hashpartitioning(item_sk#13, 5), ENSURE_REQUIREMENTS, [plan_id=4]
 Input [3]: [item_sk#13, sumws#15, rk#17]
 Arguments: [item_sk#13 ASC NULLS FIRST], false, 0
 
-(22) SortMergeJoin [codegen id : 13]
+(22) SortMergeJoin(rangeIndex=true) [codegen id : 13]
 Left keys [1]: [item_sk#10]
 Right keys [1]: [item_sk#13]
 Join type: Inner
@@ -279,7 +279,7 @@ Arguments: hashpartitioning(item_sk#31, 5), ENSURE_REQUIREMENTS, [plan_id=9]
 Input [3]: [item_sk#31, sumss#33, rk#35]
 Arguments: [item_sk#31 ASC NULLS FIRST], false, 0
 
-(48) SortMergeJoin [codegen id : 27]
+(48) SortMergeJoin(rangeIndex=true) [codegen id : 27]
 Left keys [1]: [item_sk#28]
 Right keys [1]: [item_sk#31]
 Join type: Inner
@@ -345,7 +345,7 @@ Arguments: [row_number() windowspecdefinition(item_sk#43, d_date#44 ASC NULLS FI
 Output [4]: [item_sk#43, web_sales#45, store_sales#46, rk#47]
 Input [5]: [item_sk#43, d_date#44, web_sales#45, store_sales#46, rk#47]
 
-(63) SortMergeJoin [codegen id : 62]
+(63) SortMergeJoin(rangeIndex=true) [codegen id : 62]
 Left keys [1]: [item_sk#38]
 Right keys [1]: [item_sk#43]
 Join type: Inner
