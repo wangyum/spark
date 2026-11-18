@@ -84,9 +84,15 @@ object TopKBenchmark extends SqlBasedBenchmark {
         val path = dir.getCanonicalPath + "/top1_hash_benchmark_table"
         val N = 1024 * 1024 * 20
 
+        // ts = xxhash64(id), not id itself: id increases monotonically with scan order, so every
+        // row for a given key would be a new max for that key, tricking the accumulator's
+        // efficiency safety valve (HashRowNumberGroupLimitAccumulator
+        // .maybeBailOutForPoorEfficiency) into firing on nearly every row and masking the hash
+        // path's real advantage. Hashing decorrelates the order key from arrival order, matching
+        // the common case where most rows are not the new best for their key.
         def writeData(numKeys: Long): Unit = {
           spark.range(0, N, 1, 11)
-            .selectExpr(s"id % $numKeys as k", "id as ts")
+            .selectExpr(s"id % $numKeys as k", "xxhash64(id) as ts")
             .write.mode("overwrite")
             .parquet(path)
         }
@@ -138,9 +144,11 @@ object TopKBenchmark extends SqlBasedBenchmark {
         val N = 1024 * 1024 * 20
         val limit = 5
 
+        // See the identical comment in the Top-1 benchmark above for why ts is xxhash64(id) rather
+        // than id itself.
         def writeData(numKeys: Long): Unit = {
           spark.range(0, N, 1, 11)
-            .selectExpr(s"id % $numKeys as k", "id as ts")
+            .selectExpr(s"id % $numKeys as k", "xxhash64(id) as ts")
             .write.mode("overwrite")
             .parquet(path)
         }

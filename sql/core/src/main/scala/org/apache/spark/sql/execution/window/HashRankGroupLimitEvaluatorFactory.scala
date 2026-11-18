@@ -29,8 +29,8 @@ import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, BindRefe
   UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.GenerateOrdering
 import org.apache.spark.sql.catalyst.types.DataTypeUtils
-import org.apache.spark.sql.execution.{SortPrefixUtils, UnsafeExternalRowSorter,
-  UnsafeFixedWidthAggregationMap}
+import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, SortPrefixUtils,
+  UnsafeExternalRowSorter, UnsafeFixedWidthAggregationMap}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.unsafe.KVIterator
@@ -113,7 +113,8 @@ class HashRankGroupLimitAccumulator(
     minRowsBetweenCompactionChecks: Long = 100000L,
     enableRadixSort: Boolean = true,
     limit: Int = 1,
-    maxAppendRatio: Double = 0.9) extends HashGroupLimitAccumulator with Logging {
+    maxAppendRatio: Double = 0.9,
+    mode: WindowGroupLimitMode = Partial) extends HashGroupLimitAccumulator with Logging {
 
   private val isDenseRank = rankLikeFunction.isInstanceOf[DenseRank]
   private val numOrderCols = orderSpec.length
@@ -312,12 +313,22 @@ class HashRankGroupLimitAccumulator(
   private var nextCompactionCheckAt: Long = currentCheckInterval
   private var appendsSinceLastCheck: Long = 0L
 
+  // See the identical pair of fields (and their doc) in HashRowNumberGroupLimitAccumulator:
+  // fallbackSorter is used for mode == Partial (must still filter before the shuffle),
+  // fallbackArray for mode == Final (correctness is guaranteed by the mandatory downstream
+  // Sort + WindowExec + Filter, so there is no benefit to filtering, or therefore sorting, again
+  // here).
   private var fallbackSorter: UnsafeExternalRowSorter = null
+  private var fallbackArray: ExternalAppendOnlyUnsafeRowArray = null
 
   override def fallbackSorterOrNull: UnsafeExternalRowSorter = fallbackSorter
 
   /** Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input. */
   def consumeRow(row: UnsafeRow): Unit = {
+    if (fallbackArray != null) {
+      fallbackArray.add(row)
+      return
+    }
     if (fallbackSorter != null) {
       fallbackSorter.insertRow(row)
       return
@@ -389,7 +400,18 @@ class HashRankGroupLimitAccumulator(
 
   /** Call once, after every row has been passed to [[consumeRow]], to get the output rows. */
   def finish(): Iterator[InternalRow] = {
-    if (fallbackSorter != null) {
+    if (fallbackArray != null) {
+      peakMemory.set(math.max(peakMemory.value, fallbackArray.spillSize))
+      spillSize.set(TaskContext.get().taskMetrics().memoryBytesSpilled - spillSizeBefore)
+      val rawIter = fallbackArray.generateIterator()
+      new Iterator[InternalRow] {
+        override def hasNext: Boolean = rawIter.hasNext
+        override def next(): InternalRow = {
+          numOutputRows += 1
+          rawIter.next()
+        }
+      }
+    } else if (fallbackSorter != null) {
       peakMemory.set(math.max(peakMemory.value, fallbackSorter.getPeakMemoryUsage))
       spillSize.set(TaskContext.get().taskMetrics().memoryBytesSpilled - spillSizeBefore)
       val sortedIter = fallbackSorter.sort()
@@ -487,29 +509,42 @@ class HashRankGroupLimitAccumulator(
   private def switchToFallback(pendingRow: UnsafeRow): Unit = {
     logInfo("Hash-based window group limit falling back to sort-based: could not acquire more " +
       "memory for the hash map or the row arena.")
-    val sorter = buildFallbackSorter()
-    sorter.insertRow(pendingRow)
-    fallbackSorter = sorter
+    if (mode == Final) {
+      val array = buildFallbackArray()
+      array.add(pendingRow)
+      fallbackArray = array
+    } else {
+      val sorter = buildFallbackSorter()
+      sorter.insertRow(pendingRow)
+      fallbackSorter = sorter
+    }
     numTasksFallBacked += 1
   }
 
   /** Mirrors [[HashRowNumberGroupLimitAccumulator.switchToFallbackProactively]]. */
   private def switchToFallbackProactively(): Unit = {
-    fallbackSorter = buildFallbackSorter()
+    if (mode == Final) {
+      fallbackArray = buildFallbackArray()
+    } else {
+      fallbackSorter = buildFallbackSorter()
+    }
     numTasksFallBacked += 1
   }
 
   /**
-   * Builds the fallback sorter seeded with *every* candidate row ever admitted (not filtered by
-   * current slot membership, unlike [[kvIteratorToScala]]): a row discarded by [[consumeRow]]
-   * (never appended at all) is permanently, correctly excluded regardless of future data (see the
-   * class doc's "preceding weight" argument), but a row that *was* appended and later had its
-   * slot evicted is not necessarily excluded from the *true*, whole-stream answer -- re-sorting
-   * and re-running it through [[RankLimitIterator]]/[[DenseRankLimitIterator]] alongside every
-   * row consumed after the fallback switch recomputes the correct cutoff from scratch, so
-   * including a few extra (ultimately filtered-out) rows here is harmless, merely redundant.
+   * Drains *every* candidate row ever admitted (not filtered by current slot membership, unlike
+   * [[kvIteratorToScala]]): a row discarded by [[consumeRow]] (never appended at all) is
+   * permanently, correctly excluded regardless of future data (see the class doc's "preceding
+   * weight" argument), but a row that *was* appended and later had its slot evicted is not
+   * necessarily excluded from the *true*, whole-stream answer -- re-sorting and re-running it
+   * through [[RankLimitIterator]]/[[DenseRankLimitIterator]] alongside every row consumed after
+   * the fallback switch recomputes the correct cutoff from scratch, so including a few extra
+   * (ultimately filtered-out) rows here is harmless, merely redundant. Shared by
+   * [[buildFallbackSorter]] and [[buildFallbackArray]] -- see
+   * [[HashRowNumberGroupLimitAccumulator.drainWinnersAndFreeStructures]] for why the drain-then-
+   * free ordering matters.
    */
-  private def buildFallbackSorter(): UnsafeExternalRowSorter = {
+  private def drainCandidatesAndFreeStructures(): ArrayBuffer[UnsafeRow] = {
     val candidates = new ArrayBuffer[UnsafeRow](map.getNumKeys() * limit)
     val scratchRow = new UnsafeRow(childOutput.length)
     val mapIter = map.iterator()
@@ -523,6 +558,24 @@ class HashRankGroupLimitAccumulator(
     peakMemory.set(math.max(peakMemory.value, map.getPeakMemoryUsedBytes + rowArena.bytesUsed))
     map.free()
     rowArena.free()
+    candidates
+  }
+
+  /**
+   * Builds the `Final`-mode fallback destination: an unsorted, append-only, spill-capable row
+   * array. See [[HashRowNumberGroupLimitAccumulator.buildFallbackArray]] for why `Final` never
+   * needs a sorter.
+   */
+  private def buildFallbackArray(): ExternalAppendOnlyUnsafeRowArray = {
+    val candidates = drainCandidatesAndFreeStructures()
+    val array = new ExternalAppendOnlyUnsafeRowArray(0, 0L, Int.MaxValue, Long.MaxValue)
+    candidates.foreach(array.add)
+    array
+  }
+
+  /** Builds the `Partial`-mode fallback sorter, seeded with every drained candidate. */
+  private def buildFallbackSorter(): UnsafeExternalRowSorter = {
+    val candidates = drainCandidatesAndFreeStructures()
 
     val sortOrder = partitionSpec.map(SortOrder(_, Ascending)) ++ orderSpec
     val ordering = RowOrdering.create(sortOrder, childOutput)
@@ -574,7 +627,8 @@ class HashRankGroupLimitEvaluatorFactory(
     minRowsBetweenCompactionChecks: Long,
     enableRadixSort: Boolean,
     limit: Int,
-    maxAppendRatio: Double = 0.9)
+    maxAppendRatio: Double = 0.9,
+    mode: WindowGroupLimitMode = Partial)
   extends HashGroupLimitEvaluatorFactory {
 
   override def createEvaluator(): PartitionEvaluator[InternalRow, InternalRow] =
@@ -589,7 +643,7 @@ class HashRankGroupLimitEvaluatorFactory(
     new HashRankGroupLimitAccumulator(
       partitionSpec, orderSpec, rankLikeFunction, childOutput, numOutputRows, peakMemory,
       spillSize, numTasksFallBacked, minCompactionRatio, minRowsBetweenCompactionChecks,
-      enableRadixSort, limit, maxAppendRatio)
+      enableRadixSort, limit, maxAppendRatio, mode)
 
   class HashRankGroupLimitPartitionEvaluator
     extends PartitionEvaluator[InternalRow, InternalRow] {

@@ -153,6 +153,36 @@ class UnsafeFixedWidthAggregationMapSuite
     map.free()
   }
 
+  testWithMemoryLeakDetection("inserting large random keys with a small initial page size") {
+    // A map expected to hold little data (e.g. a handful of keys) should not have to pay for a
+    // full PAGE_SIZE_BYTES page up front: the initialPageSizeBytes overload lets the first page
+    // start small and grow (doubling, capped at PAGE_SIZE_BYTES) only as actually needed. This
+    // must remain correct across many page growths, exactly like the default-sized map above.
+    val map = new UnsafeFixedWidthAggregationMap(
+      emptyAggregationBuffer,
+      aggBufferSchema,
+      groupKeySchema,
+      taskContext,
+      128, // initial capacity
+      PAGE_SIZE_BYTES,
+      1L << 16 // initial page size: 64 KiB, far smaller than PAGE_SIZE_BYTES
+    )
+    val rand = new Random(42)
+    val groupKeys: Set[String] = Seq.fill(512)(rand.nextString(1024)).toSet
+    groupKeys.foreach { keyString =>
+      assert(map.getAggregationBuffer(InternalRow(UTF8String.fromString(keyString))) != null)
+    }
+
+    val seenKeys = new mutable.HashSet[String]
+    val iter = map.iterator()
+    while (iter.next()) {
+      seenKeys += iter.getKey.getString(0)
+    }
+    assert(seenKeys.size === groupKeys.size)
+    assert(seenKeys === groupKeys)
+    map.free()
+  }
+
   testWithMemoryLeakDetection("inserting large random keys") {
     val map = new UnsafeFixedWidthAggregationMap(
       emptyAggregationBuffer,

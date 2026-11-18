@@ -169,7 +169,8 @@ case class WindowGroupLimitExec(
           conf.windowGroupLimitHashPushdownMinRows,
           conf.enableRadixSort,
           limit,
-          conf.windowGroupLimitHashPushdownMaxAppendRatio)
+          conf.windowGroupLimitHashPushdownMaxAppendRatio,
+          mode)
       case _ =>
         new HashRankGroupLimitEvaluatorFactory(
           partitionSpec,
@@ -184,7 +185,8 @@ case class WindowGroupLimitExec(
           conf.windowGroupLimitHashPushdownMinRows,
           conf.enableRadixSort,
           limit,
-          conf.windowGroupLimitHashPushdownMaxAppendRatio)
+          conf.windowGroupLimitHashPushdownMaxAppendRatio,
+          mode)
     }
 
   protected override def doExecute(): RDD[InternalRow] = {

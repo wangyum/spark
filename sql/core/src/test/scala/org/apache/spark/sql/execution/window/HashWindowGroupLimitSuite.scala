@@ -284,6 +284,98 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
     }
   }
 
+  // End-to-end correctness check for Final-mode fallback's unfiltered output (see the low-level
+  // accumulator test "Final-mode fallback emits every consumed row unfiltered" for the mechanism):
+  // an impossible minCompactionRatio forces both Partial and Final to fall back even though this
+  // data genuinely compacts well, so Final emits every surviving candidate unfiltered -- this only
+  // produces the right single winner per key because the real Sort + Window + Filter(rn = 1) above
+  // the group-limit chain recomputes the answer from scratch, exactly as it would if the
+  // group-limit optimization had never fired at all.
+  //
+  // Partial's own fallback (unchanged) always correctly filters down to (distinct keys it saw) *
+  // limit rows -- that is the whole point of Partial's pre-filter, hash or sort-based -- so with
+  // only a handful of keys, too few survivors would ever reach any single Final-stage reduce task
+  // to trigger even one compaction check there. 2000 keys with repartition(1) (forcing all of
+  // Partial's input through one task, so its own fallback is driven deterministically) ensures
+  // Final's shuffle input is large enough, however it gets split across reduce tasks, to clear the
+  // minRows threshold below.
+  test("SPARK-61804: forcing both stages to fall back still produces the correct answer" +
+      " (Final's unfiltered output is corrected by the real Window above it)") {
+    withSQLConf(
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key -> "10",
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key -> "1000000.0") {
+      val numKeys = 2000
+      val n = numKeys * 5
+      val df = (0 until n).map(i => (i % numKeys, (n - i).toLong, (n - i).toLong))
+        .toDF("k", "ts", "v").repartition(1)
+      val resultDf = dedupLatest(df)
+      checkAnswer(resultDf, (0 until numKeys).map(k => Row(k, (n - k).toLong, (n - k).toLong)))
+
+      val plan = resultDf.queryExecution.executedPlan
+      val fallbackCounts = collectWithSubqueries(plan) { case w: WindowGroupLimitExec => w }
+        .map(w => w.mode.toString -> w.metrics.get("numTasksFallBacked").map(_.value))
+      assert(fallbackCounts.collect { case (m, Some(c)) if m == "Final" => c }.exists(_ > 0),
+        s"expected this impossible compaction ratio to force Final's fallback too: $fallbackCounts")
+    }
+  }
+
+  test("SPARK-61804: the ramp-up's early check catches an all-unique-key case well before" +
+      " a large minRows would") {
+    withSQLConf(
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key -> "4000",
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key -> "1.05") {
+      // All-unique keys with a large (4000) minRows, but fewer total rows (1500) than minRows
+      // itself: without a smaller early check, the periodic check's condition
+      // (rowsConsumed >= minRows) never becomes true within these 1500 rows, so no bail-out could
+      // ever happen -- a large-minRows task that will never see that many rows would otherwise pay
+      // the full hash-map cost (map/hash-table growth) for nothing. The ramp-up's first check, at
+      // minRows / 4 = 1000 rows here, must still catch this. repartition(1) guarantees all 1500
+      // rows land in the single Partial-stage task this reasoning depends on.
+      val n = 1500
+      val df = (0 until n).map(i => (i, i.toLong, i.toLong)).toDF("k", "ts", "v").repartition(1)
+      val resultDf = dedupLatest(df)
+      val result = resultDf.collect()
+      assert(result.length == n,
+        "bailing out to the sort-based path must not lose or duplicate rows")
+
+      val plan = resultDf.queryExecution.executedPlan
+      val fallbackCounts = collectWithSubqueries(plan) { case w: WindowGroupLimitExec => w }
+        .flatMap(_.metrics.get("numTasksFallBacked"))
+        .map(_.value)
+      assert(fallbackCounts.exists(_ > 0),
+        "expected the ramp-up's early check to have bailed out well before all 1500 rows, got " +
+          s"fallback counts: $fallbackCounts")
+    }
+  }
+
+  test("SPARK-61804: the ramp-up's smaller early checks do not spuriously bail out a healthy," +
+      " large-minRows case") {
+    withSQLConf(
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key -> "4000",
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key -> "1.05") {
+      // 50 distinct keys, round-robin, ts decreasing within each key's own occurrences (so a
+      // key's very first row is immediately its final winner, exactly like the healthy-ratio test
+      // above): by row 1000 -- the ramp-up's first, smaller check (minRows / 4 = 1000) -- roughly
+      // 20 rows/key have already been seen, a compaction ratio far above the 1.05 threshold, so
+      // even the smaller early checks ramp-up introduces must not bail out.
+      val n = 1500
+      val df = (0 until n).map(i => (i % 50, (n - i).toLong, (n - i).toLong))
+        .toDF("k", "ts", "v").repartition(1)
+      val resultDf = dedupLatest(df)
+      checkAnswer(resultDf, (0 until 50).map(k => Row(k, (n - k).toLong, (n - k).toLong)))
+
+      val plan = resultDf.queryExecution.executedPlan
+      val fallbackCounts = collectWithSubqueries(plan) { case w: WindowGroupLimitExec => w }
+        .flatMap(_.metrics.get("numTasksFallBacked"))
+        .map(_.value)
+      assert(fallbackCounts.forall(_ == 0),
+        s"expected no bail-out with a healthy compaction ratio, got: $fallbackCounts")
+    }
+  }
+
   // Shared by the low-level forced-OOM tests below: a standalone TaskMemoryManager/TaskContext
   // backed by TestMemoryManager with a small page size and a tight execution-memory budget,
   // mirroring the WindowSegmentTreeMemorySuite / HashAggregateExecSuite pattern, instead of going
@@ -366,6 +458,97 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
         "this test is only meaningful if the genuine-OOM fallback actually triggered -- " +
           "if it stops triggering, tighten the budget/page size above rather than deleting " +
           "this assertion")
+    }
+  }
+
+  // Final-mode fallback must NOT pre-filter down to `limit` rows per key: a hash-eligible
+  // WindowGroupLimitExec always declares outputOrdering = Nil (see isHashEligible), so
+  // EnsureRequirements unconditionally plants a real Sort directly above the Final node, feeding
+  // the real WindowExec + its Filter(rn <= limit) above that -- which recomputes the correct
+  // answer from whatever rows arrive, regardless of how many that is. A Partial-mode fallback must
+  // still filter: it is the only thing standing between its task's rows and the shuffle, so
+  // skipping its own filtering would send every row across the network, losing the whole point of
+  // the pre-filter. Mode defaults to Partial (unchanged behavior) everywhere else in this suite.
+  //
+  // Uses a *proactive* bail-out firing at the very first possible check (row 10, one per each of
+  // 10 round-robin keys) rather than a genuine OOM: by that point no key has seen a second row
+  // yet, so the heap has not discarded/replaced anything -- discarding is itself correct and
+  // permanent regardless of mode (a row that loses to the current winner can never become
+  // eligible later, see the class doc), so a test that let real discarding happen first (e.g. via
+  // many replacements before a genuine OOM) would not actually isolate what this test means to
+  // check: that Final-mode's *own* fallback transition does not throw away still-live candidates
+  // the way Partial-mode's sort-then-filter would.
+  test("SPARK-61804: Final-mode fallback emits every consumed row unfiltered, relying on the" +
+      " downstream Sort+Window+Filter for correctness") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val kAttr = AttributeReference("k", IntegerType)()
+      val tsAttr = AttributeReference("ts", LongType)()
+      val partitionSpec = Seq(kAttr)
+      val orderSpec = Seq(SortOrder(tsAttr, Descending))
+      val childOutput = Seq(kAttr, tsAttr)
+      val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+      val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+      val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+      val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
+      val accumulator = new HashRowNumberGroupLimitAccumulator(
+        partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
+        numTasksFallBacked, minCompactionRatio = 1000000.0, minRowsBetweenCompactionChecks = 10L,
+        limit = 1, mode = Final)
+
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      val numKeys = 10
+      val n = 1000
+      (0 until n).foreach { i =>
+        accumulator.consumeRow(rowProjection(InternalRow(i % numKeys, i.toLong)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      assert(result.length == n,
+        s"Final-mode fallback must emit every one of the $n consumed rows unfiltered, got " +
+          s"${result.length}")
+      assert(numTasksFallBacked.value > 0,
+        "this test is only meaningful if the proactive bail-out actually triggered -- if it " +
+          "stops triggering, retune minRowsBetweenCompactionChecks/minCompactionRatio above " +
+          "rather than deleting this assertion")
+    }
+  }
+
+  // Mirror of the test above, confirming Partial-mode's existing (unchanged) behavior under the
+  // identical setup: it still filters its fallback output down to exactly one row per key, since
+  // skipping that filtering would ship every row across the shuffle.
+  test("SPARK-61804: Partial-mode fallback still filters down to `limit` rows per key" +
+      " (unchanged by the Final-mode optimization)") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val kAttr = AttributeReference("k", IntegerType)()
+      val tsAttr = AttributeReference("ts", LongType)()
+      val partitionSpec = Seq(kAttr)
+      val orderSpec = Seq(SortOrder(tsAttr, Descending))
+      val childOutput = Seq(kAttr, tsAttr)
+      val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+      val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+      val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+      val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
+      val accumulator = new HashRowNumberGroupLimitAccumulator(
+        partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
+        numTasksFallBacked, minCompactionRatio = 1000000.0, minRowsBetweenCompactionChecks = 10L,
+        limit = 1, mode = Partial)
+
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      val numKeys = 10
+      val n = 1000
+      (0 until n).foreach { i =>
+        accumulator.consumeRow(rowProjection(InternalRow(i % numKeys, i.toLong)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      assert(result.length == numKeys,
+        s"Partial-mode fallback must still filter down to $numKeys rows (one per key), got " +
+          s"${result.length}")
+      val resultSet = result.map(r => (r.getInt(0), r.getLong(1))).toSet
+      assert(resultSet == (0 until numKeys).map(k => (k, (n - numKeys + k).toLong)).toSet,
+        "each key's winner must be its highest-ts (last-arriving) row")
+      assert(numTasksFallBacked.value > 0,
+        "this test is only meaningful if the proactive bail-out actually triggered -- if it " +
+          "stops triggering, retune minRowsBetweenCompactionChecks/minCompactionRatio above " +
+          "rather than deleting this assertion")
     }
   }
 
@@ -520,6 +703,38 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       dedupLatest(df).collect().toSet
     }
     assert(codegenOn == codegenOff)
+  }
+
+  // Regression test for doConsume's direct-dispatch-to-sorter codegen path (added to avoid every
+  // post-fallback row paying consumeRow's extra virtual dispatch through the
+  // HashGroupLimitAccumulator trait, on top of its own internal null check, for the rest of the
+  // task -- see HashGroupLimitAccumulator.fallbackSorterOrNull's doc). Forces a mid-stream
+  // bail-out, like the proactive-bail-out test above, but specifically compares codegen-on
+  // against codegen-off (which never takes the new branch, since only doConsume's generated code
+  // references fallbackSorterOrNull -- the interpreted path drives consumeRow directly) to
+  // confirm the new branch's output is identical, not just that bailing out doesn't lose or
+  // duplicate rows.
+  test("SPARK-61804: codegen and interpreted hash paths agree when a mid-stream bail-out" +
+      " routes most rows through the new direct-to-sorter dispatch") {
+    withSQLConf(
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key -> "10",
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key -> "1.05") {
+      // All-unique keys, same shape as the proactive-bail-out test: the periodic check (every 10
+      // rows) bails out well before all 1000 rows are consumed, so the bulk of this DataFrame's
+      // rows are processed by doConsume's new fallbackSorterOrNull-guarded branch when codegen is
+      // on.
+      val n = 1000
+      val df = (0 until n).map(i => (i, i.toLong, i.toLong)).toDF("k", "ts", "v")
+      val codegenOn = withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
+        dedupLatest(df).collect().toSet
+      }
+      val codegenOff = withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
+        dedupLatest(df).collect().toSet
+      }
+      assert(codegenOn.size == n, s"expected $n distinct-key rows, got ${codegenOn.size}")
+      assert(codegenOn == codegenOff)
+    }
   }
 
   // Regression test for a real bug caught only by running a benchmark against actual Parquet
