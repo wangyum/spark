@@ -46,7 +46,7 @@ class UnsafeRowArenaSuite extends SparkFunSuite {
    * `budgetBytes` must be at least `UnsafeRowArena`'s initial page size (the constructor
    * allocates that page eagerly) for construction itself to succeed.
    */
-  private def withArena[T](budgetBytes: Long = Long.MaxValue)
+  private def withArena[T](budgetBytes: Long = Long.MaxValue, linked: Boolean = false)
       (f: (UnsafeRowArena, TestMemoryManager) => T): T = {
     val memoryManager = new TestMemoryManager(new SparkConf(false))
     memoryManager.limit(budgetBytes)
@@ -66,7 +66,7 @@ class UnsafeRowArenaSuite extends SparkFunSuite {
       cpuAmount = 1)
     TaskContext.setTaskContext(taskContext)
     try {
-      f(new UnsafeRowArena(taskMemoryManager), memoryManager)
+      f(new UnsafeRowArena(taskMemoryManager, linked), memoryManager)
     } finally {
       if (prevTaskContext != null) {
         TaskContext.setTaskContext(prevTaskContext)
@@ -153,6 +153,42 @@ class UnsafeRowArenaSuite extends SparkFunSuite {
         arena.append(oversized)
       }
       assert(caught.getMessage != null)
+      arena.free()
+    }
+  }
+
+  test("appendLinked chains rows via getNext, terminated by UnsafeRowArena.NO_NEXT") {
+    withArena(linked = true) { (arena, _) =>
+      val third = arena.appendLinked(row(3, "c"), UnsafeRowArena.NO_NEXT)
+      val second = arena.appendLinked(row(2, "b"), third)
+      val head = arena.appendLinked(row(1, "a"), second)
+
+      val resultRow = new UnsafeRow(2)
+      var address = head
+      val seen = scala.collection.mutable.ArrayBuffer[Int]()
+      while (address != UnsafeRowArena.NO_NEXT) {
+        seen += arena.getRow(address, resultRow).getInt(0)
+        address = arena.getNext(address)
+      }
+      assert(seen.toSeq == Seq(1, 2, 3))
+      arena.free()
+    }
+  }
+
+  test("appendLinked throws when the arena was not constructed for linked mode") {
+    withArena(linked = false) { (arena, _) =>
+      intercept[IllegalArgumentException] {
+        arena.appendLinked(row(1, "a"), UnsafeRowArena.NO_NEXT)
+      }
+      arena.free()
+    }
+  }
+
+  test("append throws when the arena was constructed for linked mode") {
+    withArena(linked = true) { (arena, _) =>
+      intercept[IllegalArgumentException] {
+        arena.append(row(1, "a"))
+      }
       arena.free()
     }
   }

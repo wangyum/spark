@@ -687,4 +687,18 @@ class SQLConfSuite extends SharedSparkSession {
       assert(spark.sessionState.conf.windowGroupLimitHashPushdownEnabled)
     }
   }
+
+  test("SPARK-61804: windowGroupLimitHashPushdownMaxLimit defaults to 100") {
+    assert(spark.sessionState.conf.windowGroupLimitHashPushdownMaxLimit == 100)
+    withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MAX_LIMIT.key -> "5") {
+      assert(spark.sessionState.conf.windowGroupLimitHashPushdownMaxLimit == 5)
+    }
+  }
+
+  test("SPARK-61804: windowGroupLimitHashPushdownMaxAppendRatio defaults to 0.9") {
+    assert(spark.sessionState.conf.windowGroupLimitHashPushdownMaxAppendRatio == 0.9)
+    withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MAX_APPEND_RATIO.key -> "0.5") {
+      assert(spark.sessionState.conf.windowGroupLimitHashPushdownMaxAppendRatio == 0.5)
+    }
+  }
 }

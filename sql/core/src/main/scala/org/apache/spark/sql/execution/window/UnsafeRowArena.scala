@@ -44,8 +44,17 @@ import org.apache.spark.unsafe.memory.MemoryBlock
  * arena is freed. This mirrors exactly how the previous JVM-heap `ArrayBuffer[UnsafeRow]` this
  * replaces already behaved (a replaced row's old copy became heap garbage); the difference is that
  * garbage here is accounted Tungsten memory, not unaccounted JVM heap.
+ *
+ * `linked` fixes, for this instance's lifetime, whether entries carry an extra trailing 8-byte
+ * "next" pointer ([[appendLinked]]/[[getNext]]) for threading a singly-linked candidate list per
+ * key -- used by [[HashRankGroupLimitAccumulator]] to chain rows tied at the same order-key value.
+ * [[HashRowNumberGroupLimitAccumulator]] has no use for that link (at most one row survives per
+ * heap slot), so it uses the plain [[append]]/[[getRow]] pair instead and never pays the extra 8
+ * bytes per row. Mixing the two modes on one instance is a programming error, not a data-dependent
+ * condition, so [[append]]/[[appendLinked]]/[[getNext]] fail fast (`require`) if called on an
+ * instance constructed for the other mode.
  */
-private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager)
+private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager, linked: Boolean)
   extends MemoryConsumer(
     taskMemoryManager,
     UnsafeRowArena.INITIAL_PAGE_SIZE_BYTES,
@@ -77,15 +86,37 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager)
    * [[HashRowNumberGroupLimitAccumulator]] does) must catch both themselves.
    */
   def append(row: UnsafeRow): Long = {
+    require(!linked, "append() is not supported on an arena constructed for linked mode; use" +
+      " appendLinked() instead.")
+    appendInternal(row, next = None)
+  }
+
+  /**
+   * Like [[append]], but also stores `next` as a trailing 8-byte link readable via [[getNext]],
+   * threading this entry into a singly-linked list of rows tied at the same order-key value (see
+   * the class doc). Only valid on an arena constructed with `linked = true`.
+   */
+  def appendLinked(row: UnsafeRow, next: Long): Long = {
+    require(linked, "appendLinked() is not supported on an arena constructed for non-linked" +
+      " mode; use append() instead.")
+    appendInternal(row, next = Some(next))
+  }
+
+  private def appendInternal(row: UnsafeRow, next: Option[Long]): Long = {
     val sizeInBytes = row.getSizeInBytes
     if (sizeInBytes >= (1 << UnsafeRowArena.SIZE_BITS)) {
       throw QueryExecutionErrors.rowLargerThan256MUnsupportedError()
     }
-    grow(sizeInBytes)
+    val linkBytes = if (next.isDefined) java.lang.Long.BYTES else 0
+    grow(sizeInBytes + linkBytes)
     val offset = cursor
     Platform.copyMemory(
       row.getBaseObject, row.getBaseOffset, page.getBaseObject, cursor, sizeInBytes)
     cursor += sizeInBytes
+    next.foreach { nextAddress =>
+      Platform.putLong(page.getBaseObject, cursor, nextAddress)
+      cursor += linkBytes
+    }
     UnsafeRowArena.toAddress(offset - page.getBaseOffset, sizeInBytes)
   }
 
@@ -96,6 +127,14 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager)
       page.getBaseOffset + UnsafeRowArena.toOffset(address),
       UnsafeRowArena.toSize(address))
     resultRow
+  }
+
+  /** The `next` link stored alongside `address` by [[appendLinked]]. Requires `linked = true`. */
+  def getNext(address: Long): Long = {
+    require(linked, "getNext() is not supported on an arena constructed for non-linked mode.")
+    val rowEnd =
+      page.getBaseOffset + UnsafeRowArena.toOffset(address) + UnsafeRowArena.toSize(address)
+    Platform.getLong(page.getBaseObject, rowEnd)
   }
 
   /** Current bytes held (not a high-water mark; callers combine with their own peak tracking). */
@@ -151,6 +190,9 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager)
 }
 
 private[window] object UnsafeRowArena {
+  /** Sentinel terminating a linked candidate list built via [[UnsafeRowArena.appendLinked]]. */
+  val NO_NEXT: Long = -1L
+
   private val INITIAL_PAGE_SIZE_BYTES: Long = 1L << 16 // 64 KiB
 
   // Matches LongToUnsafeRowMap's split: 28 bits of size (up to ~256 MB per row, far beyond any

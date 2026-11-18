@@ -136,7 +136,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
     }
   }
 
-  test("SPARK-61804: limit > 1 (rn <= 2) is not hash-eligible (stays on the sort-based path)") {
+  test("SPARK-61804: limit > 1 (rn <= 2) is hash-eligible within maxLimit") {
     val df = Seq((1, 3L), (1, 2L), (1, 1L), (2, 5L)).toDF("k", "ts")
     val query = df.selectExpr("*", "row_number() over (partition by k order by ts desc) as rn")
       .where("rn <= 2").drop("rn")
@@ -144,8 +144,23 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       checkAnswer(query, Seq(Row(1, 3L), Row(1, 2L), Row(2, 5L)))
       val plan = query.queryExecution.executedPlan
       val limits = collectWithSubqueries(plan) { case w: WindowGroupLimitExec => w }
+      assert(limits.nonEmpty && limits.forall(_.isHashEligible),
+        "limit > 1 must be hash-eligible as long as it is within maxLimit")
+    }
+  }
+
+  test("SPARK-61804: limit > maxLimit is not hash-eligible (stays on the sort-based path)") {
+    val df = Seq((1, 3L), (1, 2L), (1, 1L), (2, 5L)).toDF("k", "ts")
+    val query = df.selectExpr("*", "row_number() over (partition by k order by ts desc) as rn")
+      .where("rn <= 2").drop("rn")
+    withSQLConf(
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MAX_LIMIT.key -> "1") {
+      checkAnswer(query, Seq(Row(1, 3L), Row(1, 2L), Row(2, 5L)))
+      val plan = query.queryExecution.executedPlan
+      val limits = collectWithSubqueries(plan) { case w: WindowGroupLimitExec => w }
       assert(limits.nonEmpty && limits.forall(!_.isHashEligible),
-        "limit > 1 must never be treated as hash-eligible")
+        "limit (2) exceeding maxLimit (1) must fall back to the sort-based path")
     }
   }
 
@@ -249,11 +264,16 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key -> "50",
       SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key -> "1.05") {
       // 10 distinct keys, 100 rows each: compaction ratio is 100, far above the 1.05 threshold,
-      // so the periodic check must never trigger a bail-out despite running every 50 rows.
+      // so the periodic check must never trigger a bail-out despite running every 50 rows. ts
+      // decreases within each key's own occurrences (n - i, round-robin over k = i % 10), so a
+      // key's very first row is immediately its final winner and every later occurrence of that
+      // key is discarded without touching the arena -- healthy by the append-ratio signal too
+      // (see SPARK-61804's "bails out when almost every row triggers an append" test for the
+      // mirror-image, unhealthy case this deliberately avoids).
       val n = 1000
-      val df = (0 until n).map(i => (i % 10, i.toLong, i.toLong)).toDF("k", "ts", "v")
+      val df = (0 until n).map(i => (i % 10, (n - i).toLong, (n - i).toLong)).toDF("k", "ts", "v")
       val resultDf = dedupLatest(df)
-      checkAnswer(resultDf, (0 until 10).map(k => Row(k, (990 + k).toLong, (990 + k).toLong)))
+      checkAnswer(resultDf, (0 until 10).map(k => Row(k, (n - k).toLong, (n - k).toLong)))
 
       val plan = resultDf.queryExecution.executedPlan
       val fallbackCounts = collectWithSubqueries(plan) { case w: WindowGroupLimitExec => w }
@@ -512,6 +532,166 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
         checkAnswer(dedupLatest(spark.read.parquet(path)), Seq(Row(1, 2L, "b"), Row(2, 5L, "c")))
       }
+    }
+  }
+
+  // Direct, low-level tests of HashRowNumberGroupLimitAccumulator's K-slot bounded max-heap
+  // (limit > 1), independent of isHashEligible/SQL-level routing (which still gates on limit == 1
+  // until WindowGroupLimitExec's eligibility is widened separately) -- constructs the accumulator
+  // directly, the same way the OOM fallback tests above do.
+
+  test("SPARK-61804: limit > 1 keeps exactly the best `limit` rows per key, any arrival order") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val kAttr = AttributeReference("k", IntegerType)()
+      val tsAttr = AttributeReference("ts", LongType)()
+      val partitionSpec = Seq(kAttr)
+      val orderSpec = Seq(SortOrder(tsAttr, Descending))
+      val childOutput = Seq(kAttr, tsAttr)
+      val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+      val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+      val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+      val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
+      val accumulator = new HashRowNumberGroupLimitAccumulator(
+        partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
+        numTasksFallBacked, limit = 3)
+
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      // Key 1 has 10 rows (ts 0..9, descending order means the 3 largest -- 9, 8, 7 -- survive);
+      // key 2 has only 2 rows (fewer than the limit, so both must survive); fed in shuffled order
+      // to make sure the heap doesn't depend on arrival order.
+      val key1Rows = scala.util.Random.shuffle((0 until 10).map(ts => (1, ts.toLong)))
+      val key2Rows = Seq((2, 100L), (2, 200L))
+      (key1Rows ++ key2Rows).foreach { case (k, ts) =>
+        accumulator.consumeRow(rowProjection(InternalRow(k, ts)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      val resultSet = result.map(r => (r.getInt(0), r.getLong(1))).toSet
+      assert(resultSet == Set((1, 9L), (1, 8L), (1, 7L), (2, 100L), (2, 200L)),
+        s"expected the 3 largest ts per key (or all of them if fewer than 3 exist), got $resultSet")
+    }
+  }
+
+  // Regression test: a discarded row (heap full, new row doesn't beat the current worst-kept)
+  // must still count toward rowsConsumed for the periodic compaction-ratio check, exactly like
+  // the original K=1 code counted every consumed row regardless of whether it replaced the
+  // winner. If discards silently stopped incrementing rowsConsumed, a key that fills its heap
+  // early and then discards everything else -- the *ideal* case for this optimization, since the
+  // arena barely grows after the initial fill -- would make rowsConsumed undercount so badly that
+  // the distinct-key compaction ratio looks artificially low and proactively (and wrongly) bails
+  // out to the sort-based path.
+  test("SPARK-61804: limit > 1 discarded rows still count toward the compaction ratio" +
+      " (a well-compacting key must not spuriously bail out)") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val kAttr = AttributeReference("k", IntegerType)()
+      val tsAttr = AttributeReference("ts", LongType)()
+      val partitionSpec = Seq(kAttr)
+      val orderSpec = Seq(SortOrder(tsAttr, Descending))
+      val childOutput = Seq(kAttr, tsAttr)
+      val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+      val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+      val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+      val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
+      val accumulator = new HashRowNumberGroupLimitAccumulator(
+        partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
+        numTasksFallBacked, minCompactionRatio = 5.0, minRowsBetweenCompactionChecks = 50L,
+        limit = 3)
+
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      // Each key's rows arrive in descending ts order, so only the first 3 ever update the heap;
+      // the other 97 are discarded without touching the arena -- the ideal compaction scenario.
+      // Keys are processed one fully at a time (all of key 0, then all of key 1, ...), so:
+      //   - correctly counting every consumed row, the very first periodic check (at row 50)
+      //     lands while key 0 is still the only key seen: ratio = 50/1 = 50, far above the 5.0
+      //     threshold.
+      //   - if discards didn't count, only 3 rows per key would ever reach the bottom of
+      //     consumeRow, so reaching rowsConsumed == 50 requires roughly 17 keys' worth of
+      //     initial fills (3 each): ratio = 50/~17 =~ 2.9, below the threshold -- a 30-key sweep
+      //     guarantees that broken count actually crosses 50 (and so the check actually fires)
+      //     instead of silently never triggering at all.
+      (0 until 30).foreach { k =>
+        (0 until 100).foreach { ts =>
+          accumulator.consumeRow(rowProjection(InternalRow(k, (99 - ts).toLong)).copy())
+        }
+      }
+      accumulator.finish()
+      assert(numTasksFallBacked.value == 0,
+        "a well-compacting key (heap fills early, then discards everything else) must not " +
+          "spuriously bail out to the sort-based path")
+    }
+  }
+
+  test("SPARK-61804: limit > 1 bails out when almost every row triggers an append despite a" +
+      " healthy distinct-key ratio (monotonically improving values)") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val kAttr = AttributeReference("k", IntegerType)()
+      val tsAttr = AttributeReference("ts", LongType)()
+      val partitionSpec = Seq(kAttr)
+      val orderSpec = Seq(SortOrder(tsAttr, Descending))
+      val childOutput = Seq(kAttr, tsAttr)
+      val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+      val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+      val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+      val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
+      val accumulator = new HashRowNumberGroupLimitAccumulator(
+        partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
+        numTasksFallBacked, minCompactionRatio = 1.05, minRowsBetweenCompactionChecks = 100L,
+        limit = 3)
+
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      // A single key with strictly ascending ts: every row past the initial 3-row fill beats the
+      // current worst-kept and triggers a fresh append, so the distinct-key compaction ratio
+      // alone (rowsConsumed / 1 key, always huge here) would never catch this -- only an
+      // append-ratio signal can.
+      (0 until 500).foreach { ts =>
+        accumulator.consumeRow(rowProjection(InternalRow(1, ts.toLong)).copy())
+      }
+      accumulator.finish()
+      assert(numTasksFallBacked.value > 0,
+        "an append-ratio health check should have proactively bailed out here; if this stops " +
+          "triggering, the fix for the monotonic-improvement memory-growth gap may have " +
+          "regressed")
+    }
+  }
+
+  // Mirrors the K=1 row-arena OOM test above, but with limit > 1: every key's kept state spans
+  // multiple heap slots, so the fallback sorter must drain *all* of them, not just one -- this is
+  // the main new risk the K-slot refactor introduces over the original single-winner design.
+  test("SPARK-61804: limit > 1 falls back to sort-based output when the row arena genuinely" +
+      " runs out of memory, draining every kept slot per key") {
+    withStandaloneTaskContext(budgetBytes = 2 * 1024 * 1024 + 300 * 1024, pageSizeBytes = "2m") {
+      val kAttr = AttributeReference("k", IntegerType)()
+      val tsAttr = AttributeReference("ts", LongType)()
+      val padAttr = AttributeReference("pad", StringType)()
+      val partitionSpec = Seq(kAttr)
+      val orderSpec = Seq(SortOrder(tsAttr, Descending))
+      val childOutput = Seq(kAttr, tsAttr, padAttr)
+      val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+      val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+      val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+      val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
+      val accumulator = new HashRowNumberGroupLimitAccumulator(
+        partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
+        numTasksFallBacked, minCompactionRatio = 0.0, minRowsBetweenCompactionChecks = 0L,
+        limit = 3)
+
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      val pad = UTF8String.fromString("x" * 100)
+      val n = 5000
+      // Each key gets exactly `limit` rows with distinct ts, so every kept row must survive.
+      val expected = (0 until n).flatMap { k =>
+        (0 until 3).map(j => (k, j.toLong))
+      }
+      expected.foreach { case (k, ts) =>
+        accumulator.consumeRow(rowProjection(InternalRow(k, ts, pad)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      val resultSet = result.map(r => (r.getInt(0), r.getLong(1))).toSet
+      assert(resultSet == expected.toSet,
+        "every row (there are only exactly `limit` per key) must survive the fallback unchanged")
+      assert(numTasksFallBacked.value > 0,
+        "this test is only meaningful if the genuine-OOM fallback actually triggered -- " +
+          "if it stops triggering, tighten the budget/enlarge the padding above rather than " +
+          "deleting this assertion")
     }
   }
 }

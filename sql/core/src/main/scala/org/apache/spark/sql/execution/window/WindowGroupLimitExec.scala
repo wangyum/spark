@@ -17,12 +17,17 @@
 
 package org.apache.spark.sql.execution.window
 
+import org.apache.spark.PartitionEvaluatorFactory
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, RowNumber, SortOrder, UnsafeProjection, UnsafeRow}
-import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode, GenerateOrdering}
-import org.apache.spark.sql.catalyst.plans.physical.{AllTuples, ClusteredDistribution, Distribution, Partitioning}
-import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport, SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, DenseRank,
+  Expression, Rank, RowNumber, SortOrder, UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode,
+  GenerateOrdering}
+import org.apache.spark.sql.catalyst.plans.physical.{AllTuples, ClusteredDistribution,
+  Distribution, Partitioning}
+import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport, SparkPlan,
+  UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
 sealed trait WindowGroupLimitMode
@@ -30,6 +35,30 @@ sealed trait WindowGroupLimitMode
 case object Partial extends WindowGroupLimitMode
 
 case object Final extends WindowGroupLimitMode
+
+/**
+ * Common interface over [[HashRowNumberGroupLimitAccumulator]] and
+ * [[HashRankGroupLimitAccumulator]] so [[WindowGroupLimitExec]]'s whole-stage codegen (`doProduce`
+ * / `doConsume`) can drive either one through a single generated-code variable, regardless of
+ * which `rankLikeFunction` this particular plan node has. Must stay public (not `private[window]`)
+ * since generated code lives outside this package.
+ */
+trait HashGroupLimitAccumulator {
+  def consumeRow(row: UnsafeRow): Unit
+  def finish(): Iterator[InternalRow]
+}
+
+/**
+ * Common interface over [[HashRowNumberGroupLimitEvaluatorFactory]] and
+ * [[HashRankGroupLimitEvaluatorFactory]], mirroring [[HashGroupLimitAccumulator]]'s purpose for
+ * the factory side: lets [[WindowGroupLimitExec]] hold one statically-typed
+ * `hashEvaluatorFactory` regardless of `rankLikeFunction`, both for the interpreted `doExecute()`
+ * path (via the inherited [[PartitionEvaluatorFactory]]) and for codegen's `createAccumulator()`
+ * call in `doProduce`.
+ */
+trait HashGroupLimitEvaluatorFactory extends PartitionEvaluatorFactory[InternalRow, InternalRow] {
+  def createAccumulator(): HashGroupLimitAccumulator
+}
 
 /**
  * This operator is designed to filter out unnecessary rows before WindowExec
@@ -63,18 +92,22 @@ case class WindowGroupLimitExec(
 
   /**
    * True when this operator can skip requiring sorted input and instead keep, per partition key,
-   * only the single best row seen so far in a hash map
-   * ([[HashRowNumberGroupLimitAccumulator]]). This is a static, plan-time decision, not a
-   * runtime fallback: it is only safe when at most one row per key can ever be the final answer
-   * (`RowNumber` with `limit == 1`; `Rank`/`DenseRank` must keep every row tied for the best order
-   * key, which is not a bounded accumulation), and only when every order-key expression's type is
-   * one `UnsafeRow` can mutate in place (the hash map's per-key state is fixed-width; see
+   * only the rows that can possibly be part of the final answer in a hash map
+   * ([[HashRowNumberGroupLimitAccumulator]] for `RowNumber`; [[HashRankGroupLimitAccumulator]]
+   * for `Rank`/`DenseRank`, which must keep every row tied at a qualifying order-key value, not
+   * just `limit` rows). This is a static, plan-time decision, not a runtime fallback: it requires
+   * `limit` to be within `windowGroupLimitHashPushdownMaxLimit` (each key's fixed-width per-key
+   * state grows with `limit`), and every order-key expression's type to be one `UnsafeRow` can
+   * mutate in place (the hash map's per-key state is fixed-width; see
    * [[HashRowNumberGroupLimitAccumulator]] for why).
    */
   lazy val isHashEligible: Boolean =
     conf.windowGroupLimitHashPushdownEnabled &&
-      rankLikeFunction.isInstanceOf[RowNumber] &&
-      limit == 1 &&
+      (rankLikeFunction.isInstanceOf[RowNumber] ||
+        rankLikeFunction.isInstanceOf[Rank] ||
+        rankLikeFunction.isInstanceOf[DenseRank]) &&
+      limit >= 1 &&
+      limit <= conf.windowGroupLimitHashPushdownMaxLimit &&
       orderSpec.forall(order => UnsafeRow.isMutable(order.child.dataType))
 
   override def requiredChildOrdering: Seq[Seq[SortOrder]] =
@@ -108,21 +141,41 @@ case class WindowGroupLimitExec(
 
   // Only ever constructed when isHashEligible is true: shared by the interpreted doExecute()
   // path below and by doProduce()'s codegen path (see supportCodegen), as a single source of
-  // truth for how a task's HashRowNumberGroupLimitAccumulator gets built. Deliberately captures
-  // only partitionSpec/orderSpec/child.output/the metrics -- not `this` or `child` -- so
-  // codegen's addReferenceObj does not drag the child plan into every task's closure.
-  @transient private[sql] lazy val hashEvaluatorFactory: HashRowNumberGroupLimitEvaluatorFactory =
-    new HashRowNumberGroupLimitEvaluatorFactory(
-      partitionSpec,
-      orderSpec,
-      child.output,
-      longMetric("numOutputRows"),
-      longMetric("peakMemory"),
-      longMetric("spillSize"),
-      longMetric("numTasksFallBacked"),
-      conf.windowGroupLimitHashPushdownMinCompactionRatio,
-      conf.windowGroupLimitHashPushdownMinRows,
-      conf.enableRadixSort)
+  // truth for how a task's accumulator gets built. Deliberately captures only
+  // partitionSpec/orderSpec/rankLikeFunction/child.output/the metrics -- not `this` or `child` --
+  // so codegen's addReferenceObj does not drag the child plan into every task's closure.
+  @transient private[sql] lazy val hashEvaluatorFactory: HashGroupLimitEvaluatorFactory =
+    rankLikeFunction match {
+      case _: RowNumber =>
+        new HashRowNumberGroupLimitEvaluatorFactory(
+          partitionSpec,
+          orderSpec,
+          child.output,
+          longMetric("numOutputRows"),
+          longMetric("peakMemory"),
+          longMetric("spillSize"),
+          longMetric("numTasksFallBacked"),
+          conf.windowGroupLimitHashPushdownMinCompactionRatio,
+          conf.windowGroupLimitHashPushdownMinRows,
+          conf.enableRadixSort,
+          limit,
+          conf.windowGroupLimitHashPushdownMaxAppendRatio)
+      case _ =>
+        new HashRankGroupLimitEvaluatorFactory(
+          partitionSpec,
+          orderSpec,
+          rankLikeFunction,
+          child.output,
+          longMetric("numOutputRows"),
+          longMetric("peakMemory"),
+          longMetric("spillSize"),
+          longMetric("numTasksFallBacked"),
+          conf.windowGroupLimitHashPushdownMinCompactionRatio,
+          conf.windowGroupLimitHashPushdownMinRows,
+          conf.enableRadixSort,
+          limit,
+          conf.windowGroupLimitHashPushdownMaxAppendRatio)
+    }
 
   protected override def doExecute(): RDD[InternalRow] = {
     val evaluatorFactory =
@@ -148,8 +201,8 @@ case class WindowGroupLimitExec(
     }
   }
 
-  // Only the hash path (Section 4.3/4.4 of the design) is codegen'd; the sort-based path keeps
-  // acting as a pipeline breaker exactly as it does today.
+  // Only the hash path is codegen'd; the sort-based path keeps acting as a pipeline breaker
+  // exactly as it does today.
   override def supportCodegen: Boolean = isHashEligible
 
   override def usedInputs: AttributeSet = AttributeSet.empty
@@ -164,9 +217,12 @@ case class WindowGroupLimitExec(
   override protected def doProduce(ctx: CodegenContext): String = {
     val needToConsume = ctx.addMutableState(
       "boolean", "needToConsumeGroupLimit", v => s"$v = true;")
-    val factoryTerm = ctx.addReferenceObj("groupLimitAccumulatorFactory", hashEvaluatorFactory)
+    val factoryTerm = ctx.addReferenceObj(
+      "groupLimitAccumulatorFactory",
+      hashEvaluatorFactory,
+      classOf[HashGroupLimitEvaluatorFactory].getName)
     accumulatorTerm = ctx.addMutableState(
-      classOf[HashRowNumberGroupLimitAccumulator].getName,
+      classOf[HashGroupLimitAccumulator].getName,
       "groupLimitAccumulator",
       v => s"$v = $factoryTerm.createAccumulator();",
       forceInline = true)

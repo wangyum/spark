@@ -18,7 +18,8 @@
 package org.apache.spark.sql.execution.benchmark
 
 import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.sql.internal.SQLConf.{WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED, WINDOW_GROUP_LIMIT_THRESHOLD}
+import org.apache.spark.sql.internal.SQLConf.{WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED,
+  WINDOW_GROUP_LIMIT_THRESHOLD}
 
 /**
  * Benchmark to measure performance for top-k computation.
@@ -115,13 +116,66 @@ object TopKBenchmark extends SqlBasedBenchmark {
               }
             }
 
-            benchmark.addCase("hash pushdown: true (default)") { _ =>
+            benchmark.addCase("hash pushdown: true") { _ =>
               withSQLConf(WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
                 dedupLatest()
               }
             }
 
             benchmark.run()
+        }
+      }
+    }
+
+    // Measures the same hash-based accumulator path, now generalized (see the SPARK-61804
+    // follow-up that added ROW_NUMBER() <= K / RANK() <= K / DENSE_RANK() <= K support) against
+    // the identical "few large groups" vs "all-unique keys" shapes above, with limit = 5 instead
+    // of 1. RANK()/DENSE_RANK() additionally exercise the tie-aware candidate-list path (see
+    // HashRankGroupLimitAccumulator), not just the bounded top-K heap ROW_NUMBER() uses.
+    runBenchmark("Hash-Based Top-K (limit > 1) Window Group Limit") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath + "/topk_hash_benchmark_table"
+        val N = 1024 * 1024 * 20
+        val limit = 5
+
+        def writeData(numKeys: Long): Unit = {
+          spark.range(0, N, 1, 11)
+            .selectExpr(s"id % $numKeys as k", "id as ts")
+            .write.mode("overwrite")
+            .parquet(path)
+        }
+
+        def topK(rankLikeFunc: String): Unit = {
+          spark.read.parquet(path)
+            .selectExpr("*", s"$rankLikeFunc() over (partition by k order by ts desc) as rk")
+            .where(s"rk <= $limit")
+            .noop()
+        }
+
+        Seq(1024L -> "few large groups", N.toLong -> "all-unique keys").foreach {
+          case (numKeys, desc) =>
+            writeData(numKeys)
+            Seq("row_number", "rank", "dense_rank").foreach { function =>
+              val benchmark = new Benchmark(
+                s"Top-$limit $function dedup ($desc, $numKeys distinct keys)",
+                N,
+                minNumIters = 5,
+                output = output)
+
+              benchmark.addCase("hash pushdown: false (sort-based)") { _ =>
+                withSQLConf(WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "false") {
+                  topK(function)
+                }
+              }
+
+              benchmark.addCase("hash pushdown: true") { _ =>
+                withSQLConf(WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+                  topK(function)
+                }
+              }
+
+              benchmark.run()
+            }
         }
       }
     }
