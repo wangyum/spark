@@ -419,6 +419,30 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     }
   }
 
+  test("a spill-backed group's fallback is recorded on its first probe, not after " +
+    "PROBE_THRESHOLD probes") {
+    withRowArray(inMemoryRows = 4, totalRows = 10) { (array, _) =>
+      assert(array.isSpillBacked, "test setup must force a real spill")
+      val indexedMetric = SQLMetrics.createMetric(sc, "indexed")
+      val fallbackMetric = SQLMetrics.createMetric(sc, "fallback")
+      val session = new RangeGroupProbe.Session(
+        pointInRangeSpec(threshold = 2), indexedMetric, fallbackMetric)
+
+      session.onProbe(array)
+      assert(session.currentRelationOrNull == null, "a spill-backed group must never be indexed")
+      assert(fallbackMetric.value == 1,
+        "row count and spill state are fixed once buffering completes, so a group already " +
+        "ineligible on its first probe must be declined immediately instead of waiting for " +
+        "PROBE_THRESHOLD probes to reach the same, already-known outcome")
+
+      // Later probes of the same group must stay no-ops: no repeated build attempt, no
+      // repeated metric increment.
+      probeThroughGate(session, array)
+      assert(fallbackMetric.value == 1, "a declined group must not be re-evaluated later")
+      assert(indexedMetric.value == 0)
+    }
+  }
+
   test("Session.resetGroup clears probe state so the next group starts fresh") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
       val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))

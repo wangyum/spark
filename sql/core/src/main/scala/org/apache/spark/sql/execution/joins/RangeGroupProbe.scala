@@ -179,22 +179,36 @@ private[joins] object RangeGroupProbe extends Logging {
      * linear scans it would have paid anyway, at parity with range indexing disabled,
      * instead of also building an index too few probes will reuse. `buildAttempted`
      * latches the budget/eligibility decision so a later probe never re-evaluates it for
-     * the same group. Note that a group that never reaches the probe threshold never
-     * increments `numIndexedMetric` or `numFallbackMetric`: those two metrics count
-     * groups whose build was actually attempted, not every group above `threshold`, so
-     * their sum is not the total count of above-threshold groups. `numFallbackMetric`
-     * counts every attempted build that didn't produce an index, whether rejected by policy
-     * (over `maxBytes`, insufficient TaskMemoryManager budget) or because `build()` hit a
-     * genuine error (a non-fatal exception or an `OutOfMemoryError`); `numBuildErrorMetric`
-     * additionally counts only the latter, narrower population, so an operator can tell a
-     * build that failed outright apart from one the policy simply declined to attempt. On the
-     * whole-stage-codegen path, a streamed row that probes no group at all (an unmatched
-     * outer or anti row seeing an empty buffer) also advances `probeCount`, since the
-     * generated code calls `onProbe` unconditionally for every streamed row. The interpreted
-     * path does not: it short-circuits
-     * before reaching `onProbe`/`candidates` whenever the buffered group is empty (see
-     * `OneSideOuterIterator.advanceStream`'s `getBufferedMatches.isEmpty` branch, and
-     * `SortMergeJoinEvaluatorFactory`'s `currentRightMatches.length > 0` guards for
+     * the same group.
+     *
+     * A buffered group is fully materialized before any streamed row probes it, so its row
+     * count and spill-backed state - everything `isEligible` needs beyond `spec`'s own
+     * fixed fields - never change across a group's probes. A group that already fails
+     * `isEligible` on its first probe would fail it identically on every later one, so that
+     * case is latched immediately instead of paying `PROBE_THRESHOLD` pointless
+     * `probeCount` increments to reach a foregone conclusion; `declineBuild` below fires the
+     * same way whether it is called here or after an actual `build()` attempt, so this only
+     * changes when a never-eligible group's fallback is recorded, not whether it is. Only
+     * TaskMemoryManager's actual free budget at `build()` time - not predictable from the
+     * first probe - still requires waiting for `PROBE_THRESHOLD` probes before finding out.
+     *
+     * Note that a group that never reaches the probe threshold, and was never found
+     * ineligible outright either, never increments `numIndexedMetric` or
+     * `numFallbackMetric`: those two metrics count groups whose build was actually attempted
+     * or declined, not every group above `threshold`, so their sum is not the total count of
+     * above-threshold groups. `numFallbackMetric` counts every declined build that didn't
+     * produce an index, whether rejected by policy (below `threshold`'s row count stays
+     * silent and uncounted; over `maxBytes`, spill-backed, or insufficient TaskMemoryManager
+     * budget are counted) or because `build()` hit a genuine error (a non-fatal exception or
+     * an `OutOfMemoryError`); `numBuildErrorMetric` additionally counts only the latter,
+     * narrower population, so an operator can tell a build that failed outright apart from
+     * one the policy simply declined to attempt. On the whole-stage-codegen path, a streamed
+     * row that probes no group at all (an unmatched outer or anti row seeing an empty
+     * buffer) also advances `probeCount`, since the generated code calls `onProbe`
+     * unconditionally for every streamed row. The interpreted path does not: it
+     * short-circuits before reaching `onProbe`/`candidates` whenever the buffered group is
+     * empty (see `OneSideOuterIterator.advanceStream`'s `getBufferedMatches.isEmpty` branch,
+     * and `SortMergeJoinEvaluatorFactory`'s `currentRightMatches.length > 0` guards for
      * LeftSemi/LeftAnti/ExistenceJoin), so `probeCount` progression - and therefore exactly
      * when a group's index gets built - is not guaranteed to match between the two execution
      * paths for the same query. Regardless of path, `probeCount` cannot leak into a later
@@ -202,18 +216,38 @@ private[joins] object RangeGroupProbe extends Logging {
      * group every probing row shares its key.
      */
     def onProbe(matches: ExternalAppendOnlyUnsafeRowArray): Unit = {
+      if (buildAttempted) {
+        return
+      }
+      if (probeCount == 0 && !spec.isEligible(matches.length, matches.isSpillBacked)) {
+        declineBuild(matches)
+        return
+      }
       probeCount += 1
-      if (currentHandle == null && !buildAttempted && probeCount >= PROBE_THRESHOLD) {
-        buildAttempted = true
+      if (probeCount >= PROBE_THRESHOLD) {
         currentHandle = build(matches, spec, memoryConsumer, numBuildErrorMetric)
         if (currentHandle != null) {
+          buildAttempted = true
           if (numIndexedMetric != null) numIndexedMetric += 1
-        } else if (matches.length >= spec.threshold) {
-          if (numFallbackMetric != null) numFallbackMetric += 1
-          logDebug(log"range index fallback for a buffered group of " +
-            log"${MDC(NUM_ROWS, matches.length)} rows " +
-            log"(threshold=${MDC(THRESHOLD, spec.threshold)}); using a linear scan instead")
+        } else {
+          declineBuild(matches)
         }
+      }
+    }
+
+    /**
+     * Latches `buildAttempted` so neither this probe's caller nor a later one re-evaluates
+     * the decision for the rest of this group, and records the fallback - unless the group's
+     * row count alone already ruled it out, which `onProbe`'s callers treat as never having
+     * been a candidate rather than a declined build.
+     */
+    private def declineBuild(matches: ExternalAppendOnlyUnsafeRowArray): Unit = {
+      buildAttempted = true
+      if (matches.length >= spec.threshold) {
+        if (numFallbackMetric != null) numFallbackMetric += 1
+        logDebug(log"range index fallback for a buffered group of " +
+          log"${MDC(NUM_ROWS, matches.length)} rows " +
+          log"(threshold=${MDC(THRESHOLD, spec.threshold)}); using a linear scan instead")
       }
     }
 
