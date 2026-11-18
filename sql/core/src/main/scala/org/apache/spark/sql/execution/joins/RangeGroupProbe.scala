@@ -60,7 +60,7 @@ private[joins] object RangeGroupProbe extends Logging {
    * cost that pays for itself only once the linear rescans it replaces have cost about as
    * much as the build, so a group probed fewer times keeps the plain linear scan at parity
    * with range indexing disabled. SortMergeJoinRangeIndexBenchmark's reuse sweep (fixed
-   * groupSize=1024) shows parity (1.0X) at 100 reuses and below, and a 2.5X win at 1000
+   * groupSize=1024) shows parity (1.0X) at 100 reuses and below, and a 2.9X win at 1000
    * reuses, so the constant sits above the break-even point between those two measured
    * points - low enough to engage for the motivating workload (a group probed thousands of
    * times) while still keeping lightly-reused groups at the disabled-feature baseline. A
