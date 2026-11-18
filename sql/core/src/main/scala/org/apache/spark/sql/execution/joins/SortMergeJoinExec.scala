@@ -58,7 +58,13 @@ case class SortMergeJoinExec(
         // Not exclusive of numRangeIndexedGroups: a group already indexed can later revert to
         // a linear scan (RangeGroupProbe.Session.releaseForSpill) and increment both.
         "numRangeIndexFallbackGroups" ->
-          SQLMetrics.createMetric(sparkContext, "number of range-index fallback groups"))
+          SQLMetrics.createMetric(sparkContext, "number of range-index fallback groups"),
+        // Narrower than numRangeIndexFallbackGroups: only a build that actually threw (a
+        // non-fatal exception or OutOfMemoryError in RangeGroupProbe.build), not every
+        // policy-declined fallback, so an operator can tell a genuine build failure apart
+        // from a group that was merely too large or too-few-times-reused to index by policy.
+        "numRangeIndexBuildErrors" ->
+          SQLMetrics.createMetric(sparkContext, "number of range-index build errors"))
     } else {
       Map.empty[String, SQLMetric]
     }
@@ -217,7 +223,8 @@ case class SortMergeJoinExec(
       RangeGroupProbe.SessionFactory(
         spec,
         longMetric("numRangeIndexedGroups"),
-        longMetric("numRangeIndexFallbackGroups"))
+        longMetric("numRangeIndexFallbackGroups"),
+        longMetric("numRangeIndexBuildErrors"))
     }
 
   override def supportCodegen: Boolean = joinType match {
@@ -717,6 +724,11 @@ case class SortMergeJoinExec(
            |  InternalRow $bufferedRow = null;
            |  $loadStreamed
            |  $guardOutputRow
+           |  // This bypasses the inner candidate loop -- and the finishProbe call that normally
+           |  // follows it -- entirely, so beginProbe()'s in-flight marker must be cleared here
+           |  // too, or a real TaskMemoryManager spill request would be declined for the rest of
+           |  // this group even though nothing is reading the index anymore.
+           |  ${finishProbeCode(probeSessionTerm)}
            |  continue;
            |}
          """.stripMargin

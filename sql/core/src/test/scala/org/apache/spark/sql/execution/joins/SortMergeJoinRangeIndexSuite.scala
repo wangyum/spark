@@ -305,7 +305,8 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
           s"a range key overlapping an equi key must never be recognized " +
             s"(RangeGroupProbe.createSpec returns None for it):\n$plan")
         assert(smj.forall(j => !j.metrics.contains("numRangeIndexedGroups") &&
-          !j.metrics.contains("numRangeIndexFallbackGroups")),
+          !j.metrics.contains("numRangeIndexFallbackGroups") &&
+          !j.metrics.contains("numRangeIndexBuildErrors")),
           s"an overlapping range/equi key must never register range-index metrics:\n$plan")
       }
     }
@@ -397,6 +398,31 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
     assertDirectIndexProbe(joined, classOf[LongIntervalIndex])
   }
 
+  test("sort merge point-in-range left outer join calls finishProbe on the streamed-only " +
+    "guard's early continue") {
+    // When the condition also has a streamed-only conjunct and splitStreamedSideJoinCondition
+    // hoists it, createIterator's onProbe/beginProbe already ran before the guard is checked,
+    // so a row the guard rejects must still call finishProbe() before its "continue;" -
+    // otherwise probeActive stays stuck true for the rest of the group, the same bug class
+    // fixed for LeftSemi above, just reached through the guard path instead of the match loop.
+    val events = largeGroupEvents()
+    val spans = largeGroupSpans()
+    // `e_id > 5` references only the streamed (left) side and is a total comparison (safe to
+    // hoist per ExprUtils.canEvaluateUnconditionally, unlike e.g. `%`, which can throw): for
+    // e_id <= 5 this is false for every row of that group, so once such a group is indexed
+    // every later probe takes the guard's early-continue path instead of ever reaching the
+    // inner candidate loop.
+    val cond = pointCond(events, spans) && events("e_id") > 5
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond, "left")
+    withSQLConf(smjConfigs :+
+      SQLConf.SPLIT_STREAMED_SIDE_JOIN_CONDITION.key -> "true" :+
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true": _*) {
+      val code = generatedCode(joined)
+      assert(""".finishProbe\(\);\s*\n\s*continue;""".r.findFirstIn(code).isDefined,
+        s"expected finishProbe() immediately before the streamed-only guard's continue;:\n$code")
+    }
+  }
+
   test("sort merge point-in-range right outer join engages the index for a large group") {
     val events = largeGroupEvents()
     val spans = largeGroupSpans()
@@ -473,7 +499,8 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
           s"FullOuter must never recognize a range condition " +
             s"(RangeGroupProbe.createSpec returns None for it):\n$plan")
         assert(smj.forall(j => !j.metrics.contains("numRangeIndexedGroups") &&
-          !j.metrics.contains("numRangeIndexFallbackGroups")),
+          !j.metrics.contains("numRangeIndexFallbackGroups") &&
+          !j.metrics.contains("numRangeIndexBuildErrors")),
           s"FullOuter must never register range-index metrics:\n$plan")
       }
     }
@@ -666,7 +693,8 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
       assert(!smj.nodeName.contains("(rangeIndex=true)"),
         s"expected no rangeIndex suffix when the feature is disabled: ${smj.nodeName}")
       assert(!smj.metrics.contains("numRangeIndexedGroups") &&
-        !smj.metrics.contains("numRangeIndexFallbackGroups"),
+        !smj.metrics.contains("numRangeIndexFallbackGroups") &&
+        !smj.metrics.contains("numRangeIndexBuildErrors"),
         s"expected no rangeIndex metrics when the feature is disabled: ${smj.metrics.keys}")
     }
   }
@@ -678,6 +706,7 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
       assert(smj.nonEmpty)
       assert(smj.forall(!_.metrics.contains("numRangeIndexedGroups")))
       assert(smj.forall(!_.metrics.contains("numRangeIndexFallbackGroups")))
+      assert(smj.forall(!_.metrics.contains("numRangeIndexBuildErrors")))
     }
   }
 }
