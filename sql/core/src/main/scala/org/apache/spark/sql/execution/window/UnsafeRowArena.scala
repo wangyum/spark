@@ -197,7 +197,10 @@ private[window] object UnsafeRowArena {
 
   // Matches LongToUnsafeRowMap's split: 28 bits of size (up to ~256 MB per row, far beyond any
   // realistic single row) leaves 36 bits of page-relative offset (up to 64 GB of cumulative
-  // storage), ample since this arena only ever holds one row per distinct key at a time.
+  // storage), ample since the arena is a single page whose total size is independently capped by
+  // grow()'s own check against TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES (~17.18 GB, see grow's
+  // doc) -- a bound that holds regardless of how many rows a given key accumulates, including the
+  // K-slot (ROW_NUMBER) and unbounded-per-key linked (RANK/DENSE_RANK) usages of this class.
   private val SIZE_BITS = 28
   private val SIZE_MASK = 0xfffffff
 

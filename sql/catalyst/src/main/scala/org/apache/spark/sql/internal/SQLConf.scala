@@ -5389,10 +5389,13 @@ object SQLConf {
   val WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED =
     buildConf("spark.sql.windowExec.groupLimit.hashPushdown.enabled")
       .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
-      .doc("When true, WindowGroupLimitExec uses an in-memory hash-based " +
-        "accumulator instead of full sorting for ROW_NUMBER() window group " +
-        "limits of 1, when the order key's type supports it. Defaults to false, " +
-        "matching the rollout posture of the analogous " +
+      .doc("When true, WindowGroupLimitExec uses an in-memory hash-based accumulator instead " +
+        "of full sorting for ROW_NUMBER()/RANK()/DENSE_RANK() window group limits up to " +
+        // Hardcoded rather than interpolated: WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MAX_LIMIT is
+        // declared later in this object, so a `.key` reference to it here would forward-reference
+        // an uninitialized val and NPE at SQLConf object init.
+        "'spark.sql.windowExec.groupLimit.hashPushdown.maxLimit', when the order key's type " +
+        "supports it. Defaults to false, matching the rollout posture of the analogous " +
         s"'${ADAPTIVE_PARTIAL_AGGREGATION_ENABLED.key}'.")
       .version("4.5.0")
       .booleanConf
@@ -5437,9 +5440,17 @@ object SQLConf {
     buildConf("spark.sql.windowExec.groupLimit.hashPushdown.maxLimit")
       .doc("The maximum window group limit value eligible for the hash-based accumulator in " +
         s"WindowGroupLimitExec (see '${WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key}'). Each " +
-        "key's fixed-width per-key state grows linearly with the limit, so a query with a very " +
+        "key's fixed-width slot array grows linearly with the limit, so a query with a very " +
         "large limit is routed to the existing sort-based path instead, regardless of whether " +
-        "hash pushdown is enabled.")
+        "hash pushdown is enabled. For ROW_NUMBER() this slot array is the entirety of a key's " +
+        "state, so it bounds total per-key memory; for RANK()/DENSE_RANK(), a key additionally " +
+        "retains every row tied at a kept order-key value in a separate, data-dependent-size " +
+        "row list that this limit does NOT bound -- see " +
+        // Hardcoded rather than interpolated: WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MAX_APPEND_RATIO
+        // is declared later in this object, so a `.key` reference to it here would
+        // forward-reference an uninitialized val and NPE at SQLConf object init.
+        "'spark.sql.windowExec.groupLimit.hashPushdown.maxAppendRatio' for the guard against " +
+        "that case.")
       .version("4.5.0")
       .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
       .intConf

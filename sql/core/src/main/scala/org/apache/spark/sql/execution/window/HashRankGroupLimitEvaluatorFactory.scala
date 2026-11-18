@@ -74,11 +74,19 @@ import org.apache.spark.unsafe.KVIterator
  * as the sum, over slots `0 until pos`, of each slot's weight -- `rowCount` for `RANK`, or a flat
  * `1` per slot for `DENSE_RANK` (which only cares about distinct-group position, not row counts).
  * `v` is admitted iff preceding weight `< limit`: this is exactly `RANK`/`DENSE_RANK() <= limit`'s
- * admission test for an as-yet-unseen value, and it is *permanent* -- preceding weight for a
- * fixed `v` can only grow as more rows/values arrive, so a value rejected once can never
+ * admission test for an as-yet-unseen value, and *rejection* is permanent -- preceding weight for
+ * a fixed `v` can only grow as more rows/values arrive, so a value rejected once can never
  * subsequently qualify (letting [[consumeRow]] discard it immediately, at zero `rowArena` cost).
- * Because slots are sorted and weights are positive, inserting a new slot can invalidate at most
- * the single trailing (worst) slot -- never more -- keeping capacity to exactly `limit` slots.
+ *
+ * *Admission*, in contrast, is not permanent for `RANK`: growing an earlier slot's row count --
+ * via a later tie, or via a brand-new slot inserted ahead of it -- raises every later slot's
+ * preceding weight, which can push an already-admitted slot past `limit` with no new distinct
+ * value ever arriving to trigger re-evaluation. [[consumeRow]] handles this with
+ * [[revalidateTrailingSlots]], called after either kind of weight increase: because weights are
+ * positive and slots stay sorted, once one slot's preceding weight reaches `limit`, every slot
+ * after it does too, so finding the first invalidated position and truncating `slotCount` there
+ * is sufficient -- never more than one scan, and a no-op for `DENSE_RANK`, whose flat per-slot
+ * weight of 1 cannot change.
  *
  * Every row matching an admitted value (whether newly admitted or an existing tie) is appended to
  * the per-key candidate list. A row's own slot can later be evicted by a better value arriving;
@@ -170,7 +178,7 @@ class HashRankGroupLimitAccumulator(
     }
   }
 
-  private def writeSlotValue(buffer: UnsafeRow, slot: Int, orderKey: UnsafeRow): Unit = {
+  private def writeSlotFrom(buffer: UnsafeRow, slot: Int, orderKey: UnsafeRow): Unit = {
     var i = 0
     while (i < numOrderCols) {
       val ord = slotOrderOrdinal(slot, i)
@@ -231,11 +239,36 @@ class HashRankGroupLimitAccumulator(
   }
 
   /**
+   * After slot `fromSlot`'s weight increases -- either a tie bumped its row count, or a brand-new
+   * slot was just inserted there, shifting every later slot's preceding weight up by the new
+   * slot's own weight -- a slot already admitted *after* `fromSlot` can become invalid: `RANK`'s
+   * weight is a slot's row count, so either event can raise a later slot's preceding weight past
+   * `limit`, something the one-time admission test in [[consumeRow]] (run only when a value is
+   * first seen) never re-checks. By the same weight-monotonicity argument the class doc already
+   * relies on, once one slot's preceding weight reaches `limit`, every slot after it does too, so
+   * finding the first invalidated position and truncating `slotCount` there is sufficient --
+   * `kvIteratorToScala` already filters candidates purely by the live `slotCount` at drain time,
+   * so no arena bookkeeping is needed: an evicted slot's already-appended rows simply stop
+   * matching anything once `finish()` runs. A no-op for `DENSE_RANK`, whose flat per-slot weight
+   * of 1 never changes, and for a change at the already-last slot, which has nothing after it to
+   * invalidate.
+   */
+  private def revalidateTrailingSlots(buffer: UnsafeRow, fromSlot: Int, slotCount: Int): Unit = {
+    if (isDenseRank || fromSlot == slotCount - 1) return
+    var i = fromSlot + 1
+    while (i < slotCount && sumWeights(buffer, i) < limit) i += 1
+    if (i < slotCount) {
+      buffer.setLong(slotCountOrdinal, i)
+    }
+  }
+
+  /**
    * Inserts a brand-new distinct value at sorted position `pos`, shifting slots `[pos, lastIndex)`
    * right by one. If the slot array is already full (`slotCount == limit`), the current last slot
-   * is dropped entirely rather than shifted -- safe because inserting a new slot can only ever
-   * invalidate the single trailing slot (see the class doc), so when the array is already at
-   * capacity that trailing slot is exactly the one being displaced.
+   * is dropped entirely rather than shifted, enforcing the `limit`-slot capacity bound; the
+   * caller is responsible for additionally calling [[revalidateTrailingSlots]] afterward, since
+   * shifting slots can also invalidate one that remains within the (possibly still-growing)
+   * array, not only the one truncated by capacity -- see [[revalidateTrailingSlots]]'s doc.
    */
   private def insertSlotAt(
       buffer: UnsafeRow, pos: Int, orderKey: UnsafeRow, slotCount: Int): Unit = {
@@ -245,7 +278,7 @@ class HashRankGroupLimitAccumulator(
       copySlot(buffer, i - 1, i)
       i -= 1
     }
-    writeSlotValue(buffer, pos, orderKey)
+    writeSlotFrom(buffer, pos, orderKey)
     buffer.setLong(slotRowCountOrdinal(pos), 1L)
   }
 
@@ -292,14 +325,23 @@ class HashRankGroupLimitAccumulator(
       buffer.setLong(
         slotRowCountOrdinal(matchSlot), buffer.getLong(slotRowCountOrdinal(matchSlot)) + 1)
       appendsSinceLastCheck += 1
+      revalidateTrailingSlots(buffer, matchSlot, slotCount)
     } else {
       val pos = findInsertionPos(buffer, orderKey, slotCount)
       if (sumWeights(buffer, pos) < limit) {
         appendCandidate(row, buffer)
         if (fallbackSorter != null) return
         insertSlotAt(buffer, pos, orderKey, slotCount)
-        buffer.setLong(slotCountOrdinal, math.min(slotCount + 1, limit))
+        val newSlotCount = math.min(slotCount + 1, limit)
+        buffer.setLong(slotCountOrdinal, newSlotCount)
         appendsSinceLastCheck += 1
+        // The new slot at `pos` only shares its own weight (1) with every slot shifted after it
+        // (see insertSlotAt), which can push one of *those* slots' preceding weight to `limit`
+        // even though the array wasn't at capacity -- a slot ejected purely by running out of the
+        // fixed `limit` capacity (handled by the newSlotCount cap above) is a different, already-
+        // handled case from a slot that remains in-bounds but is no longer valid under the new
+        // weight distribution. Both are covered by the same scan.
+        revalidateTrailingSlots(buffer, pos, newSlotCount)
       }
       // else: orderKey's true rank already exceeds limit and can only get worse from here (see
       // class doc) -- discarded without ever touching the arena.

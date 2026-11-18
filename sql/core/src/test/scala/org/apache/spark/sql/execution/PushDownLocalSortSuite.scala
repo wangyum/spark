@@ -18,13 +18,15 @@
 package org.apache.spark.sql.execution
 
 import org.apache.spark.sql.DataFrame
-import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, AttributeReference, IsNotNull, LessThan, Literal, Rand, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, AttributeReference,
+  Descending, IsNotNull, LessThan, Literal, Rand, RowNumber, SortOrder}
 import org.apache.spark.sql.catalyst.plans.physical.UnspecifiedDistribution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}
 import org.apache.spark.sql.execution.exchange.ValidateRequirements
+import org.apache.spark.sql.execution.window.{Final, WindowGroupLimitExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.sql.types.{IntegerType, LongType}
 
 
 abstract class PushDownLocalSortSuiteBase
@@ -299,6 +301,62 @@ abstract class PushDownLocalSortSuiteBase
         val rewritten = PushDownLocalSort(upper)
         assert(rewritten.collect { case s: SortExec => s }.length == 1)
       }
+    }
+  }
+
+  // Regression test for a deep-review finding: isOrderPreserving's WindowGroupLimitExec case only
+  // checked throughCardinalityReducer, with no reference to isHashEligible. A hash-eligible
+  // WindowGroupLimitExec's outputOrdering is Nil (its per-key hash accumulator drains in whatever
+  // order its internal map happens to iterate, unrelated to input order) -- crossing it would let
+  // `apply` drop the protective Sort EnsureRequirements places directly above it (inserted
+  // precisely because outputOrdering is Nil), silently feeding the real WindowExec above unordered
+  // rows. This must never happen, even with the cardinality-reducer flag explicitly enabled.
+  test("Cardinality reducer: do not cross a hash-eligible WindowGroupLimitExec even when" +
+      " explicitly enabled, since its output order is unrelated to its input order") {
+    val a = AttributeReference("a", IntegerType)()
+    val ts = AttributeReference("ts", LongType)()
+    val scan = LocalTableScanExec(Seq(a, ts), Nil, None)
+    val orderA = SortOrder(a, Ascending) :: Nil
+    val orderATs = SortOrder(a, Ascending) :: SortOrder(ts, Descending) :: Nil
+
+    val lower = SortExec(orderA, global = false, scan)
+    val groupLimit = WindowGroupLimitExec(
+      Seq(a), Seq(SortOrder(ts, Descending)), new RowNumber(), 1, Final, lower)
+    val upper = SortExec(orderATs, global = false, groupLimit)
+
+    withSQLConf(
+        SQLConf.PUSH_DOWN_LOCAL_SORT_ENABLED.key -> "true",
+        SQLConf.PUSH_DOWN_LOCAL_SORT_THROUGH_CARDINALITY_REDUCER_ENABLED.key -> "true",
+        SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+      assert(groupLimit.isHashEligible, "test setup sanity check: this node must actually be" +
+        " hash-eligible for the regression to be meaningful")
+      assert(PushDownLocalSort(upper).fastEquals(upper),
+        "must not cross a hash-eligible WindowGroupLimitExec even with the reducer flag on")
+    }
+  }
+
+  test("Cardinality reducer: a non-hash-eligible WindowGroupLimitExec is still crossed when" +
+      " explicitly enabled (unaffected by the isHashEligible guard above)") {
+    val a = AttributeReference("a", IntegerType)()
+    val ts = AttributeReference("ts", LongType)()
+    val scan = LocalTableScanExec(Seq(a, ts), Nil, None)
+    val orderA = SortOrder(a, Ascending) :: Nil
+    val orderATs = SortOrder(a, Ascending) :: SortOrder(ts, Descending) :: Nil
+
+    val lower = SortExec(orderA, global = false, scan)
+    val groupLimit = WindowGroupLimitExec(
+      Seq(a), Seq(SortOrder(ts, Descending)), new RowNumber(), 1, Final, lower)
+    val upper = SortExec(orderATs, global = false, groupLimit)
+
+    withSQLConf(
+        SQLConf.PUSH_DOWN_LOCAL_SORT_ENABLED.key -> "true",
+        SQLConf.PUSH_DOWN_LOCAL_SORT_THROUGH_CARDINALITY_REDUCER_ENABLED.key -> "true",
+        SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "false") {
+      assert(!groupLimit.isHashEligible, "test setup sanity check")
+      val rewritten = PushDownLocalSort(upper)
+      assert(rewritten.collect { case s: SortExec => s }.length == 1,
+        "a non-hash-eligible WindowGroupLimitExec's outputOrdering still equals its child's, so" +
+          " it must still be crossed exactly as before this fix")
     }
   }
 

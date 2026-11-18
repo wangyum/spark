@@ -128,6 +128,67 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
     }
   }
 
+  // Regression test for a deep-review finding: the admission test for a brand-new distinct value
+  // only runs once, using whatever weight its better-ranked rivals have accumulated *so far*. If a
+  // tie for an already-admitted, better slot arrives *after* a worse value has already been locked
+  // into a slot, that worse slot's true rank can grow past the limit without ever being
+  // re-validated or evicted -- unlike the suite's other RANK() test above, which (by feeding every
+  // tie for the better group before the worse value ever arrives) never exercises this ordering-
+  // sensitive gap.
+  test("SPARK-61804 (rank hash pushdown): RANK() re-validates an already-admitted slot when a" +
+      " later-arriving tie for a better slot pushes its true rank past the limit") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val accumulator = newAccumulator(new Rank(), limit = 2)
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      // ts=10 admitted into slot0; ts=5 admitted into slot1 (only 1 row of ts=10 counted so far,
+      // so RANK(5) looks like 2 <= 2 at that instant); the second ts=10 arrives last, tying
+      // slot0 -- its true RANK is now 1, but ts=5's true RANK is now 1+2=3 > 2, so ts=5 must be
+      // evicted even though no *new* distinct value ever arrives to trigger re-evaluation.
+      Seq((1, 10L), (1, 5L), (1, 10L)).foreach { case (k, ts) =>
+        accumulator.consumeRow(rowProjection(InternalRow(k, ts)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      val tsValues = result.map(_.getLong(1)).sorted
+      assert(tsValues == Seq(10L, 10L),
+        s"RANK() <= 2 must exclude ts=5 once the second ts=10 tie raises its true rank to 3," +
+          s" got $tsValues")
+    }
+  }
+
+  // A second, independent way the same re-validation gap can be triggered: inserting a brand-new
+  // (not tied) better value shifts every slot after it, which can push an already-admitted,
+  // non-overflow slot's true rank past the limit without the array ever reaching capacity -- a
+  // case the class doc's original "inserting a new slot can invalidate at most the single
+  // trailing slot" claim did not account for.
+  test("SPARK-61804 (rank hash pushdown): RANK() re-validates trailing slots when a brand-new" +
+      " better value shifts their preceding weight past the limit, even without reaching" +
+      " capacity") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val accumulator = newAccumulator(new Rank(), limit = 3)
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      // 5,5 admits ts=5 (weight 2); 3 admits ts=3 (preceding weight 2 < 3) -- slots: [(5,2),(3,1)],
+      // slotCount=2, well under the limit-3 capacity. ts=7 then arrives, better than everything,
+      // and is inserted at position 0, shifting both existing slots right by one: ts=5's new
+      // preceding weight is 1 (just ts=7), still valid, but ts=3's new preceding weight becomes
+      // 1 (ts=7) + 2 (ts=5) = 3, which is no longer < limit (3) -- even though slotCount (3 after
+      // the insert) never exceeded the limit-3 capacity, so the old "only a capacity overflow can
+      // invalidate a slot" reasoning would have missed this.
+      // A final ts=4 then arrives: its admission check (sumWeights against the shifted slot1,
+      // which now holds ts=5's data copied over from the old slot0 by insertSlotAt's copySlot)
+      // must see the correctly-carried-forward weight of 2, not a stale/zero value -- making this
+      // also a regression test for copySlot's rowCount-copying correctness, independent of the
+      // revalidateTrailingSlots fix this test was originally written for.
+      Seq((1, 5L), (1, 5L), (1, 3L), (1, 7L), (1, 4L)).foreach { case (k, ts) =>
+        accumulator.consumeRow(rowProjection(InternalRow(k, ts)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      val tsValues = result.map(_.getLong(1)).sorted
+      assert(tsValues == Seq(5L, 5L, 7L),
+        s"RANK() <= 3 must exclude ts=3 (rank 4) and ts=4 (rank 4) once ts=7's insertion and" +
+          s" copySlot's carried-forward weight are both accounted for, got $tsValues")
+    }
+  }
+
   test("SPARK-61804 (rank hash pushdown): fewer distinct values than the limit keeps everything" +
       " (both RANK and DENSE_RANK)") {
     withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
@@ -141,6 +202,47 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
         assert(result.map(_.getLong(1)).sorted == Seq(1L, 5L, 10L, 10L),
           s"with only 3 distinct values and limit=10, every row must survive for $fn")
       }
+    }
+  }
+
+  // Mirrors HashWindowGroupLimitSuite's "hash path handles nulls in order key" test, for the new
+  // Rank/DenseRank accumulator: extractSlotInto/writeSlotValue have explicit isNullAt/setNullAt
+  // branches that were otherwise completely untested in this suite. The suite's orderSpec is
+  // Descending, whose default null ordering is NULLS LAST, so a null order key is always the
+  // worst-ranked row regardless of function.
+  test("SPARK-61804 (rank hash pushdown): DENSE_RANK() <= 2 handles a null order key (sorts" +
+      " last under this suite's Descending orderSpec, so it is excluded)") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val accumulator = newAccumulator(new DenseRank(), limit = 2)
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      Seq((1, null), (1, 10L), (1, 10L), (1, 5L)).foreach {
+        case (k: Int, ts) =>
+          accumulator.consumeRow(rowProjection(InternalRow(k, ts)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      val tsValues = result.map(_.getLong(1)).sorted
+      // dense_rank(10)=1, dense_rank(5)=2 (both <= 2); the null row sorts last (dense_rank=3)
+      // and is excluded.
+      assert(tsValues == Seq(5L, 10L, 10L),
+        s"DENSE_RANK() <= 2 must exclude the null order key here, got $tsValues")
+    }
+  }
+
+  test("SPARK-61804 (rank hash pushdown): RANK() <= 2 handles a null order key (sorts last" +
+      " under this suite's Descending orderSpec, so it is excluded along with ts=5)") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val accumulator = newAccumulator(new Rank(), limit = 2)
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      Seq((1, null), (1, 10L), (1, 10L), (1, 5L)).foreach {
+        case (k: Int, ts) =>
+          accumulator.consumeRow(rowProjection(InternalRow(k, ts)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      val tsValues = result.map(_.getLong(1)).sorted
+      // rank(10)=1 (2 rows); rank(5)=1+2=3 > 2 and the null row's rank=4 > 2, so both are
+      // excluded, leaving only the two ts=10 rows.
+      assert(tsValues == Seq(10L, 10L),
+        s"RANK() <= 2 must exclude both ts=5 and the null order key here, got $tsValues")
     }
   }
 
@@ -250,8 +352,18 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
     }
   }
 
-  test("SPARK-61804 (rank hash pushdown): codegen and interpreted hash paths agree for RANK()") {
+  test("SPARK-61804 (rank hash pushdown): codegen and interpreted hash paths agree for RANK()" +
+      " -- against a real sort-based baseline, not just each other") {
     val df = (0 until 500).map(i => (i % 37, (i % 11).toLong)).toDF("key", "ts")
+    // Asserting codegenOn == codegenOff alone is not a sufficient regression guard: both paths
+    // drive the identical HashRankGroupLimitAccumulator logic, so a bug in that shared logic
+    // (e.g. the re-validation gap fixed alongside this test) would make both sides agree on the
+    // same wrong answer and this test would pass despite the defect. Comparing against the
+    // sort-based baseline -- which goes through the real, independently-implemented
+    // RankLimitIterator -- actually exercises correctness, not just codegen/interpreted parity.
+    val baseline = withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "false") {
+      topKByRank(df, 3).collect().toSet
+    }
     val codegenOn = withSQLConf(
       SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
       SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
@@ -262,6 +374,7 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
       SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
       topKByRank(df, 3).collect().toSet
     }
-    assert(codegenOn == codegenOff)
+    assert(codegenOn == baseline, "hash path (codegen) must match the sort-based baseline")
+    assert(codegenOff == baseline, "hash path (interpreted) must match the sort-based baseline")
   }
 }

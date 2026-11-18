@@ -348,7 +348,8 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       // isolating this test to the genuine-OOM fallback path only.
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBacked, minCompactionRatio = 0.0, minRowsBetweenCompactionChecks = 0L)
+        numTasksFallBacked, minCompactionRatio = 0.0, minRowsBetweenCompactionChecks = 0L,
+        limit = 1)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
       val n = 2000
@@ -393,7 +394,8 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       // isolating this test to the genuine-OOM fallback path only.
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBacked, minCompactionRatio = 0.0, minRowsBetweenCompactionChecks = 0L)
+        numTasksFallBacked, minCompactionRatio = 0.0, minRowsBetweenCompactionChecks = 0L,
+        limit = 1)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
       val pad = UTF8String.fromString("x" * 100)
@@ -471,7 +473,8 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       // live map) on any earlier row.
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBacked, minCompactionRatio = 1.05, minRowsBetweenCompactionChecks = 482L)
+        numTasksFallBacked, minCompactionRatio = 1.05, minRowsBetweenCompactionChecks = 482L,
+        limit = 1)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
       val pad = UTF8String.fromString("x" * 100)

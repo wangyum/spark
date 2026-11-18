@@ -87,7 +87,7 @@ class HashRowNumberGroupLimitAccumulator(
     minCompactionRatio: Double = 1.05,
     minRowsBetweenCompactionChecks: Long = 100000L,
     enableRadixSort: Boolean = true,
-    limit: Int = 1,
+    limit: Int,
     maxAppendRatio: Double = 0.9) extends HashGroupLimitAccumulator with Logging {
 
   private val numOrderCols = orderSpec.length
@@ -533,7 +533,7 @@ class HashRowNumberGroupLimitEvaluatorFactory(
     minCompactionRatio: Double,
     minRowsBetweenCompactionChecks: Long,
     enableRadixSort: Boolean,
-    limit: Int = 1,
+    limit: Int,
     maxAppendRatio: Double = 0.9)
   extends HashGroupLimitEvaluatorFactory {
 

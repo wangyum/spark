@@ -141,7 +141,15 @@ object PushDownLocalSort extends Rule[SparkPlan] {
     // saved sort. Only cross them when explicitly enabled. `FilterExec` additionally needs the
     // determinism guard, for the same reason as the project above.
     case f: FilterExec => throughCardinalityReducer && f.condition.deterministic
-    case _: WindowGroupLimitExec => throughCardinalityReducer
+    // A hash-eligible WindowGroupLimitExec's output order is unrelated to its input order (see
+    // its own outputOrdering/isHashEligible docs): its per-key hash accumulator drains in
+    // whatever order its internal map/heap happens to iterate, not the order rows arrived in.
+    // Crossing it would let `apply` drop the protective Sort that EnsureRequirements places
+    // directly above it (inserted precisely because outputOrdering is Nil in that mode) under the
+    // false assumption that sorting its input also sorts its output -- silently feeding the real
+    // WindowExec above unordered rows. Only a non-hash-eligible node (outputOrdering ==
+    // child.outputOrdering) may still be crossed, exactly as before.
+    case w: WindowGroupLimitExec => throughCardinalityReducer && !w.isHashEligible
     // Pushing a wider sort under a window refines the input order the window sees within ties of
     // its own `ORDER BY`. For order-sensitive window functions (`first_value`/`last_value`/
     // `collect_list`, `lead`/`lag`, `ROWS`-frame aggregates) that can change the result -- but only
