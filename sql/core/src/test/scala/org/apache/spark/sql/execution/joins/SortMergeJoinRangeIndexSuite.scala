@@ -420,6 +420,24 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
     assertDirectIndexProbe(joined, classOf[LongIntervalIndex])
   }
 
+  test("sort merge point-in-range left semi join calls finishProbe even when a streamed row " +
+    "has no match") {
+    // finishProbe() must run unconditionally once the candidate loop ends, not only inside the
+    // branch that found a match - otherwise a streamed row with no match at all (routine for
+    // LeftSemi) leaves the probe permanently "in flight" (RangeGroupProbe.Session.beginProbe
+    // never paired with a finishProbe) and blocks later spills for the rest of the group.
+    val events = largeGroupEvents()
+    val spans = largeGroupSpans()
+    val cond = pointCond(events, spans)
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond, "leftsemi")
+    withSQLConf(smjConfigs :+ SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true": _*) {
+      val code = generatedCode(joined)
+      assert(""".finishProbe\(\);\s*\n\s*if \(shouldStop""".r.findFirstIn(code).isDefined,
+        s"expected finishProbe() unconditionally before the shouldStop() check, " +
+        s"not only inside the match-found branch:\n$code")
+    }
+  }
+
   test("sort merge point-in-range left anti join engages the index for a large group") {
     val events = largeGroupMisses()
     val spans = largeGroupSpans()

@@ -663,10 +663,11 @@ case class SortMergeJoinExec(
            |scala.collection.Iterator $iterator;
            |if ($relVar != null) {
            |  ${keys.code}
-           |  // wrapOutstanding tracks that $iterator may still be read from across the
-           |  // inner while loop's nested consume() calls below, so a TaskMemoryManager spill
-           |  // triggered from one of them cannot release $relVar out from under it.
-           |  $iterator = $sessionTerm.wrapOutstanding($candidateExpr);
+           |  // beginProbe protects $relVar from being released by a TaskMemoryManager spill
+           |  // triggered across the inner while loop's nested consume() calls below, without
+           |  // paying wrapOutstanding's per-probe Iterator allocation and virtual dispatch.
+           |  $sessionTerm.beginProbe();
+           |  $iterator = $candidateExpr;
            |} else {
            |  $iterator = $matches.generateIterator();
            |}
@@ -728,9 +729,9 @@ case class SortMergeJoinExec(
       case _: InnerLike =>
         val cleanedFlag =
           ctx.addMutableState(CodeGenerator.JAVA_BOOLEAN, "cleanedFlag", v => s"$v = false;")
-        codegenInner(scan, cleanedFlag)
+        codegenInner(scan, cleanedFlag, probeSessionTerm)
       case LeftOuter | RightOuter =>
-        codegenOuter(streamedInput, scan, ctx.freshName("hasOutputRow"))
+        codegenOuter(streamedInput, scan, ctx.freshName("hasOutputRow"), probeSessionTerm)
       case LeftSemi =>
         val cleanedFlag =
           ctx.addMutableState(CodeGenerator.JAVA_BOOLEAN, "cleanedFlag", v => s"$v = false;")
@@ -784,9 +785,13 @@ case class SortMergeJoinExec(
   /**
    * Generates the code for Inner join.
    */
-  private def codegenInner(scan: JoinScanCodegen, cleanedFlag: String): String = {
+  private def codegenInner(
+      scan: JoinScanCodegen,
+      cleanedFlag: String,
+      probeSessionTerm: Option[String]): String = {
     val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
       outputRow, eagerCleanup) = scan
+    val finishProbe = finishProbeCode(probeSessionTerm)
     s"""
        |if($cleanedFlag) {
        |  return;
@@ -799,6 +804,7 @@ case class SortMergeJoinExec(
        |    $conditionCheck
        |    $outputRow
        |  }
+       |  $finishProbe
        |  if (shouldStop()) return;
        |}
        |$cleanedFlag = true;
@@ -809,10 +815,14 @@ case class SortMergeJoinExec(
   /**
    * Generates the code for Left or Right Outer join.
    */
-  private def codegenOuter(streamedInput: String, scan: JoinScanCodegen, hasOutputRow: String)
-    : String = {
+  private def codegenOuter(
+      streamedInput: String,
+      scan: JoinScanCodegen,
+      hasOutputRow: String,
+      probeSessionTerm: Option[String]): String = {
     val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
       outputRow, eagerCleanup) = scan
+    val finishProbe = finishProbeCode(probeSessionTerm)
     s"""
        |while ($streamedInput.hasNext()) {
        |  $findNextJoinRows;
@@ -827,6 +837,7 @@ case class SortMergeJoinExec(
        |    $hasOutputRow = true;
        |    $outputRow
        |  }
+       |  $finishProbe
        |  if (shouldStop()) return;
        |}
        |$eagerCleanup
@@ -857,9 +868,9 @@ case class SortMergeJoinExec(
        |    InternalRow $bufferedRow = (InternalRow) $matchIterator.next();
        |    $conditionCheck
        |    $hasOutputRow = true;
-       |    $finishProbe
        |    $outputRow
        |  }
+       |  $finishProbe
        |  if (shouldStop()) return;
        |}
        |$cleanedFlag = true;

@@ -549,6 +549,27 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     }
   }
 
+  test("Session.beginProbe/finishProbe allows an immediate spill when a probe finds no match") {
+    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
+      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      probeThroughGate(session, array)
+      assert(session.currentRelationOrNull != null, "the group must be indexed by now")
+
+      // Mirrors whole-stage codegen's indexed probe path (SortMergeJoinExec's createIterator):
+      // beginProbe() marks the probe in-flight before reading the index directly, with no
+      // wrapOutstanding wrapper to auto-detect exhaustion. finishProbe() must still be called
+      // once the candidate loop ends even when it never found a match - e.g. LeftSemi finding
+      // no matching buffered row at all for this streamed row.
+      session.beginProbe()
+      session.finishProbe()
+
+      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      assert(session.memoryConsumer.spill(1L, otherConsumer) > 0L,
+        "a probe that found no match must not block a subsequent spill")
+      assert(session.currentRelationOrNull == null)
+    }
+  }
+
   test("SortMergeJoinScanner.finishProbe forwards to the underlying Session") {
     // Unit-level on SortMergeJoinScanner, not just RangeGroupProbe.Session directly: the
     // Session-level mechanism is covered above, but nothing exercises that the Scanner the

@@ -163,6 +163,7 @@ private[joins] object RangeGroupProbe extends Logging {
      */
     private[this] var activeIterator: Iterator[InternalRow] = _
     private[this] var pendingSpill: Boolean = false
+    private[this] var probeActive: Boolean = false
 
     if (taskContext != null) {
       taskContext.addTaskCompletionListener[Unit](_ => resetGroup())
@@ -299,12 +300,26 @@ private[joins] object RangeGroupProbe extends Logging {
     }
 
     /**
+     * Marks the beginning of a candidate probe on the whole-stage-codegen path, avoiding
+     * the per-probe Iterator object allocation and virtual dispatch of `wrapOutstanding`.
+     */
+    def beginProbe(): Unit = {
+      if (pendingSpill && currentHandle != null) {
+        pendingSpill = false
+        doReleaseForSpill()
+      }
+      probeActive = true
+    }
+
+    /**
      * Marks the completion of a candidate probe for the current streamed row early, e.g. when
-     * an operator like `LeftSemi` finds a match and breaks out without draining the iterator.
-     * Reclaims the index immediately if a spill request arrived while the probe was in-flight.
+     * an operator like `LeftSemi` finds a match and breaks out without draining the iterator,
+     * or at the end of a whole-stage-codegen probe loop. Reclaims the index immediately if a
+     * spill request arrived while the probe was in-flight.
      */
     def finishProbe(): Unit = {
       activeIterator = null
+      probeActive = false
       if (pendingSpill && currentHandle != null) {
         pendingSpill = false
         doReleaseForSpill()
@@ -325,6 +340,7 @@ private[joins] object RangeGroupProbe extends Logging {
 
     def resetGroup(): Unit = {
       activeIterator = null
+      probeActive = false
       pendingSpill = false
       if (currentHandle != null) {
         release(currentHandle, memoryConsumer)
@@ -342,14 +358,15 @@ private[joins] object RangeGroupProbe extends Logging {
      * `numFallbackMetric` otherwise counts for a group whose build was rejected outright.
      *
      * Declines (returns 0, leaving `currentHandle` in place) while a candidate iterator from
-     * `wrapOutstanding` is still in-flight (`activeIterator.hasNext` is true): the relation's
-     * backing arrays stay reachable on the heap, so freeing TaskMemoryManager accounting
-     * immediately would cause a transient accounting divergence. Instead, sets `pendingSpill`
-     * so that the index is reclaimed as soon as the in-flight probe completes.
+     * `wrapOutstanding` is still in-flight (`activeIterator.hasNext` is true) or a codegen
+     * probe is active (`probeActive` is true): the relation's backing arrays stay reachable on
+     * the heap, so freeing TaskMemoryManager accounting immediately would cause a transient
+     * accounting divergence. Instead, sets `pendingSpill` so that the index is reclaimed as
+     * soon as the in-flight probe completes.
      */
     private def releaseForSpill(): Long = {
       if (currentHandle != null) {
-        if (activeIterator != null && activeIterator.hasNext) {
+        if (probeActive || (activeIterator != null && activeIterator.hasNext)) {
           pendingSpill = true
           logDebug(log"spill declined for a buffered group's range index: a candidate " +
             log"iterator is still in-flight; reclaiming once it completes")
