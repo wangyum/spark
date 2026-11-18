@@ -331,6 +331,16 @@ public final class BytesToBytesMap extends MemoryConsumer {
       int initialCapacity,
       long pageSizeBytes,
       long initialPageSizeBytes) {
+    this(taskMemoryManager, initialCapacity, pageSizeBytes, initialPageSizeBytes, null);
+  }
+
+  /** Like the four-argument constructor above, but also accepts a `keyOperationsFactory`. */
+  public BytesToBytesMap(
+      TaskMemoryManager taskMemoryManager,
+      int initialCapacity,
+      long pageSizeBytes,
+      long initialPageSizeBytes,
+      @Nullable KeyOperationsFactory keyOperationsFactory) {
     this(
       taskMemoryManager,
       SparkEnv.get() != null ? SparkEnv.get().blockManager() :  null,
@@ -340,7 +350,7 @@ public final class BytesToBytesMap extends MemoryConsumer {
       0.5,
       pageSizeBytes,
       initialPageSizeBytes,
-      null);
+      keyOperationsFactory);
   }
 
   public BytesToBytesMap(

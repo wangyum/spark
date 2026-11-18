@@ -92,6 +92,30 @@ public final class UnsafeFixedWidthAggregationMap {
       TaskContext taskContext,
       int initialCapacity,
       long pageSizeBytes) {
+    this(emptyAggregationBuffer, aggregationBufferSchema, groupingKeySchema, taskContext,
+      initialCapacity, pageSizeBytes, pageSizeBytes);
+  }
+
+  /**
+   * Like the six-argument constructor, but lets the first data page start out smaller than
+   * `pageSizeBytes` -- doubling (capped at `pageSizeBytes`) only as the map actually grows past
+   * it -- for a caller that expects to hold little data most of the time and does not want to pay
+   * for a full `pageSizeBytes` page up front on every use. Mirrors the same
+   * `pageSizeBytes`/`initialPageSizeBytes` split
+   * {@link org.apache.spark.sql.execution.joins.HashedRelation} already uses for its own
+   * build-side `BytesToBytesMap`, for the identical reason.
+   *
+   * @param initialPageSizeBytes the size of the first data page, in bytes; must not exceed
+   *                             `pageSizeBytes`.
+   */
+  public UnsafeFixedWidthAggregationMap(
+      InternalRow emptyAggregationBuffer,
+      StructType aggregationBufferSchema,
+      StructType groupingKeySchema,
+      TaskContext taskContext,
+      int initialCapacity,
+      long pageSizeBytes,
+      long initialPageSizeBytes) {
     this.aggregationBufferSchema = aggregationBufferSchema;
     this.currentAggregationBuffer = new UnsafeRow(aggregationBufferSchema.length());
     this.groupingKeyProjection = UnsafeProjection.create(groupingKeySchema);
@@ -102,6 +126,7 @@ public final class UnsafeFixedWidthAggregationMap {
       taskContext.taskMemoryManager(),
       initialCapacity,
       pageSizeBytes,
+      initialPageSizeBytes,
       keyOperations);
 
     // Initialize the buffer for aggregation value

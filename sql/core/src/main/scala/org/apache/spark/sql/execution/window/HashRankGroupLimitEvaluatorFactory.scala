@@ -290,7 +290,9 @@ class HashRankGroupLimitAccumulator(
     groupingKeySchema,
     TaskContext.get(),
     1024 * 16,
-    taskMemoryManager.pageSizeBytes)
+    taskMemoryManager.pageSizeBytes,
+    // See the identical choice (and its rationale) in HashRowNumberGroupLimitAccumulator.
+    HashRowNumberGroupLimitAccumulator.INITIAL_PAGE_SIZE_BYTES)
 
   // linked = true: every appended row carries a trailing "next" pointer, threading all of a key's
   // candidate rows into one singly-linked list headed by that key's headAddress buffer field.

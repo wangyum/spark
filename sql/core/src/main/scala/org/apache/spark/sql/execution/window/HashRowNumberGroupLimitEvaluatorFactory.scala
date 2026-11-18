@@ -232,7 +232,12 @@ class HashRowNumberGroupLimitAccumulator(
     groupingKeySchema,
     TaskContext.get(),
     1024 * 16,
-    taskMemoryManager.pageSizeBytes)
+    taskMemoryManager.pageSizeBytes,
+    // A key's full fixed-width buffer is only numOrderCols+1 longs wide; most tasks never come
+    // close to filling even one page. Starting small and growing (capped at pageSizeBytes) avoids
+    // committing a full page (commonly tens of MB) up front for what may end up being a handful of
+    // keys -- mirrors HashedRelation's identical initialPageSizeBytes split for its build-side map.
+    HashRowNumberGroupLimitAccumulator.INITIAL_PAGE_SIZE_BYTES)
 
   // Holds the actual candidate rows in Tungsten pages (see UnsafeRowArena's class doc for why this
   // replaced a plain JVM-heap `ArrayBuffer[UnsafeRow]`: avoids unaccounted heap allocation and GC
@@ -514,6 +519,13 @@ class HashRowNumberGroupLimitAccumulator(
     winners.foreach(sorter.insertRow)
     sorter
   }
+}
+
+object HashRowNumberGroupLimitAccumulator {
+  // Matches UnsafeHashedRelation/LongToUnsafeRowMap's own choice of initial page size for a
+  // BytesToBytesMap-backed structure expected to often hold little data (see HashedRelation.scala).
+  // Shared with HashRankGroupLimitAccumulator, hence package-private rather than private.
+  private[window] val INITIAL_PAGE_SIZE_BYTES: Long = 1L << 20
 }
 
 /**
