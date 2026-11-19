@@ -385,6 +385,24 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     }
   }
 
+  test("Session construction requires an active TaskContext") {
+    // Session.apply() calls TaskContext.get() exactly once and fails fast if there isn't one,
+    // rather than silently degrading to a null memoryConsumer the way the pre-refactor code
+    // did. Every production call site (SortMergeJoinEvaluatorFactory, whole-stage codegen)
+    // only ever constructs a Session from inside a running task, so this should never fire
+    // in practice - this test exists purely to pin that contract so a future change can't
+    // silently weaken it back to null-tolerant degradation.
+    TaskContext.unset()
+    try {
+      val ex = intercept[IllegalArgumentException] {
+        RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      }
+      assert(ex.getMessage.contains("active Spark task"))
+    } finally {
+      TaskContext.unset()
+    }
+  }
+
   test("Session defers the index build until the probe threshold is reached") {
     // The shipped admission policy: a group must be probed often enough that its accumulated
     // linear rescans approach the index's one-time build cost before the build is attempted.
