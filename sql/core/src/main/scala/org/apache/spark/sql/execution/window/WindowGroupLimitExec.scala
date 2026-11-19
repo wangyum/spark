@@ -20,10 +20,10 @@ package org.apache.spark.sql.execution.window
 import org.apache.spark.PartitionEvaluatorFactory
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, DenseRank,
-  Expression, Rank, RowNumber, SortOrder, UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet,
+  BindReferences, DenseRank, Expression, Rank, RowNumber, SortOrder, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode,
-  GenerateOrdering}
+  GenerateOrdering, GenerateUnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.physical.{AllTuples, ClusteredDistribution,
   Distribution, Partitioning}
 import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport,
@@ -72,7 +72,22 @@ case class ArrayFallbackDestination(array: ExternalAppendOnlyUnsafeRowArray)
  * since generated code lives outside this package.
  */
 trait HashGroupLimitAccumulator {
-  def consumeRow(row: UnsafeRow): Unit
+  /**
+   * Consumes one row, given `key`/`orderKey` already projected by the caller. `doConsume`'s
+   * generated code computes these directly from the row's already-materialized column registers
+   * (via `partitionSpec`/`orderSpec`'s expressions bound to `child.output` and run through
+   * `GenerateUnsafeProjection`), rather than via this accumulator's own
+   * groupingProjection/orderKeyProjection, which would otherwise redundantly re-extract those
+   * same columns from `row` after `row` itself was just built from those very registers.
+   * Each concrete accumulator's single-argument `consumeRow(row)` (used by the interpreted path,
+   * which has no such registers, only a full `row`) computes `key`/`orderKey` itself and delegates
+   * here. Callers must have already checked [[fallbackDestinationOrNull]] themselves; this skips
+   * that check (both `consumeRow(row)` and `doConsume`'s generated code already special-case it).
+   */
+  def consumeRow(row: UnsafeRow, key: UnsafeRow, orderKey: UnsafeRow): Unit =
+    consumeRow(row, key, key.hashCode(), orderKey)
+
+  def consumeRow(row: UnsafeRow, key: UnsafeRow, keyHash: Int, orderKey: UnsafeRow): Unit
   def finish(): Iterator[InternalRow]
 
   /**
@@ -256,7 +271,15 @@ case class WindowGroupLimitExec(
   // exactly as it does today.
   override def supportCodegen: Boolean = isHashEligible
 
-  override def usedInputs: AttributeSet = AttributeSet.empty
+  // All of child.output: row's own materialization already needs every column (output =
+  // child.output, so the full row must survive to be re-emitted later), and doConsume's generated
+  // code now also independently projects partitionSpec/orderSpec straight off `input`. Declaring
+  // the full set here is what makes WholeStageCodegenExec.consume's evaluateRequiredVariables
+  // force-evaluate each of those input columns exactly once and clear their ExprCode.code --
+  // without it, row's construction, the key projection, and the orderKey projection would each
+  // independently re-emit (and re-declare) the same underlying input variable wherever they
+  // overlap, which javac/Janino rejects as a local variable redefinition.
+  override def usedInputs: AttributeSet = AttributeSet(child.output)
 
   override def inputRDDs(): Seq[RDD[InternalRow]] =
     child.asInstanceOf[CodegenSupport].inputRDDs()
@@ -317,13 +340,40 @@ case class WindowGroupLimitExec(
     // `mode` to select between here.
     val destTerm = ctx.freshName("fallbackDestination")
     val destClass = classOf[FallbackDestination].getName
+
+    // Projects partitionSpec/orderSpec directly off `input`'s already-materialized column
+    // registers (ctx.currentVars, set by the framework before doConsume runs -- see
+    // WholeStageCodegenExec.consume) via GenerateUnsafeProjection, the same mechanism
+    // HashAggregateExec.doConsumeWithKeys uses for its own grouping key. This independently
+    // (re-)evaluates partitionSpec's/orderSpec's expressions straight from those registers rather
+    // than going through HashGroupLimitAccumulator's own groupingProjection/orderKeyProjection,
+    // which would otherwise redundantly unpack `row` below -- itself unavoidably needed, since a
+    // kept/candidate row's full bytes must still be stored in rowArena -- just to re-extract the
+    // handful of columns partitionSpec/orderSpec actually need. Placed inside the non-fallback
+    // branch below: once a task has permanently fallen back, FallbackDestination.insertRow needs
+    // neither. Relies on usedInputs (above) declaring the full child.output so the framework
+    // force-evaluates and clears each input column's code exactly once -- otherwise row's own
+    // construction and these two projections would each independently re-declare the same
+    // underlying input variable wherever they overlap, which Janino rejects outright.
+    val boundPartitionSpec = BindReferences.bindReferences[Expression](partitionSpec, child.output)
+    val boundOrderKeyExprs =
+      BindReferences.bindReferences[Expression](orderSpec.map(_.child), child.output)
+    val keyCode = GenerateUnsafeProjection.createCode(ctx, boundPartitionSpec)
+    val orderKeyCode = GenerateUnsafeProjection.createCode(ctx, boundOrderKeyExprs)
+    val keyHashTerm = ctx.freshName("keyHash")
+
     s"""
-       |${row.code}
        |$destClass $destTerm = $accumulatorTerm.fallbackDestinationOrNull();
        |if ($destTerm != null) {
+       |  ${row.code}
        |  $destTerm.insertRow((UnsafeRow) ${row.value});
        |} else {
-       |  $accumulatorTerm.consumeRow((UnsafeRow) ${row.value});
+       |  ${keyCode.code}
+       |  int $keyHashTerm = ${keyCode.value}.hashCode();
+       |  ${orderKeyCode.code}
+       |  ${row.code}
+       |  $accumulatorTerm.consumeRow((UnsafeRow) ${row.value}, (UnsafeRow) ${keyCode.value},
+       |    $keyHashTerm, (UnsafeRow) ${orderKeyCode.value});
        |}
      """.stripMargin
   }

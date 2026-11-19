@@ -24,14 +24,15 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.memory.SparkOutOfMemoryError
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, BindReferences,
-  BoundReference, DenseRank, Expression, GenericInternalRow, RowOrdering, SortOrder,
+  BoundReference, DenseRank, Expression, GenericInternalRow, NullsFirst, RowOrdering, SortOrder,
   SortPrefix, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.GenerateOrdering
 import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, SortPrefixUtils,
   UnsafeExternalRowSorter, UnsafeFixedWidthAggregationMap}
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.sql.types.{BooleanType, ByteType, DateType, DoubleType, FloatType,
+  IntegerType, LongType, ShortType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.KVIterator
 
 /**
@@ -218,10 +219,53 @@ class HashRankGroupLimitAccumulator(
     }
   }
 
+  private val singleColComparator: ((Long, Long) => Int) =
+    if (numOrderCols == 1) {
+      orderSpec.head.child.dataType match {
+        case LongType | TimestampType | TimestampNTZType =>
+          (v1: Long, v2: Long) => java.lang.Long.compare(v1, v2)
+        case IntegerType | DateType =>
+          (v1: Long, v2: Long) => java.lang.Integer.compare(v1.toInt, v2.toInt)
+        case ShortType =>
+          (v1: Long, v2: Long) => java.lang.Short.compare(v1.toShort, v2.toShort)
+        case ByteType =>
+          (v1: Long, v2: Long) => java.lang.Byte.compare(v1.toByte, v2.toByte)
+        case BooleanType =>
+          (v1: Long, v2: Long) => java.lang.Boolean.compare(v1 != 0, v2 != 0)
+        case FloatType =>
+          (v1: Long, v2: Long) =>
+            java.lang.Float.compare(
+              java.lang.Float.intBitsToFloat(v1.toInt),
+              java.lang.Float.intBitsToFloat(v2.toInt))
+        case DoubleType =>
+          (v1: Long, v2: Long) =>
+            java.lang.Double.compare(
+              java.lang.Double.longBitsToDouble(v1),
+              java.lang.Double.longBitsToDouble(v2))
+        case _ => null
+      }
+    } else {
+      null
+    }
+
+  private val isSingleColAscending = numOrderCols == 1 && orderSpec.head.direction == Ascending
+  private val isSingleColNullsFirst = numOrderCols == 1 && orderSpec.head.nullOrdering == NullsFirst
+
   /** `< 0` if `orderKey` is strictly better (should rank earlier) than slot `slot`'s value. */
   private def compareToSlot(orderKey: UnsafeRow, buffer: UnsafeRow, slot: Int): Int = {
-    extractSlotInto(buffer, slot, scratchA)
-    boundOrdering.compare(orderKey, scratchA)
+    if (singleColComparator != null) {
+      val ord = slotOrderOrdinal(slot, 0)
+      val kNull = orderKey.isNullAt(0)
+      val sNull = buffer.isNullAt(ord)
+      if (kNull && sNull) return 0
+      if (kNull) return if (isSingleColNullsFirst) -1 else 1
+      if (sNull) return if (isSingleColNullsFirst) 1 else -1
+      val cmp = singleColComparator(orderKey.getLong(0), buffer.getLong(ord))
+      if (isSingleColAscending) cmp else -cmp
+    } else {
+      extractSlotInto(buffer, slot, scratchA)
+      boundOrdering.compare(orderKey, scratchA)
+    }
   }
 
   /**
@@ -360,20 +404,32 @@ class HashRankGroupLimitAccumulator(
 
   override def fallbackDestinationOrNull: FallbackDestination = fallbackDestination
 
-  /** Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input. */
+  /**
+   * Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input.
+   * Used by the interpreted path (see [[HashRankGroupLimitEvaluatorFactory]]), which has only a
+   * full `row` to work with -- computes `key`/`orderKey` itself via this accumulator's own
+   * projections, then delegates to the shared three-argument overload below.
+   */
   def consumeRow(row: UnsafeRow): Unit = {
     if (fallbackDestination != null) {
       fallbackDestination.insertRow(row)
       return
     }
     val key = groupingProjection(row)
-    val buffer = map.getAggregationBufferFromUnsafeRow(key)
+    consumeRow(row, key, key.hashCode(), orderKeyProjection(row))
+  }
+
+  override def consumeRow(row: UnsafeRow, key: UnsafeRow, orderKey: UnsafeRow): Unit =
+    consumeRow(row, key, key.hashCode(), orderKey)
+
+  override def consumeRow(
+      row: UnsafeRow, key: UnsafeRow, keyHash: Int, orderKey: UnsafeRow): Unit = {
+    val buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
     if (buffer == null) {
       switchToFallback(row)
       return
     }
     val slotCount = buffer.getLong(slotCountOrdinal).toInt
-    val orderKey = orderKeyProjection(row)
     val lastSlot = buffer.getLong(lastSlotOrdinal).toInt
     val matchSlot =
       if (lastSlot < slotCount && compareToSlot(orderKey, buffer, lastSlot) == 0) {

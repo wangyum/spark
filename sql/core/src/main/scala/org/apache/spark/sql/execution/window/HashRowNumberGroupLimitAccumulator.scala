@@ -24,14 +24,15 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.memory.SparkOutOfMemoryError
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, BindReferences,
-  BoundReference, Expression, GenericInternalRow, RowOrdering, SortOrder, SortPrefix,
+  BoundReference, Expression, GenericInternalRow, NullsFirst, RowOrdering, SortOrder, SortPrefix,
   UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.GenerateOrdering
 import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, SortPrefixUtils,
   UnsafeExternalRowSorter, UnsafeFixedWidthAggregationMap}
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.sql.types.{BooleanType, ByteType, DateType, DoubleType, FloatType,
+  IntegerType, LongType, ShortType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.KVIterator
 
 /**
@@ -151,37 +152,112 @@ class HashRowNumberGroupLimitAccumulator(
     }
   }
 
+  private val singleColComparator: ((Long, Long) => Int) =
+    if (numOrderCols == 1) {
+      orderSpec.head.child.dataType match {
+        case LongType | TimestampType | TimestampNTZType =>
+          (v1: Long, v2: Long) => java.lang.Long.compare(v1, v2)
+        case IntegerType | DateType =>
+          (v1: Long, v2: Long) => java.lang.Integer.compare(v1.toInt, v2.toInt)
+        case ShortType =>
+          (v1: Long, v2: Long) => java.lang.Short.compare(v1.toShort, v2.toShort)
+        case ByteType =>
+          (v1: Long, v2: Long) => java.lang.Byte.compare(v1.toByte, v2.toByte)
+        case BooleanType =>
+          (v1: Long, v2: Long) => java.lang.Boolean.compare(v1 != 0, v2 != 0)
+        case FloatType =>
+          (v1: Long, v2: Long) =>
+            java.lang.Float.compare(
+              java.lang.Float.intBitsToFloat(v1.toInt),
+              java.lang.Float.intBitsToFloat(v2.toInt))
+        case DoubleType =>
+          (v1: Long, v2: Long) =>
+            java.lang.Double.compare(
+              java.lang.Double.longBitsToDouble(v1),
+              java.lang.Double.longBitsToDouble(v2))
+        case _ => null
+      }
+    } else {
+      null
+    }
+
+  private val isSingleColAscending = numOrderCols == 1 && orderSpec.head.direction == Ascending
+  private val isSingleColNullsFirst = numOrderCols == 1 && orderSpec.head.nullOrdering == NullsFirst
+
   /** Writes `src`'s (0-based) order-key fields into slot `slot` of `buffer`. */
   private def writeSlotFrom(buffer: UnsafeRow, slot: Int, src: UnsafeRow): Unit = {
-    var i = 0
-    while (i < numOrderCols) {
-      val ord = slotOrderOrdinal(slot, i)
-      if (src.isNullAt(i)) buffer.setNullAt(ord) else buffer.setLong(ord, src.getLong(i))
-      i += 1
+    if (numOrderCols == 1) {
+      val ord = slotOrderOrdinal(slot, 0)
+      if (src.isNullAt(0)) buffer.setNullAt(ord) else buffer.setLong(ord, src.getLong(0))
+    } else {
+      var i = 0
+      while (i < numOrderCols) {
+        val ord = slotOrderOrdinal(slot, i)
+        if (src.isNullAt(i)) buffer.setNullAt(ord) else buffer.setLong(ord, src.getLong(i))
+        i += 1
+      }
     }
   }
 
   private def compareSlots(buffer: UnsafeRow, a: Int, b: Int): Int = {
-    extractSlotInto(buffer, a, scratchA)
-    extractSlotInto(buffer, b, scratchB)
-    boundOrdering.compare(scratchA, scratchB)
+    if (singleColComparator != null) {
+      val ordA = slotOrderOrdinal(a, 0)
+      val ordB = slotOrderOrdinal(b, 0)
+      val aNull = buffer.isNullAt(ordA)
+      val bNull = buffer.isNullAt(ordB)
+      if (aNull && bNull) return 0
+      if (aNull) return if (isSingleColNullsFirst) -1 else 1
+      if (bNull) return if (isSingleColNullsFirst) 1 else -1
+      val cmp = singleColComparator(buffer.getLong(ordA), buffer.getLong(ordB))
+      if (isSingleColAscending) cmp else -cmp
+    } else {
+      extractSlotInto(buffer, a, scratchA)
+      extractSlotInto(buffer, b, scratchB)
+      boundOrdering.compare(scratchA, scratchB)
+    }
   }
 
   /** `< 0` if `orderKey` is strictly better (should win) than slot `slot`'s current key. */
   private def compareToSlot(orderKey: UnsafeRow, buffer: UnsafeRow, slot: Int): Int = {
-    extractSlotInto(buffer, slot, scratchA)
-    boundOrdering.compare(orderKey, scratchA)
+    if (singleColComparator != null) {
+      val ord = slotOrderOrdinal(slot, 0)
+      val kNull = orderKey.isNullAt(0)
+      val sNull = buffer.isNullAt(ord)
+      if (kNull && sNull) return 0
+      if (kNull) return if (isSingleColNullsFirst) -1 else 1
+      if (sNull) return if (isSingleColNullsFirst) 1 else -1
+      val cmp = singleColComparator(orderKey.getLong(0), buffer.getLong(ord))
+      if (isSingleColAscending) cmp else -cmp
+    } else {
+      extractSlotInto(buffer, slot, scratchA)
+      boundOrdering.compare(orderKey, scratchA)
+    }
   }
 
   private def swapSlots(buffer: UnsafeRow, a: Int, b: Int): Unit = {
-    extractSlotInto(buffer, a, scratchA)
-    extractSlotInto(buffer, b, scratchB)
-    val addrA = buffer.getLong(slotAddrOrdinal(a))
-    val addrB = buffer.getLong(slotAddrOrdinal(b))
-    writeSlotFrom(buffer, a, scratchB)
-    writeSlotFrom(buffer, b, scratchA)
-    buffer.setLong(slotAddrOrdinal(a), addrB)
-    buffer.setLong(slotAddrOrdinal(b), addrA)
+    if (numOrderCols == 1) {
+      val ordA = slotOrderOrdinal(a, 0)
+      val ordB = slotOrderOrdinal(b, 0)
+      val aNull = buffer.isNullAt(ordA)
+      val aVal = buffer.getLong(ordA)
+      val bNull = buffer.isNullAt(ordB)
+      val bVal = buffer.getLong(ordB)
+      if (bNull) buffer.setNullAt(ordA) else buffer.setLong(ordA, bVal)
+      if (aNull) buffer.setNullAt(ordB) else buffer.setLong(ordB, aVal)
+      val addrA = buffer.getLong(slotAddrOrdinal(a))
+      val addrB = buffer.getLong(slotAddrOrdinal(b))
+      buffer.setLong(slotAddrOrdinal(a), addrB)
+      buffer.setLong(slotAddrOrdinal(b), addrA)
+    } else {
+      extractSlotInto(buffer, a, scratchA)
+      extractSlotInto(buffer, b, scratchB)
+      val addrA = buffer.getLong(slotAddrOrdinal(a))
+      val addrB = buffer.getLong(slotAddrOrdinal(b))
+      writeSlotFrom(buffer, a, scratchB)
+      writeSlotFrom(buffer, b, scratchA)
+      buffer.setLong(slotAddrOrdinal(a), addrB)
+      buffer.setLong(slotAddrOrdinal(b), addrA)
+    }
   }
 
   /** Standard max-heap sift-up: bubbles slot `start` toward the root while it beats its parent. */
@@ -268,20 +344,32 @@ class HashRowNumberGroupLimitAccumulator(
 
   override def fallbackDestinationOrNull: FallbackDestination = fallbackDestination
 
-  /** Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input. */
+  /**
+   * Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input.
+   * Used by the interpreted path (see [[HashRowNumberGroupLimitEvaluatorFactory]]), which has
+   * only a full `row` to work with -- computes `key`/`orderKey` itself via this accumulator's own
+   * projections, then delegates to the shared three-argument overload below.
+   */
   def consumeRow(row: UnsafeRow): Unit = {
     if (fallbackDestination != null) {
       fallbackDestination.insertRow(row)
       return
     }
     val key = groupingProjection(row)
-    val buffer = map.getAggregationBufferFromUnsafeRow(key)
+    consumeRow(row, key, key.hashCode(), orderKeyProjection(row))
+  }
+
+  override def consumeRow(row: UnsafeRow, key: UnsafeRow, orderKey: UnsafeRow): Unit =
+    consumeRow(row, key, key.hashCode(), orderKey)
+
+  override def consumeRow(
+      row: UnsafeRow, key: UnsafeRow, keyHash: Int, orderKey: UnsafeRow): Unit = {
+    val buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
     if (buffer == null) {
       switchToFallback(row)
       return
     }
     val heapSize = buffer.getLong(heapSizeOrdinal).toInt
-    val orderKey = orderKeyProjection(row)
     if (heapSize < limit) {
       storeAtSlot(row, orderKey, buffer, heapSize)
       if (fallbackDestination != null) return
