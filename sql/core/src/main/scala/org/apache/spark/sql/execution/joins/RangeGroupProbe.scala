@@ -423,10 +423,10 @@ private[joins] object RangeGroupProbe extends Logging {
     var heldBytes = acquired
     try {
       val relation = spec.mode.transform(matches.generateIterator(), Some(n))
-      // The nominal estimate above is schema-based but still approximate (e.g. it uses
-      // DataType.defaultSize, not actual value lengths); true it up against the real,
-      // SizeEstimator-based footprint of the relation we just built so the TaskMemoryManager
-      // budget reflects actual heap usage rather than the pre-admission guess.
+      // The nominal estimate above is schema-based (DataType.defaultSize) and can under-shoot
+      // a group with wide variable-length values; check it against the real, SizeEstimator-
+      // based footprint so TaskMemoryManager's accounting never under-counts this consumer's
+      // usage, which the rest of the task's memory safety depends on.
       val actualBytes = relation.estimatedSize
 
       if (actualBytes > spec.maxBytes) {
@@ -449,14 +449,10 @@ private[joins] object RangeGroupProbe extends Logging {
         }
         heldBytes += extraAcquired
         heldBytes
-      } else if (actualBytes < heldBytes) {
-        // We over-reserved relative to the real footprint; release the excess so the consumer's
-        // `used` accounting tracks actual heap usage.
-        val excess = heldBytes - actualBytes
-        if (consumer != null) consumer.freeMemory(excess)
-        heldBytes -= excess
-        actualBytes
       } else {
+        // The nominal estimate already covers the real footprint. Keeping the (bounded, single-
+        // group) excess reserved until this group resets is simpler than releasing it now, and
+        // only ever over-counts this consumer's usage, never under-counts it.
         heldBytes
       }
 
