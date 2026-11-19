@@ -18,7 +18,8 @@
 package org.apache.spark.sql.execution.joins
 
 import org.apache.spark._
-import org.apache.spark.memory.{MemoryTestingUtils, TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.memory.{MemoryConsumer, MemoryMode, MemoryTestingUtils, TaskMemoryManager,
+  TestMemoryManager}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.dsl.expressions._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, RowOrdering, UnsafeProjection}
@@ -80,14 +81,26 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   }
 
   /**
-   * A standalone `RangeIndexMemoryConsumer` backed by a `TestMemoryManager` capped at `budget`
-   * bytes, independent of the real `SparkContext`-backed TaskMemoryManager used for the row
-   * array, so memory-pressure tests can constrain the index's own budget precisely.
+   * A `MemoryConsumer` that never voluntarily releases memory on a `spill()` request, standing
+   * in for "some other part of the task" competing for `TaskMemoryManager` budget. Every test
+   * below that needs a consumer to pass to `RangeGroupProbe.build`/`release` - or to occupy
+   * budget `Session`'s own index can't reclaim - only cares that it holds memory, never that it
+   * spills, so a single never-spill stub covers all of them.
    */
-  private def constrainedConsumer(budget: Long): RangeIndexMemoryConsumer = {
+  private def neverSpillConsumer(taskMemoryManager: TaskMemoryManager): MemoryConsumer =
+    new MemoryConsumer(taskMemoryManager, MemoryMode.ON_HEAP) {
+      override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
+    }
+
+  /**
+   * A `neverSpillConsumer` backed by a `TestMemoryManager` capped at `budget` bytes, independent
+   * of the real `SparkContext`-backed TaskMemoryManager used for the row array, so memory-
+   * pressure tests can constrain the index's own budget precisely.
+   */
+  private def constrainedConsumer(budget: Long): MemoryConsumer = {
     val mm = new TestMemoryManager(new SparkConf(false))
     mm.limit(budget)
-    new RangeIndexMemoryConsumer(new TaskMemoryManager(mm, 0), () => 0L)
+    neverSpillConsumer(new TaskMemoryManager(mm, 0))
   }
 
   private def pointInIntervalSpec(threshold: Int): RangeGroupProbe.Spec = {
@@ -180,7 +193,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     // is covered end to end by SortMergeJoinRangeIndexSuite's maxBytes test.
     withRowArray(inMemoryRows = 4, totalRows = 10) { (array, tc) =>
       assert(array.isSpillBacked, "test setup must force a real spill")
-      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      val consumer = neverSpillConsumer(tc.taskMemoryManager())
       val handle = RangeGroupProbe.build(array, pointInRangeSpec(threshold = 2), consumer)
       assert(handle == null,
         "a spilled group must never be materialized into an in-memory range index")
@@ -190,7 +203,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   test("build skips the index for a group one row short of the threshold") {
     withRowArray(inMemoryRows = 1000, totalRows = 9) { (array, tc) =>
       assert(!array.isSpillBacked, "test setup must keep this array in-memory")
-      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      val consumer = neverSpillConsumer(tc.taskMemoryManager())
       val handle = RangeGroupProbe.build(array, pointInRangeSpec(threshold = 10), consumer)
       assert(handle == null,
         "a group of threshold - 1 rows must fall back to a linear scan")
@@ -200,7 +213,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   test("build indexes a group exactly at the threshold") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
       assert(!array.isSpillBacked, "test setup must keep this array in-memory")
-      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      val consumer = neverSpillConsumer(tc.taskMemoryManager())
       // The config's doc says "minimum ... row count", so a group of exactly `threshold` rows
       // (not threshold + 1) must already be eligible.
       val handle = RangeGroupProbe.build(array, pointInRangeSpec(threshold = 10), consumer)
@@ -212,7 +225,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   test("build indexes an in-memory group above the row threshold and probes correctly") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
       assert(!array.isSpillBacked, "test setup must keep this array in-memory")
-      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      val consumer = neverSpillConsumer(tc.taskMemoryManager())
       val handle = RangeGroupProbe.build(array, pointInRangeSpec(threshold = 2), consumer)
       assert(handle != null)
       assert(handle.relation.estimatedSize > 0)
@@ -250,7 +263,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
         array.add(proj(InternalRow(1L, i.toLong * 10L, i.toLong * 10L + 9L)))
       }
       val consumer =
-        new RangeIndexMemoryConsumer(taskContext.taskMemoryManager(), () => 0L)
+        neverSpillConsumer(taskContext.taskMemoryManager())
       val handle = RangeGroupProbe.build(array, pointInIntervalSpec(threshold = 2), consumer)
       assert(handle != null)
       assert(handle.relation.estimatedSize > 0)
@@ -270,7 +283,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
 
   test("partial range probe operates correctly") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
-      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      val consumer = neverSpillConsumer(tc.taskMemoryManager())
       val handle = RangeGroupProbe.build(array, partialRangeSpec(threshold = 2), consumer)
       assert(handle != null)
 
@@ -317,7 +330,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
         "test setup must pick a schema wide enough that the schema-aware estimate exceeds " +
           "what the old flat per-row estimate would have reported")
 
-      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      val consumer = neverSpillConsumer(tc.taskMemoryManager())
       val handle = RangeGroupProbe.build(array, spec, consumer)
       assert(handle == null,
         "a wide buffered schema must be rejected by the pre-admission check, even though the " +
@@ -327,7 +340,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
 
   test("build skips the index when the nominal estimate exceeds maxBytes") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
-      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      val consumer = neverSpillConsumer(tc.taskMemoryManager())
       val spec = pointInRangeSpec(threshold = 2, maxBytes = Some(1L))
       val handle = RangeGroupProbe.build(array, spec, consumer)
       assert(handle == null,
@@ -340,7 +353,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       val spec = pointInRangeSpec(threshold = 2)
       // First build with a generous budget to learn the relation's real (SizeEstimator-based)
       // footprint, which the cheap nominal per-row estimate does not predict exactly.
-      val probeConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      val probeConsumer = neverSpillConsumer(tc.taskMemoryManager())
       val probeHandle = RangeGroupProbe.build(array, spec, probeConsumer)
       assert(probeHandle != null)
       val actualBytes = probeHandle.relation.estimatedSize
@@ -349,7 +362,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       // Rebuild with maxBytes capped just below the real footprint: even with plenty of
       // TaskMemoryManager budget available, the post-build cap check must reject it.
       val cappedSpec = pointInRangeSpec(threshold = 2, maxBytes = Some(actualBytes - 1))
-      val consumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
+      val consumer = neverSpillConsumer(tc.taskMemoryManager())
       val handle = RangeGroupProbe.build(array, cappedSpec, consumer)
       assert(handle == null,
         "a relation whose real footprint exceeds maxBytes must be released and fall back, " +
@@ -460,7 +473,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     }
   }
 
-  test("Session.memoryConsumer.spill() releases an indexed group, falls back to a linear " +
+  test("Session.spill() releases an indexed group, falls back to a linear " +
     "scan, counts it as a fallback, and never rebuilds for the rest of the group") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
       val indexedMetric = SQLMetrics.createMetric(sc, "indexed")
@@ -474,8 +487,8 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
 
       // Simulate what TaskMemoryManager does when it asks this consumer to give memory back,
       // e.g. because another consumer in the same task needs execution memory.
-      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
-      session.memoryConsumer.spill(1L, otherConsumer)
+      val otherConsumer = neverSpillConsumer(tc.taskMemoryManager())
+      session.spill(1L, otherConsumer)
 
       assert(session.currentRelationOrNull == null,
         "the index must be released once the consumer is asked to spill")
@@ -491,20 +504,20 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     }
   }
 
-  test("Session.memoryConsumer.spill() is a no-op on a self-triggered spill") {
+  test("Session.spill() is a no-op on a self-triggered spill") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
       val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
       probeThroughGate(session, array)
       assert(session.currentRelationOrNull != null)
 
-      assert(session.memoryConsumer.spill(1L, session.memoryConsumer) == 0L,
+      assert(session.spill(1L, session) == 0L,
         "a self-triggered spill must return 0 without releasing the index")
       assert(session.currentRelationOrNull != null,
         "a self-triggered spill must not release the index")
     }
   }
 
-  test("Session.memoryConsumer.spill() declines to release while a candidate iterator is " +
+  test("Session.spill() declines to release while a candidate iterator is " +
     "still in-flight, and executes pending spill once probe completes") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
       val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
@@ -518,8 +531,8 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       assert(candidates.hasNext, "test setup needs at least one match to keep the iterator open")
       candidates.next()
 
-      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
-      assert(session.memoryConsumer.spill(1L, otherConsumer) == 0L,
+      val otherConsumer = neverSpillConsumer(tc.taskMemoryManager())
+      assert(session.spill(1L, otherConsumer) == 0L,
         "a spill must not release memory that an in-flight candidate iterator can still reach")
       assert(session.currentRelationOrNull != null,
         "the index must survive a spill request while its candidate iterator is in-flight")
@@ -542,8 +555,8 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       candidates.next()
       session.finishProbe()
 
-      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
-      assert(session.memoryConsumer.spill(1L, otherConsumer) > 0L,
+      val otherConsumer = neverSpillConsumer(tc.taskMemoryManager())
+      assert(session.spill(1L, otherConsumer) > 0L,
         "an early-exited probe must not block subsequent spills")
       assert(session.currentRelationOrNull == null)
     }
@@ -563,8 +576,8 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       session.beginProbe()
       session.finishProbe()
 
-      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
-      assert(session.memoryConsumer.spill(1L, otherConsumer) > 0L,
+      val otherConsumer = neverSpillConsumer(tc.taskMemoryManager())
+      assert(session.spill(1L, otherConsumer) > 0L,
         "a probe that found no match must not block a subsequent spill")
       assert(session.currentRelationOrNull == null)
     }
@@ -625,8 +638,8 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       assert(probeSession.currentRelationOrNull != null, "the gate-crossing probe must build")
       scanner.finishProbe()
 
-      val otherConsumer = new RangeIndexMemoryConsumer(taskContext.taskMemoryManager(), () => 0L)
-      assert(probeSession.memoryConsumer.spill(1L, otherConsumer) > 0L,
+      val otherConsumer = neverSpillConsumer(taskContext.taskMemoryManager())
+      assert(probeSession.spill(1L, otherConsumer) > 0L,
         "SortMergeJoinScanner.finishProbe must forward to the Session, allowing an immediate " +
           "spill despite the abandoned, undrained candidate iterator")
       assert(probeSession.currentRelationOrNull == null)
@@ -690,8 +703,8 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       val candidates = session.candidates(array, InternalRow(1L, 25L, 55L))
       assert(candidates.hasNext, "test setup needs at least one match to keep the iterator open")
       candidates.next()
-      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
-      assert(session.memoryConsumer.spill(1L, otherConsumer) == 0L,
+      val otherConsumer = neverSpillConsumer(tc.taskMemoryManager())
+      assert(session.spill(1L, otherConsumer) == 0L,
         "spill must be declined while the candidate iterator is in-flight")
 
       // A group transition abandons the outstanding iterator instead of draining it. If
@@ -725,8 +738,8 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       while (candidates2.hasNext) candidates2.next()
 
       // A spill now must succeed because row 1's abandoned iterator does not leak:
-      val otherConsumer = new RangeIndexMemoryConsumer(tc.taskMemoryManager(), () => 0L)
-      assert(session.memoryConsumer.spill(1L, otherConsumer) > 0L,
+      val otherConsumer = neverSpillConsumer(tc.taskMemoryManager())
+      assert(session.spill(1L, otherConsumer) > 0L,
         "abandoned candidate iterator from an earlier row must not permanently block spills")
       assert(session.currentRelationOrNull == null)
     }

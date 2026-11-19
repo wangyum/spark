@@ -35,25 +35,23 @@ import org.apache.spark.sql.execution.ExternalAppendOnlyUnsafeRowArray
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 
-private[joins] class RangeIndexMemoryConsumer(
-    taskMemoryManager: TaskMemoryManager,
-    releaseHandler: () => Long)
-  extends MemoryConsumer(taskMemoryManager, MemoryMode.ON_HEAP) {
-
-  /**
-   * `releaseHandler` frees memory this consumer already holds and never acquires any, so a
-   * TaskMemoryManager request arriving while it runs cannot re-enter the manager. A
-   * self-triggered request - one raised by this consumer's own `acquireMemory` - returns 0
-   * instead, rather than freeing the very memory that request is still trying to obtain.
-   */
-  override def spill(size: Long, trigger: MemoryConsumer): Long =
-    if (trigger eq this) 0L else releaseHandler()
-}
-
 /**
  * Encapsulates per-equi-key group range index management, budgeting, and candidate probing.
  */
 private[joins] object RangeGroupProbe extends Logging {
+
+  /**
+   * `Session` extends `MemoryConsumer` directly, which requires a `TaskMemoryManager` at
+   * construction time; both call sites that mint a `Session` (`SortMergeJoinEvaluatorFactory`
+   * and whole-stage codegen) only ever do so from within a running task, so a missing
+   * `TaskContext` here means a caller is being misused, not a condition to degrade gracefully
+   * for - hence `require` instead of a null-safe fallback.
+   */
+  private def requireTaskMemoryManager(): TaskMemoryManager = {
+    val tc = TaskContext.get()
+    require(tc != null, "RangeGroupProbe.Session must be constructed within an active Spark task")
+    tc.taskMemoryManager()
+  }
 
   /**
    * Probes a buffered group must receive before its index is built. Building is a one-time
@@ -132,23 +130,29 @@ private[joins] object RangeGroupProbe extends Logging {
 
   /**
    * Stateful execution controller for a single task partition. Manages memory budgeting,
-   * index build/release lifecycle, metrics, and automatic task completion cleanup.
+   * index build/release lifecycle, metrics, and automatic task completion cleanup. Extends
+   * `MemoryConsumer` directly rather than delegating to a separate adapter: `spill()` just
+   * needs the one self-triggered reentrancy guard below, so a standalone class would only
+   * add an extra hop callers never need.
    */
   final class Session(
       val spec: Spec,
       numIndexedMetric: SQLMetric = null,
       numFallbackMetric: SQLMetric = null,
-      numBuildErrorMetric: SQLMetric = null) extends Logging {
+      numBuildErrorMetric: SQLMetric = null)
+    extends MemoryConsumer(requireTaskMemoryManager(), MemoryMode.ON_HEAP) with Logging {
 
     private[this] val taskContext: TaskContext = TaskContext.get()
 
-    private[joins] val memoryConsumer: RangeIndexMemoryConsumer = {
-      if (taskContext != null) {
-        new RangeIndexMemoryConsumer(taskContext.taskMemoryManager(), () => releaseForSpill())
-      } else {
-        null
-      }
-    }
+    /**
+     * A TaskMemoryManager request arriving while `releaseForSpill()` runs cannot re-enter the
+     * manager, since `releaseForSpill()` only frees memory this consumer already holds and
+     * never acquires any. A self-triggered request - one raised by this consumer's own
+     * `acquireMemory` - returns 0 instead, rather than freeing the very memory that request is
+     * still trying to obtain.
+     */
+    override def spill(size: Long, trigger: MemoryConsumer): Long =
+      if (trigger eq this) 0L else releaseForSpill()
 
     private[this] var currentHandle: Handle = _
     private[this] var probeCount: Int = 0
@@ -165,9 +169,9 @@ private[joins] object RangeGroupProbe extends Logging {
     private[this] var pendingSpill: Boolean = false
     private[this] var probeActive: Boolean = false
 
-    if (taskContext != null) {
-      taskContext.addTaskCompletionListener[Unit](_ => resetGroup())
-    }
+    // taskContext is never null here: requireTaskMemoryManager() above already threw if the
+    // Session were being constructed outside an active task.
+    taskContext.addTaskCompletionListener[Unit](_ => resetGroup())
 
     /**
      * Called once per streamed row probing the current buffered group, before
@@ -226,7 +230,7 @@ private[joins] object RangeGroupProbe extends Logging {
       }
       probeCount += 1
       if (probeCount >= PROBE_THRESHOLD) {
-        currentHandle = build(matches, spec, memoryConsumer, numBuildErrorMetric)
+        currentHandle = build(matches, spec, this, numBuildErrorMetric)
         if (currentHandle != null) {
           buildAttempted = true
           if (numIndexedMetric != null) numIndexedMetric += 1
@@ -343,7 +347,7 @@ private[joins] object RangeGroupProbe extends Logging {
       probeActive = false
       pendingSpill = false
       if (currentHandle != null) {
-        release(currentHandle, memoryConsumer)
+        release(currentHandle, this)
         currentHandle = null
       }
       probeCount = 0
@@ -384,7 +388,7 @@ private[joins] object RangeGroupProbe extends Logging {
     private def doReleaseForSpill(): Long = {
       if (currentHandle != null) {
         val bytes = currentHandle.allocatedBytes
-        release(currentHandle, memoryConsumer)
+        release(currentHandle, this)
         currentHandle = null
         // Don't retry the build for the rest of this group: the memory just freed is exactly
         // what a retry would need to re-acquire, and retrying would just spill again.
@@ -455,7 +459,7 @@ private[joins] object RangeGroupProbe extends Logging {
   def build(
       matches: ExternalAppendOnlyUnsafeRowArray,
       spec: Spec,
-      consumer: RangeIndexMemoryConsumer,
+      consumer: MemoryConsumer,
       buildErrorMetric: SQLMetric = null): Handle = {
     val n = matches.length
     if (!spec.isEligible(n, matches.isSpillBacked)) {
@@ -541,7 +545,7 @@ private[joins] object RangeGroupProbe extends Logging {
     }
   }
 
-  def release(handle: Handle, consumer: RangeIndexMemoryConsumer): Unit = {
+  def release(handle: Handle, consumer: MemoryConsumer): Unit = {
     if (handle != null && consumer != null && handle.allocatedBytes > 0) {
       consumer.freeMemory(handle.allocatedBytes)
     }

@@ -143,6 +143,13 @@ private[joins] object RangeIndex {
    * linear scan over the stored rows instead of walking the tree. Answers
    * stay exact; tiny dimension tables otherwise spend more on walk setup
    * than a nested loop pass over the same handful of rows.
+   *
+   * Independent of `RangeGroupProbe.Spec.threshold` (also 16 by default): that one gates
+   * whether `RangeGroupProbe` builds a per-equi-key-group index for sort-merge join at all,
+   * while this one is an internal fast path inside an already-built `overlapping()` call, used
+   * by both that path and `BroadcastRangeJoinExec` (whose build side has no row-count gate of
+   * its own, so a tiny broadcast table routinely lands here). The two share a default value by
+   * coincidence, not because they are the same knob.
    */
   val SMALL_BUILD_OVERLAP_ROWS: Int = 16
 
@@ -1215,50 +1222,16 @@ private[joins] object LongPointIndex {
 }
 
 /**
- * Which side of a single-inequality range join's bound the build side holds - the
- * two scan directions a [[PointIndex]] / [[LongPointIndex]] expose, with the
- * predicate's strictness traveling beside it as the scan methods' `strict`
- * argument. The compiler's exhaustiveness check on this sealed hierarchy covers
- * only the interpreted matches in [[RangeRelationProbe]]'s
- * `makeCandidateFn`: it is the compiler, not a developer re-reading string
- * literals, that notices when a new case is added there. Generated probe code
- * never matches on the hierarchy. It still has to splice `methodName` into the
- * Java source it emits, since codegen has no way to reference a Scala method
- * value directly; that string has to be kept in sync with the method it names
- * by hand. The generated path never notices a new case or a stale name at
- * compile time; a mismatch surfaces only as a Janino compile failure at
- * query-run time. RangeJoinSuite's codegen point-scan tests cover the long
- * point-index methods (int keys); RangeJoinSQLSuite's wide-decimal and string
- * partial-range queries are what catch a stale boxed `PointIndex` methodName,
- * since DOUBLE keys build a `LongPointIndex` instead.
- */
-private[joins] sealed abstract class PointScan(val methodName: String)
-
-private[joins] object PointScan {
-  case object UpTo extends PointScan("upTo")
-  case object From extends PointScan("from")
-
-  /**
-   * The scan direction a partial-range join's build side probes with, and the
-   * predicate's strictness. Lower bound build side uses `UpTo`, upper bound
-   * uses `From`.
-   */
-  def forJoin(partial: PartialRangeJoin, buildSide: BuildSide): (PointScan, Boolean) = {
-    val isLower = partial.leftIsLower == (buildSide == BuildLeft)
-    (if (isLower) UpTo else From, partial.strict)
-  }
-}
-
-/**
  * How a join probes the [[RangeRelation]] its build side materializes, paired 1:1 with the
  * [[RangeIndexKind]] that relation was built as (`indexKind` projects it out, so a caller
  * holding a `RangeProbeKind` never separately tracks or re-derives which index family it
  * probes). A point-in-range or interval-overlap join always probes with `overlapping`; a
- * partial range (single inequality) probes with the direction and strictness [[PointScan]]
- * carries. Replaces an `Option[(PointScan, Boolean)]` that forced every caller to `.get` it
- * back out inside a [[PointIndexKind]] branch: an interval probe can never reach that branch,
- * but the Option's type didn't say so - this type does, since only [[RangeProbeKind.Point]]
- * carries a `PointScan` at all.
+ * partial range (single inequality) probes [[PointIndex]] / [[LongPointIndex]]'s `upTo`
+ * (when `isUpTo` is true) or `from` (otherwise) method, with the predicate's strictness
+ * traveling beside it as `strict`. Replaces an `Option[(Boolean, Boolean)]` that forced
+ * every caller to `.get` it back out inside a [[PointIndexKind]] branch: an interval probe
+ * can never reach that branch, but the Option's type didn't say so - this type does, since
+ * only [[RangeProbeKind.Point]] carries a scan direction at all.
  */
 private[joins] sealed trait RangeProbeKind {
   def indexKind: RangeIndexKind
@@ -1269,14 +1242,26 @@ private[joins] object RangeProbeKind {
     override def indexKind: RangeIndexKind = IntervalIndexKind
   }
 
-  final case class Point(scan: PointScan, strict: Boolean) extends RangeProbeKind {
+  /**
+   * `isUpTo` selects which of [[PointIndex]] / [[LongPointIndex]]'s two scan methods probes
+   * this join's partial-range predicate: true for `upTo` (this side holds the lower bound),
+   * false for `from`. Generated probe code can't reference a Scala method value directly, so
+   * [[RangeIndexProbeCodegen.genCandidateExpr]] splices the method name into the Java source
+   * it emits from this same flag by hand; a mismatch there would only surface as a Janino
+   * compile failure at query-run time, not a compile-time error here. RangeJoinSuite's codegen
+   * point-scan tests cover the long point-index methods (int keys); RangeJoinSQLSuite's
+   * wide-decimal and string partial-range queries are what catch a stale boxed `PointIndex`
+   * method name, since DOUBLE keys build a `LongPointIndex` instead.
+   */
+  final case class Point(isUpTo: Boolean, strict: Boolean) extends RangeProbeKind {
     override def indexKind: RangeIndexKind = PointIndexKind
   }
 
   def forJoin(kind: RangeJoinKind, buildSide: BuildSide): RangeProbeKind = kind match {
     case partial: PartialRangeJoin =>
-      val (scan, strict) = PointScan.forJoin(partial, buildSide)
-      Point(scan, strict)
+      // Lower bound build side scans `upTo`, upper bound scans `from`.
+      val isUpTo = partial.leftIsLower == (buildSide == BuildLeft)
+      Point(isUpTo, partial.strict)
     case _ => Interval
   }
 }
@@ -1383,11 +1368,9 @@ private[joins] object RangeRelationProbe {
             longs.overlapping(longs.toLong(low), longs.toLong(high))
           }
         }
-      case (points: LongPointIndex, RangeProbeKind.Point(direction, strict)) =>
-        val scan: Long => Iterator[InternalRow] = direction match {
-          case PointScan.UpTo => points.upTo(_, strict)
-          case PointScan.From => points.from(_, strict)
-        }
+      case (points: LongPointIndex, RangeProbeKind.Point(isUpTo, strict)) =>
+        val scan: Long => Iterator[InternalRow] =
+          if (isUpTo) points.upTo(_, strict) else points.from(_, strict)
         row =>
           val low = lowExpr.eval(row)
           if (low == null) Iterator.empty else scan(points.toLong(low))
@@ -1399,11 +1382,9 @@ private[joins] object RangeRelationProbe {
           val high = if (isOneKey) low else highExpr.eval(row)
           intervals.overlapping(low, high)
         }
-      case (points: PointIndex, RangeProbeKind.Point(direction, strict)) =>
-        val scan: Any => Iterator[InternalRow] = direction match {
-          case PointScan.UpTo => points.upTo(_, strict)
-          case PointScan.From => points.from(_, strict)
-        }
+      case (points: PointIndex, RangeProbeKind.Point(isUpTo, strict)) =>
+        val scan: Any => Iterator[InternalRow] =
+          if (isUpTo) points.upTo(_, strict) else points.from(_, strict)
         row =>
           val low = lowExpr.eval(row)
           if (low == null) Iterator.empty else scan(low)
@@ -1510,8 +1491,9 @@ private[joins] object RangeIndexProbeCodegen {
       keys: ProbeKeys): String = {
     val className = indexClassName(probeKind.indexKind, usesLongKeys)
     val call = probeKind match {
-      case RangeProbeKind.Point(scan, strict) =>
-        s"(($className) $relationTerm).${scan.methodName}(${keys.keyVars.head}, $strict)"
+      case RangeProbeKind.Point(isUpTo, strict) =>
+        val methodName = if (isUpTo) "upTo" else "from"
+        s"(($className) $relationTerm).$methodName(${keys.keyVars.head}, $strict)"
       case RangeProbeKind.Interval =>
         // A point probe has one key. Reuse it as both ends so it is evaluated once.
         val high = if (keys.keyVars.length == 1) keys.keyVars.head else keys.keyVars(1)

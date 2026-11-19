@@ -590,7 +590,7 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
   test("sort merge partial < right outer join engages the index for a large group " +
     "(buffered side is physically left, i.e. BuildLeft)") {
     // RightOuter is the only join type whose buffered side is the physical left child
-    // (SortMergeJoinExec.buildSide == BuildLeft). PointScan.forJoin's `isLower` computation
+    // (SortMergeJoinExec.buildSide == BuildLeft). RangeProbeKind.forJoin's `isUpTo` computation
     // (`partial.leftIsLower == (buildSide == BuildLeft)`) is otherwise only ever exercised
     // with buildSide == BuildRight by the Inner-join partial-range tests above; passing `spans`
     // as the left argument to `.join` and `events` as the right, with "right" as the join type,
