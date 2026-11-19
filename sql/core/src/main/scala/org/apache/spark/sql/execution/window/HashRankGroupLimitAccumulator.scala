@@ -206,21 +206,34 @@ class HashRankGroupLimitAccumulator(
     boundOrdering.compare(orderKey, scratchA)
   }
 
-  /** The slot index whose value equals `orderKey`, or -1 if no slot in `0 until slotCount` does. */
-  private def findMatchingSlot(buffer: UnsafeRow, orderKey: UnsafeRow, slotCount: Int): Int = {
-    var i = 0
-    while (i < slotCount) {
-      if (compareToSlot(orderKey, buffer, i) == 0) return i
-      i += 1
+  /**
+   * Binary-searches `buffer`'s `0 until slotCount` sorted, best-to-worst slot values (see the
+   * class doc's "Data structure" section) for where `orderKey` belongs: the first slot index
+   * whose value is not strictly better than `orderKey`, i.e. the slot `orderKey` either matches
+   * (if equal) or should be inserted ahead of (if not) -- the same position
+   * [[findMatchingSlot]]/[[insertSlotAt]]'s callers need. O(log slotCount), since the slots are
+   * already kept sorted for exactly this purpose; a linear scan here previously made every tie or
+   * insertion attempt O(slotCount), which a RANK()/DENSE_RANK() query with many genuine ties at a
+   * large `limit` hits on nearly every row (see SPARK-61804's TopKBenchmark "spread ties" case).
+   */
+  private def lowerBound(buffer: UnsafeRow, orderKey: UnsafeRow, slotCount: Int): Int = {
+    var lo = 0
+    var hi = slotCount
+    while (lo < hi) {
+      val mid = (lo + hi) >>> 1
+      if (compareToSlot(orderKey, buffer, mid) > 0) {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
     }
-    -1
+    lo
   }
 
-  /** First slot index whose value is worse than `orderKey` -- i.e. where `orderKey` sorts in. */
-  private def findInsertionPos(buffer: UnsafeRow, orderKey: UnsafeRow, slotCount: Int): Int = {
-    var i = 0
-    while (i < slotCount && compareToSlot(orderKey, buffer, i) > 0) i += 1
-    i
+  /** The slot index whose value equals `orderKey`, or -1 if no slot in `0 until slotCount` does. */
+  private def findMatchingSlot(buffer: UnsafeRow, orderKey: UnsafeRow, slotCount: Int): Int = {
+    val pos = lowerBound(buffer, orderKey, slotCount)
+    if (pos < slotCount && compareToSlot(orderKey, buffer, pos) == 0) pos else -1
   }
 
   /** `RANK`: each slot's own row count. `DENSE_RANK`: a flat 1 -- only position matters. */
@@ -255,7 +268,16 @@ class HashRankGroupLimitAccumulator(
   private def revalidateTrailingSlots(buffer: UnsafeRow, fromSlot: Int, slotCount: Int): Unit = {
     if (isDenseRank || fromSlot == slotCount - 1) return
     var i = fromSlot + 1
-    while (i < slotCount && sumWeights(buffer, i) < limit) i += 1
+    // Accumulates the preceding weight incrementally rather than recomputing sumWeights(buffer, i)
+    // from scratch every iteration: the latter made a scan over the full remaining range cost
+    // O(slotCount) per iteration, i.e. O(slotCount^2) overall -- the common case for a RANK() query
+    // with many genuine ties at a large `limit` (see SPARK-61804's TopKBenchmark "spread ties"
+    // case), where this loop runs its full length on nearly every row.
+    var precedingWeight = sumWeights(buffer, i)
+    while (i < slotCount && precedingWeight < limit) {
+      precedingWeight += slotWeight(buffer, i)
+      i += 1
+    }
     if (i < slotCount) {
       buffer.setLong(slotCountOrdinal, i)
     }
@@ -324,7 +346,11 @@ class HashRankGroupLimitAccumulator(
     }
     val slotCount = buffer.getLong(slotCountOrdinal).toInt
     val orderKey = orderKeyProjection(row)
-    val matchSlot = findMatchingSlot(buffer, orderKey, slotCount)
+    // A single binary search serves both branches below: lowerBound's result is matchSlot if it
+    // lands on an equal value, otherwise it's exactly the insertion position a brand-new value
+    // needs -- no need for findMatchingSlot and a separate findInsertionPos search.
+    val pos = lowerBound(buffer, orderKey, slotCount)
+    val matchSlot = if (pos < slotCount && compareToSlot(orderKey, buffer, pos) == 0) pos else -1
     if (matchSlot >= 0) {
       appendCandidate(row, buffer)
       if (fallbackDestination != null) return
@@ -332,7 +358,6 @@ class HashRankGroupLimitAccumulator(
         slotRowCountOrdinal(matchSlot), buffer.getLong(slotRowCountOrdinal(matchSlot)) + 1)
       revalidateTrailingSlots(buffer, matchSlot, slotCount)
     } else {
-      val pos = findInsertionPos(buffer, orderKey, slotCount)
       if (sumWeights(buffer, pos) < limit) {
         appendCandidate(row, buffer)
         if (fallbackDestination != null) return
