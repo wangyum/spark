@@ -46,8 +46,13 @@ import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
  * group -- below the probe gate -- so its rows measure that groups the policy never
  * admits pay no overhead over the plain linear scan. The reuse sweep holds a group at
  * the largest swept size (1024) and spans the probe gate: 1, 10, and 100 probes per
- * group stay unadmitted at parity, and 1000 amortizes the build fully. The
- * full-overlap case, whose ranges cover the entire probed domain so a probe matches
+ * group stay unadmitted at parity, while 1000 and 10000 progressively amortize the
+ * build cost over more post-threshold probes, climbing toward -- but not reaching --
+ * the steady-state ratio a group this size tops out at. The large-group case pushes a
+ * single group 16X bigger (16384 rows) and reused enough (5000) to sit solidly in that
+ * steady-state regime, measuring how the win actually scales with group size (an O(log
+ * groupSize) lookup against an O(groupSize) rescan) rather than how fast it amortizes.
+ * The full-overlap case, whose ranges cover the entire probed domain so a probe matches
  * every row, and the remaining shapes (interval overlap, partial `<`, partial `>`)
  * and join types (left outer, left semi, left anti, right outer) are each measured
  * once at that same 50-probe representative shape -- further parity checks under the
@@ -95,8 +100,10 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
   private val groupSizes = Seq(8, 16, 64, 256, 1024, 4096)
   // Spans the probe gate (`RangeGroupProbe.PROBE_THRESHOLD`, 128) on both sides: below it
   // the deferred build keeps a group on the linear scan at parity with the feature
-  // disabled, above it the index engages and amortizes.
-  private val reuseCounts = Seq(1, 10, 100, 1000)
+  // disabled, above it the index engages and amortizes. 10000 pushes well past the gate,
+  // so the one-time build cost is amortized over enough probes to approach the steady-
+  // state ratio: each probe trades an O(groupSize) rescan for an O(log groupSize) lookup.
+  private val reuseCounts = Seq(1, 10, 100, 1000, 10000)
   // The representative group size used by the reuse sweep and every non-swept case below.
   private val repGroupSize = 1024
 
@@ -127,6 +134,15 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     groupSizes.map(g => g -> pointStreamed(g, baseReuse)).toMap
   private lazy val pointStreamedByReuse: Map[Int, DataFrame] =
     reuseCounts.map(r => r -> pointStreamed(repGroupSize, r)).toMap
+
+  // A group 16X larger than repGroupSize, reused enough (5000, well past PROBE_THRESHOLD)
+  // to amortize the one-time build: the steady-state regime the reuse sweep above only
+  // approaches. Sized to keep the "disabled" baseline (a full O(groupSize) rescan per
+  // probe) within roughly a minute rather than letting the win grow without bound.
+  private val largeGroupSize = 16384
+  private val largeGroupReuse = 5000
+  private lazy val largeGroupBuffered: DataFrame = pointBuffered(largeGroupSize)
+  private lazy val largeGroupStreamed: DataFrame = pointStreamed(largeGroupSize, largeGroupReuse)
 
   // Above every sub-range of the representative group, so a point-in-range probe matches
   // nothing in its equi-key group.
@@ -215,6 +231,8 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     pointBufferedByGroupSize
     pointStreamedByGroupSize
     pointStreamedByReuse
+    largeGroupBuffered
+    largeGroupStreamed
     pointMisses
     overlapBuffered
     overlapStreamed
@@ -323,6 +341,14 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     }
   }
 
+  private def largeGroupSteadyStateCase(): Unit = {
+    val n = s"probe=${numGroups * largeGroupReuse}, groups=$numGroups, groupSize=$largeGroupSize"
+    compare(s"point-in-range inner, large group steady state ($n)",
+        (numGroups * largeGroupReuse).toLong) {
+      largeGroupStreamed.join(largeGroupBuffered, pointCond, "inner")
+    }
+  }
+
   private def fullOverlapCase(): Unit = {
     val n = s"probe=${fullGroups * fullReuse}, groups=$fullGroups, groupSize=$fullGroupSize"
     val rows = fullGroups.toLong * fullReuse * fullGroupSize
@@ -367,6 +393,7 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     runBenchmark("Sort Merge Join Range Index Benchmark") {
       groupSizeSweepCases()
       reuseSweepCases()
+      largeGroupSteadyStateCase()
       fullOverlapCase()
       otherShapeCases()
       joinTypeCases()
