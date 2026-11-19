@@ -24,7 +24,7 @@ import scala.util.control.NonFatal
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.LogKeys.{NUM_BYTES, NUM_ROWS, THRESHOLD}
-import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager}
+import org.apache.spark.memory.{MemoryConsumer, MemoryMode}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, BindReferences, Expression}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -39,19 +39,6 @@ import org.apache.spark.sql.internal.SQLConf
  * Encapsulates per-equi-key group range index management, budgeting, and candidate probing.
  */
 private[joins] object RangeGroupProbe extends Logging {
-
-  /**
-   * `Session` extends `MemoryConsumer` directly, which requires a `TaskMemoryManager` at
-   * construction time; both call sites that mint a `Session` (`SortMergeJoinEvaluatorFactory`
-   * and whole-stage codegen) only ever do so from within a running task, so a missing
-   * `TaskContext` here means a caller is being misused, not a condition to degrade gracefully
-   * for - hence `require` instead of a null-safe fallback.
-   */
-  private def requireTaskMemoryManager(): TaskMemoryManager = {
-    val tc = TaskContext.get()
-    require(tc != null, "RangeGroupProbe.Session must be constructed within an active Spark task")
-    tc.taskMemoryManager()
-  }
 
   /**
    * Probes a buffered group must receive before its index is built. Building is a one-time
@@ -117,7 +104,7 @@ private[joins] object RangeGroupProbe extends Logging {
       numFallbackMetric: SQLMetric = null,
       numBuildErrorMetric: SQLMetric = null) extends Serializable {
     def createSession(): Session =
-      new Session(spec, numIndexedMetric, numFallbackMetric, numBuildErrorMetric)
+      Session(spec, numIndexedMetric, numFallbackMetric, numBuildErrorMetric)
   }
 
   final class Handle private[RangeGroupProbe] (
@@ -134,15 +121,21 @@ private[joins] object RangeGroupProbe extends Logging {
    * `MemoryConsumer` directly rather than delegating to a separate adapter: `spill()` just
    * needs the one self-triggered reentrancy guard below, so a standalone class would only
    * add an extra hop callers never need.
+   *
+   * Takes `taskContext` as an explicit constructor parameter, fetched once by the
+   * `apply` factory below, rather than calling `TaskContext.get()` again in the
+   * constructor body: a constructor parameter can be referenced from the superclass
+   * constructor call (`taskContext.taskMemoryManager()` below), but a `this`-bound
+   * field defined in the class body cannot, since it isn't initialized yet at that
+   * point - so the single lookup has to happen outside the class and be passed in.
    */
-  final class Session(
+  final class Session private (
+      taskContext: TaskContext,
       val spec: Spec,
       numIndexedMetric: SQLMetric = null,
       numFallbackMetric: SQLMetric = null,
       numBuildErrorMetric: SQLMetric = null)
-    extends MemoryConsumer(requireTaskMemoryManager(), MemoryMode.ON_HEAP) with Logging {
-
-    private[this] val taskContext: TaskContext = TaskContext.get()
+    extends MemoryConsumer(taskContext.taskMemoryManager(), MemoryMode.ON_HEAP) with Logging {
 
     /**
      * A TaskMemoryManager request arriving while `releaseForSpill()` runs cannot re-enter the
@@ -169,8 +162,6 @@ private[joins] object RangeGroupProbe extends Logging {
     private[this] var pendingSpill: Boolean = false
     private[this] var probeActive: Boolean = false
 
-    // taskContext is never null here: requireTaskMemoryManager() above already threw if the
-    // Session were being constructed outside an active task.
     taskContext.addTaskCompletionListener[Unit](_ => resetGroup())
 
     /**
@@ -401,6 +392,27 @@ private[joins] object RangeGroupProbe extends Logging {
       } else {
         0L
       }
+    }
+  }
+
+  private[joins] object Session {
+
+    /**
+     * The one `TaskContext.get()` lookup for a `Session`: both call sites that mint one
+     * (`SortMergeJoinEvaluatorFactory` and whole-stage codegen) only ever do so from within
+     * a running task, so a missing `TaskContext` here means a caller is being misused, not
+     * a condition to degrade gracefully for - hence `require` instead of a null-safe
+     * fallback.
+     */
+    def apply(
+        spec: Spec,
+        numIndexedMetric: SQLMetric = null,
+        numFallbackMetric: SQLMetric = null,
+        numBuildErrorMetric: SQLMetric = null): Session = {
+      val taskContext = TaskContext.get()
+      require(taskContext != null,
+        "RangeGroupProbe.Session must be constructed within an active Spark task")
+      new Session(taskContext, spec, numIndexedMetric, numFallbackMetric, numBuildErrorMetric)
     }
   }
 

@@ -390,7 +390,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     // linear rescans approach the index's one-time build cost before the build is attempted.
     // A group reused below that point stays at parity with range indexing disabled.
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
-      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
       val gate = RangeGroupProbe.PROBE_THRESHOLD
 
       var probes = 0
@@ -410,7 +410,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   test("Session.candidates falls back to a linear scan below the probe threshold, then " +
     "uses the index from it onward") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
-      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
 
       // Every probe below the threshold: candidates must come straight from the array, not
       // an index.
@@ -438,7 +438,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       assert(array.isSpillBacked, "test setup must force a real spill")
       val indexedMetric = SQLMetrics.createMetric(sc, "indexed")
       val fallbackMetric = SQLMetrics.createMetric(sc, "fallback")
-      val session = new RangeGroupProbe.Session(
+      val session = RangeGroupProbe.Session(
         pointInRangeSpec(threshold = 2), indexedMetric, fallbackMetric)
 
       session.onProbe(array)
@@ -458,7 +458,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
 
   test("Session.resetGroup clears probe state so the next group starts fresh") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
-      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
       probeThroughGate(session, array)
       assert(session.currentRelationOrNull != null, "the group must be indexed by now")
 
@@ -478,7 +478,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
       val indexedMetric = SQLMetrics.createMetric(sc, "indexed")
       val fallbackMetric = SQLMetrics.createMetric(sc, "fallback")
-      val session = new RangeGroupProbe.Session(
+      val session = RangeGroupProbe.Session(
         pointInRangeSpec(threshold = 2), indexedMetric, fallbackMetric)
       probeThroughGate(session, array)
       assert(session.currentRelationOrNull != null, "the group must be indexed by now")
@@ -506,7 +506,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
 
   test("Session.spill() is a no-op on a self-triggered spill") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
-      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
       probeThroughGate(session, array)
       assert(session.currentRelationOrNull != null)
 
@@ -520,7 +520,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   test("Session.spill() declines to release while a candidate iterator is " +
     "still in-flight, and executes pending spill once probe completes") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
-      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
       probeThroughGate(session, array)
       assert(session.currentRelationOrNull != null, "the group must be indexed by now")
 
@@ -545,7 +545,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
 
   test("Session.finishProbe allows immediate spill after an iterator is abandoned early") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
-      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
       probeThroughGate(session, array)
       assert(session.currentRelationOrNull != null)
 
@@ -564,7 +564,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
 
   test("Session.beginProbe/finishProbe allows an immediate spill when a probe finds no match") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
-      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
       probeThroughGate(session, array)
       assert(session.currentRelationOrNull != null, "the group must be indexed by now")
 
@@ -592,7 +592,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     val taskContext = MemoryTestingUtils.fakeTaskContext(SparkEnv.get)
     TaskContext.setTaskContext(taskContext)
     try {
-      val probeSession = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      val probeSession = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
 
       val streamProj = UnsafeProjection.create(Array[DataType](LongType, LongType, LongType))
       val streamRows = (0 until RangeGroupProbe.PROBE_THRESHOLD).map { _ =>
@@ -674,7 +674,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   test("Session.resetGroup releases the index even while a candidate iterator from the " +
     "group just left behind is still outstanding") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
-      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
       probeThroughGate(session, array)
       assert(session.currentRelationOrNull != null, "the group must be indexed by now")
 
@@ -694,7 +694,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   test("Session.resetGroup clears a pending spill flag so the next group's first probe " +
     "is not immediately evicted") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
-      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
       probeThroughGate(session, array)
       assert(session.currentRelationOrNull != null, "the group must be indexed by now")
 
@@ -724,7 +724,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
 
   test("abandoned candidate iterator does not permanently block subsequent spills") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
-      val session = new RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
+      val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
       probeThroughGate(session, array)
       assert(session.currentRelationOrNull != null)
 
