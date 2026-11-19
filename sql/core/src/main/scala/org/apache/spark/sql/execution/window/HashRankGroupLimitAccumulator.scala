@@ -124,6 +124,7 @@ class HashRankGroupLimitAccumulator(
   private def slotRowCountOrdinal(slot: Int): Int = slot * slotWidth + numOrderCols
   private val slotCountOrdinal: Int = limit * slotWidth
   private val headAddressOrdinal: Int = slotCountOrdinal + 1
+  private val hasEvictionsOrdinal: Int = headAddressOrdinal + 1
 
   private val bufferSchema = StructType(
     (0 until limit).flatMap { slot =>
@@ -131,7 +132,8 @@ class HashRankGroupLimitAccumulator(
         StructField(s"o${slot}_$i", order.child.dataType, order.child.nullable)
       } :+ StructField(s"rowCount_$slot", LongType, nullable = false)
     }.toArray :+ StructField("slotCount", LongType, nullable = false) :+
-      StructField("headAddress", LongType, nullable = false))
+      StructField("headAddress", LongType, nullable = false) :+
+      StructField("hasEvictions", LongType, nullable = false))
 
   private val groupingKeySchema = StructType(partitionSpec.zipWithIndex.map { case (e, i) =>
     StructField(s"k$i", e.dataType, e.nullable)
@@ -142,9 +144,10 @@ class HashRankGroupLimitAccumulator(
   // failed (see consumeRow): in both cases finish() and buildFallbackSorter() have nothing to
   // drain for this key.
   private val emptyBuffer: InternalRow = {
-    val values = new Array[Any](headAddressOrdinal + 1)
+    val values = new Array[Any](hasEvictionsOrdinal + 1)
     values(slotCountOrdinal) = 0L
     values(headAddressOrdinal) = UnsafeRowArena.NO_NEXT
+    values(hasEvictionsOrdinal) = 0L
     UnsafeProjection.create(bufferSchema).apply(new GenericInternalRow(values))
   }
 
@@ -190,7 +193,13 @@ class HashRankGroupLimitAccumulator(
     }
   }
 
-  /** Copies slot `from`'s order-key fields and rowCount into slot `to`. */
+  /**
+   * Copies slot `from`'s order-key fields, and for `RANK` its rowCount, into slot `to`. Skips the
+   * rowCount copy for `DENSE_RANK`, whose flat per-slot weight of 1 (see [[slotWeight]]) never
+   * reads it -- this runs once per slot shifted on every [[insertSlotAt]] call, so on a nearly-full
+   * array (the common case once `limit` distinct values have arrived) that's an otherwise wasted
+   * field access for up to `limit` slots per insertion.
+   */
   private def copySlot(buffer: UnsafeRow, from: Int, to: Int): Unit = {
     var i = 0
     while (i < numOrderCols) {
@@ -201,7 +210,9 @@ class HashRankGroupLimitAccumulator(
       }
       i += 1
     }
-    buffer.setLong(slotRowCountOrdinal(to), buffer.getLong(slotRowCountOrdinal(from)))
+    if (!isDenseRank) {
+      buffer.setLong(slotRowCountOrdinal(to), buffer.getLong(slotRowCountOrdinal(from)))
+    }
   }
 
   /** `< 0` if `orderKey` is strictly better (should rank earlier) than slot `slot`'s value. */
@@ -212,26 +223,25 @@ class HashRankGroupLimitAccumulator(
 
   /**
    * Binary-searches `buffer`'s `0 until slotCount` sorted, best-to-worst slot values (see the
-   * class doc's "Data structure" section) for where `orderKey` belongs: the first slot index
-   * whose value is not strictly better than `orderKey`, i.e. the slot `orderKey` either matches
-   * (if equal) or should be inserted ahead of (if not) -- the same position [[insertSlotAt]]'s
-   * caller needs. O(log slotCount), since the slots are already kept sorted for exactly this
-   * purpose; a linear scan here previously made every tie or insertion attempt O(slotCount), which
-   * a RANK()/DENSE_RANK() query with many genuine ties at a large `limit` hits on nearly every row
-   * (see SPARK-61804's TopKBenchmark "spread ties" case).
+   * class doc's "Data structure" section) for where `orderKey` belongs: returns the slot index
+   * `>= 0` if `orderKey` matches an already-kept slot, or `-(insertionPos + 1)` if not, where
+   * `insertionPos` is the position `orderKey` should be inserted into.
    */
-  private def lowerBound(buffer: UnsafeRow, orderKey: UnsafeRow, slotCount: Int): Int = {
+  private def binarySearchSlot(buffer: UnsafeRow, orderKey: UnsafeRow, slotCount: Int): Int = {
     var lo = 0
-    var hi = slotCount
-    while (lo < hi) {
+    var hi = slotCount - 1
+    while (lo <= hi) {
       val mid = (lo + hi) >>> 1
-      if (compareToSlot(orderKey, buffer, mid) > 0) {
+      val cmp = compareToSlot(orderKey, buffer, mid)
+      if (cmp > 0) {
         lo = mid + 1
+      } else if (cmp < 0) {
+        hi = mid - 1
       } else {
-        hi = mid
+        return mid
       }
     }
-    lo
+    -(lo + 1)
   }
 
   /**
@@ -288,6 +298,7 @@ class HashRankGroupLimitAccumulator(
     }
     if (i < slotCount) {
       buffer.setLong(slotCountOrdinal, i)
+      buffer.setLong(hasEvictionsOrdinal, 1L)
     }
   }
 
@@ -301,6 +312,9 @@ class HashRankGroupLimitAccumulator(
    */
   private def insertSlotAt(
       buffer: UnsafeRow, pos: Int, orderKey: UnsafeRow, slotCount: Int): Unit = {
+    if (slotCount == limit) {
+      buffer.setLong(hasEvictionsOrdinal, 1L)
+    }
     val lastIndex = math.min(slotCount, limit - 1)
     var i = lastIndex
     while (i > pos) {
@@ -308,7 +322,10 @@ class HashRankGroupLimitAccumulator(
       i -= 1
     }
     writeSlotFrom(buffer, pos, orderKey)
-    buffer.setLong(slotRowCountOrdinal(pos), 1L)
+    // DENSE_RANK never reads rowCount (see slotWeight) -- skip initializing dead data.
+    if (!isDenseRank) {
+      buffer.setLong(slotRowCountOrdinal(pos), 1L)
+    }
   }
 
   private val taskMemoryManager = TaskContext.get().taskMemoryManager()
@@ -354,30 +371,26 @@ class HashRankGroupLimitAccumulator(
     }
     val slotCount = buffer.getLong(slotCountOrdinal).toInt
     val orderKey = orderKeyProjection(row)
-    // A single binary search serves both branches below: lowerBound's result is matchSlot if it
-    // lands on an equal value, otherwise it's exactly the insertion position a brand-new value
-    // needs -- no need for findMatchingSlot and a separate findInsertionPos search.
-    val pos = lowerBound(buffer, orderKey, slotCount)
-    val matchSlot = if (pos < slotCount && compareToSlot(orderKey, buffer, pos) == 0) pos else -1
-    if (matchSlot >= 0) {
+    val idx = binarySearchSlot(buffer, orderKey, slotCount)
+    if (idx >= 0) {
+      val matchSlot = idx
       appendCandidate(row, buffer)
       if (fallbackDestination != null) return
-      buffer.setLong(
-        slotRowCountOrdinal(matchSlot), buffer.getLong(slotRowCountOrdinal(matchSlot)) + 1)
-      revalidateTrailingSlots(buffer, matchSlot, slotCount)
+      // DENSE_RANK never reads rowCount, and revalidateTrailingSlots is already a no-op for it
+      // (see slotWeight) -- skip both for it entirely.
+      if (!isDenseRank) {
+        buffer.setLong(
+          slotRowCountOrdinal(matchSlot), buffer.getLong(slotRowCountOrdinal(matchSlot)) + 1)
+        revalidateTrailingSlots(buffer, matchSlot, slotCount)
+      }
     } else {
+      val pos = -idx - 1
       if (sumWeights(buffer, pos) < limit) {
         appendCandidate(row, buffer)
         if (fallbackDestination != null) return
         insertSlotAt(buffer, pos, orderKey, slotCount)
         val newSlotCount = math.min(slotCount + 1, limit)
         buffer.setLong(slotCountOrdinal, newSlotCount)
-        // The new slot at `pos` only shares its own weight (1) with every slot shifted after it
-        // (see insertSlotAt), which can push one of *those* slots' preceding weight to `limit`
-        // even though the array wasn't at capacity -- a slot ejected purely by running out of the
-        // fixed `limit` capacity (handled by the newSlotCount cap above) is a different, already-
-        // handled case from a slot that remains in-bounds but is no longer valid under the new
-        // weight distribution. Both are covered by the same scan.
         revalidateTrailingSlots(buffer, pos, newSlotCount)
       }
       // else: orderKey's true rank already exceeds limit and can only get worse from here (see
@@ -473,6 +486,8 @@ class HashRankGroupLimitAccumulator(
   private def kvIteratorToScala(kvIter: KVIterator[UnsafeRow, UnsafeRow]): Iterator[InternalRow] = {
     val resultRow = new UnsafeRow(childOutput.length)
     new Iterator[InternalRow] {
+      private var hasEvictions: Boolean = false
+      private var currentSlotCount: Int = 0
       private var nextAddress: Long = UnsafeRowArena.NO_NEXT
       private var pending: InternalRow = null
       private var exhausted = false
@@ -482,8 +497,11 @@ class HashRankGroupLimitAccumulator(
           while (nextAddress == UnsafeRowArena.NO_NEXT && !exhausted) {
             if (kvIter.next()) {
               val currentBuffer = kvIter.getValue
-              val currentSlotCount = currentBuffer.getLong(slotCountOrdinal).toInt
-              extractSlotInto(currentBuffer, currentSlotCount - 1, cutoffScratch)
+              currentSlotCount = currentBuffer.getLong(slotCountOrdinal).toInt
+              hasEvictions = currentBuffer.getLong(hasEvictionsOrdinal) != 0L
+              if (hasEvictions && currentSlotCount > 0) {
+                extractSlotInto(currentBuffer, currentSlotCount - 1, cutoffScratch)
+              }
               nextAddress = currentBuffer.getLong(headAddressOrdinal)
             } else {
               exhausted = true
@@ -492,9 +510,13 @@ class HashRankGroupLimitAccumulator(
           if (!exhausted) {
             val address = nextAddress
             val candidateRow = rowArena.getRow(address, resultRow)
-            val orderKey = orderKeyProjection(candidateRow)
-            if (boundOrdering.compare(orderKey, cutoffScratch) <= 0) {
+            if (!hasEvictions) {
               pending = candidateRow
+            } else if (currentSlotCount > 0) {
+              val orderKey = orderKeyProjection(candidateRow)
+              if (boundOrdering.compare(orderKey, cutoffScratch) <= 0) {
+                pending = candidateRow
+              }
             }
             nextAddress = rowArena.getNext(address)
           }
