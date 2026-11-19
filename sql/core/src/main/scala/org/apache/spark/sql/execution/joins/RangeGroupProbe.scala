@@ -41,17 +41,11 @@ import org.apache.spark.sql.internal.SQLConf
 private[joins] object RangeGroupProbe extends Logging {
 
   /**
-   * Probes a buffered group must receive before its index is built. Building is a one-time
-   * cost that pays for itself only once the linear rescans it replaces have cost about as
-   * much as the build, so a group probed fewer times keeps the plain linear scan at parity
-   * with range indexing disabled. SortMergeJoinRangeIndexBenchmark's reuse sweep (fixed
-   * groupSize=1024) shows parity (1.0X) at 100 reuses and below, and a 2.9X win at 1000
-   * reuses, so the constant sits above the break-even point between those two measured
-   * points - low enough to engage for the motivating workload (a group probed thousands of
-   * times) while still keeping lightly-reused groups at the disabled-feature baseline. A
-   * cost-model constant rather than a config, like `RangeIndex`'s small-build row cutoff: not
-   * a policy a user tunes, and revisitable with benchmark evidence if the admission math
-   * changes.
+   * Probes a buffered group must receive before its index is built, so the one-time build
+   * cost is paid only once the linear rescans it replaces would have cost about as much.
+   * SortMergeJoinRangeIndexBenchmark's reuse sweep (groupSize=1024) shows parity at 100
+   * reuses and a 2.9X win at 1000, so 128 sits just above that break-even point. A cost-model
+   * constant, not a user-facing config; revisit with new benchmark evidence if it's wrong.
    */
   private[joins] val PROBE_THRESHOLD = 128
 
@@ -72,13 +66,10 @@ private[joins] object RangeGroupProbe extends Logging {
     val usesLongKeys: Boolean = RangeIndex.canMapKeysToLong(mode.buildKeys)
 
     /**
-     * A pre-admission estimate used to reserve memory before the index is built (the real
-     * footprint, `RangeRelation.estimatedSize`, only exists once the relation has been
-     * constructed). `build()` trues this up against the real size afterward. Each index entry
-     * retains a full copy of its buffered row (see `PointIndex`/`IntervalIndex` in
-     * `RangeRelation.scala`), so `bufferRowSize` - a schema-based estimate from
-     * `EstimationUtils.getSizePerRow`, computed once in `createSpec` - dominates the estimate;
-     * `keyOverhead` only accounts for the key value(s) each index stores alongside the row.
+     * Pre-admission memory estimate, trued up against the real footprint once `build()`
+     * constructs the relation. `bufferRowSize` (a schema-based per-row estimate) dominates,
+     * since each index entry retains a full copy of its buffered row; `keyOverhead` only
+     * accounts for the key value(s) stored alongside it.
      */
     def estimateMemoryBytes(numRows: Long): Long = {
       val keyOverhead = mode.indexKind match {
@@ -116,18 +107,13 @@ private[joins] object RangeGroupProbe extends Logging {
   }
 
   /**
-   * Stateful execution controller for a single task partition. Manages memory budgeting,
-   * index build/release lifecycle, metrics, and automatic task completion cleanup. Extends
-   * `MemoryConsumer` directly rather than delegating to a separate adapter: `spill()` just
-   * needs the one self-triggered reentrancy guard below, so a standalone class would only
-   * add an extra hop callers never need.
+   * Stateful execution controller for a single task partition: memory budgeting, index
+   * build/release lifecycle, metrics, and task-completion cleanup. Extends `MemoryConsumer`
+   * directly since `spill()` only needs the reentrancy guard below.
    *
-   * Takes `taskContext` as an explicit constructor parameter, fetched once by the
-   * `apply` factory below, rather than calling `TaskContext.get()` again in the
-   * constructor body: a constructor parameter can be referenced from the superclass
-   * constructor call (`taskContext.taskMemoryManager()` below), but a `this`-bound
-   * field defined in the class body cannot, since it isn't initialized yet at that
-   * point - so the single lookup has to happen outside the class and be passed in.
+   * `taskContext` is a constructor parameter, not a field, because the superclass constructor
+   * call (`taskContext.taskMemoryManager()`) runs before any `this`-bound field is
+   * initialized.
    */
   final class Session private (
       taskContext: TaskContext,
@@ -164,51 +150,23 @@ private[joins] object RangeGroupProbe extends Logging {
     taskContext.addTaskCompletionListener[Unit](_ => resetGroup())
 
     /**
-     * Called once per streamed row probing the current buffered group, before
-     * `candidates`/`currentRelationOrNull` are consulted. The index is only worth its
-     * one-time build cost once enough probes confirm the group is actually reused: the
-     * probes already paid would have amortized a build whose linear rescans they replaced
-     * cost about as much as the build itself. [[PROBE_THRESHOLD]] sits well past that
-     * amortization point, so a group probed fewer times - e.g. the common one-to-many
-     * join shape of a unique dimension key joined to a skewed fact table - pays only the
-     * linear scans it would have paid anyway, at parity with range indexing disabled,
-     * instead of also building an index too few probes will reuse. `buildAttempted`
-     * latches the budget/eligibility decision so a later probe never re-evaluates it for
-     * the same group.
+     * Called once per streamed row probing the buffered group, before `candidates`/
+     * `currentRelationOrNull` are consulted. Builds the index once `PROBE_THRESHOLD` probes
+     * confirm the group is reused enough to amortize the one-time build cost; `buildAttempted`
+     * latches the decision - including an outright-ineligible verdict from the first probe,
+     * since `isEligible` only depends on fixed, per-group state - so later probes never
+     * re-evaluate it.
      *
-     * A buffered group is fully materialized before any streamed row probes it, so its row
-     * count and spill-backed state - everything `isEligible` needs beyond `spec`'s own
-     * fixed fields - never change across a group's probes. A group that already fails
-     * `isEligible` on its first probe would fail it identically on every later one, so that
-     * case is latched immediately instead of paying `PROBE_THRESHOLD` pointless
-     * `probeCount` increments to reach a foregone conclusion; `declineBuild` below fires the
-     * same way whether it is called here or after an actual `build()` attempt, so this only
-     * changes when a never-eligible group's fallback is recorded, not whether it is. Only
-     * TaskMemoryManager's actual free budget at `build()` time - not predictable from the
-     * first probe - still requires waiting for `PROBE_THRESHOLD` probes before finding out.
+     * `numIndexedMetric`/`numFallbackMetric` only count groups whose build was actually
+     * attempted or declined, not every group above `threshold`, so a group that never
+     * reaches the probe threshold leaves both silent. `numBuildErrorMetric` further narrows
+     * `numFallbackMetric` to builds that failed outright rather than being declined by
+     * policy.
      *
-     * Note that a group that never reaches the probe threshold, and was never found
-     * ineligible outright either, never increments `numIndexedMetric` or
-     * `numFallbackMetric`: those two metrics count groups whose build was actually attempted
-     * or declined, not every group above `threshold`, so their sum is not the total count of
-     * above-threshold groups. `numFallbackMetric` counts every declined build that didn't
-     * produce an index, whether rejected by policy (below `threshold`'s row count stays
-     * silent and uncounted; over `maxBytes`, spill-backed, or insufficient TaskMemoryManager
-     * budget are counted) or because `build()` hit a genuine error (a non-fatal exception or
-     * an `OutOfMemoryError`); `numBuildErrorMetric` additionally counts only the latter,
-     * narrower population, so an operator can tell a build that failed outright apart from
-     * one the policy simply declined to attempt. On the whole-stage-codegen path, a streamed
-     * row that probes no group at all (an unmatched outer or anti row seeing an empty
-     * buffer) also advances `probeCount`, since the generated code calls `onProbe`
-     * unconditionally for every streamed row. The interpreted path does not: it
-     * short-circuits before reaching `onProbe`/`candidates` whenever the buffered group is
-     * empty (see `OneSideOuterIterator.advanceStream`'s `getBufferedMatches.isEmpty` branch,
-     * and `SortMergeJoinEvaluatorFactory`'s `currentRightMatches.length > 0` guards for
-     * LeftSemi/LeftAnti/ExistenceJoin), so `probeCount` progression - and therefore exactly
-     * when a group's index gets built - is not guaranteed to match between the two execution
-     * paths for the same query. Regardless of path, `probeCount` cannot leak into a later
-     * group, since `resetGroup` runs before a new group's rows are buffered, and within one
-     * group every probing row shares its key.
+     * Whole-stage codegen calls this unconditionally for every streamed row, including ones
+     * that probe no group at all; the interpreted path short-circuits on an empty buffered
+     * group instead (see `OneSideOuterIterator`/`SortMergeJoinEvaluatorFactory`), so
+     * `probeCount` progression can differ between the two paths for the same query.
      */
     def onProbe(matches: ExternalAppendOnlyUnsafeRowArray): Unit = {
       if (buildAttempted) {
@@ -258,13 +216,9 @@ private[joins] object RangeGroupProbe extends Logging {
     }
 
     /**
-     * Wraps a candidate iterator sourced from `currentHandle`'s relation so `releaseForSpill`
-     * can tell it is still being read from. Whole-stage codegen's generated probe calls this
-     * directly (see `SortMergeJoinExec.genScanner`'s `createIterator`) since it builds its own
-     * candidate iterator straight from `currentRelationOrNull` rather than going through
-     * `candidates` above; both call sites need the same tracking, since either one can hold a
-     * live reference to the relation's backing arrays across a nested `consume()` call that
-     * triggers a TaskMemoryManager spill elsewhere in the same task.
+     * Wraps a candidate iterator so `releaseForSpill` can tell it is still being read from:
+     * either caller can hold a live reference to the relation's backing arrays across a
+     * nested `consume()` call that triggers a TaskMemoryManager spill elsewhere in the task.
      */
     def wrapOutstanding(it: Iterator[InternalRow]): Iterator[InternalRow] = {
       if (pendingSpill && currentHandle != null) {
@@ -308,13 +262,9 @@ private[joins] object RangeGroupProbe extends Logging {
     }
 
     /**
-     * The current group's materialized index, or `null` when the group hasn't been indexed yet
-     * (fewer than `PROBE_THRESHOLD` probes so far), fell back to a linear scan (below
-     * `threshold`, over a row/byte budget, or buffered-side spilled), or had its index evicted
-     * under memory pressure. Used by `SortMergeJoinExec`'s whole-stage codegen to generate a
-     * direct, specialized probe call via `RangeIndexProbeCodegen` instead of going through
-     * `candidates`' interpreted dispatch. Callers must call `onProbe` first; this accessor
-     * itself has no side effect.
+     * The current group's materialized index, or `null` before it's built, after it falls
+     * back to a linear scan, or once it's evicted under memory pressure. Callers must call
+     * `onProbe` first; this accessor itself has no side effect.
      */
     def currentRelationOrNull: RangeRelation =
       if (currentHandle != null) currentHandle.relation else null
@@ -332,16 +282,12 @@ private[joins] object RangeGroupProbe extends Logging {
 
     /**
      * Releases the current group's index on a TaskMemoryManager spill request, falling back to
-     * the always-available linear scan on the buffered group for the rest of the group. Counts
-     * as a fallback: the group was successfully indexed (already counted in `numIndexedMetric`)
-     * but now reverts to a linear scan for its remaining probes, matching what
-     * `numFallbackMetric` otherwise counts for a group whose build was rejected outright.
+     * a linear scan for the rest of the group; counted in `numFallbackMetric` like any other
+     * fallback.
      *
-     * Declines (returns 0, leaving `currentHandle` in place) while a candidate iterator from
-     * `wrapOutstanding` is still in-flight (`activeIterator.hasNext` is true): the relation's
-     * backing arrays stay reachable on the heap, so freeing TaskMemoryManager accounting
-     * immediately would cause a transient accounting divergence. Instead, sets `pendingSpill`
-     * so that the index is reclaimed as soon as the in-flight probe completes.
+     * Declines (returns 0) while a `wrapOutstanding` iterator is still in-flight, since its
+     * backing arrays stay heap-reachable until then; sets `pendingSpill` instead, to reclaim
+     * the index as soon as the in-flight probe completes.
      */
     private def releaseForSpill(): Long = {
       if (currentHandle != null) {
@@ -525,14 +471,11 @@ private[joins] object RangeGroupProbe extends Logging {
           log"${MDC(NUM_ROWS, n)} rows; falling back to a linear scan", e)
         null
       case oom: OutOfMemoryError =>
-        // The pre-admission estimate above is schema-driven (DataType.defaultSize) and cannot
-        // predict every row's real size (e.g. unusually large variable-length values), so a wide
-        // enough buffered group can still exhaust the heap during transform()'s plain (non-
-        // TaskMemoryManager-tracked) row copies. This is a last-resort safety net: fall back to
-        // a linear scan instead of failing the task. Counted separately via `buildErrorMetric`
-        // (distinct from the routine, by-policy fallback counted in `onProbe`) so an operator
-        // can tell a genuine build failure apart from a group that was merely too large or
-        // too-few-times-reused to index by policy.
+        // The schema-driven estimate can't predict every row's real size, so a wide enough
+        // group can still exhaust the heap during transform()'s untracked row copies.
+        // Last-resort safety net: fall back to a linear scan, counted via `buildErrorMetric`
+        // (distinct from the routine, by-policy fallback `onProbe` counts) so an operator can
+        // tell the two apart.
         if (consumer != null && heldBytes > 0) consumer.freeMemory(heldBytes)
         if (buildErrorMetric != null) buildErrorMetric += 1
         logWarning(log"range index build ran out of memory for a buffered group of " +

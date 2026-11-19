@@ -1285,10 +1285,12 @@ private[joins] class SortMergeJoinScanner(
       spillThreshold,
       sizeInBytesSpillThreshold)
 
-  // At the end of the task, update the task's spill size for buffered side.
+  // At the end of the task, update the task's spill size for buffered side. Only clears
+  // bufferedMatches, not the full resetBufferedGroup(): probeSession (if any) already
+  // registered its own task-completion listener to reset itself.
   TaskContext.get().addTaskCompletionListener[Unit](_ => {
     spillSize += bufferedMatches.spillSize
-    resetBufferedGroup()
+    bufferedMatches.clear()
   })
 
   // Initialization (note: do _not_ want to advance streamed here).
