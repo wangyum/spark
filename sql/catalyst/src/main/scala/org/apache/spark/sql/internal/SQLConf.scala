@@ -5403,9 +5403,14 @@ object SQLConf {
 
   val WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS =
     buildConf("spark.sql.windowExec.groupLimit.hashPushdown.minRows")
-      .doc("The number of rows between periodic compaction-ratio evaluations by the hash-based " +
-        "WindowGroupLimitExec accumulator (see " +
-        s"'${WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key}'). Mirrors adaptive partial " +
+      .doc("The steady-state interval, in rows, between periodic compaction-ratio evaluations by " +
+        "the hash-based WindowGroupLimitExec accumulator (see " +
+        s"'${WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key}'). When this value is above 1000, the " +
+        "first evaluation runs after only a quarter of it, and each interval after that doubles " +
+        "(capped at this value) until a check actually falls back -- so a task whose total row " +
+        "count never reaches this setting still gets evaluated at least once, instead of paying " +
+        "the hash map's overhead for its entire input with no check at all. At or below 1000, " +
+        "every evaluation uses this fixed interval with no ramp-up. Mirrors adaptive partial " +
         "aggregation's identically-named config: when the ratio of " +
         "rows processed to distinct partition keys seen falls below " +
         s"'spark.sql.windowExec.groupLimit.hashPushdown.minCompactionRatio', the hash " +
