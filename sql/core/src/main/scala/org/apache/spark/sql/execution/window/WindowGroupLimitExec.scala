@@ -220,7 +220,6 @@ case class WindowGroupLimitExec(
           conf.windowGroupLimitHashPushdownMinRows,
           conf.enableRadixSort,
           limit,
-          conf.windowGroupLimitHashPushdownMaxAppendRatio,
           mode)
       case _ =>
         new HashRankGroupLimitEvaluatorFactory(
@@ -236,7 +235,6 @@ case class WindowGroupLimitExec(
           conf.windowGroupLimitHashPushdownMinRows,
           conf.enableRadixSort,
           limit,
-          conf.windowGroupLimitHashPushdownMaxAppendRatio,
           mode)
     }
 

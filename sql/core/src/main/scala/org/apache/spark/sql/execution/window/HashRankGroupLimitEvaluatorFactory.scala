@@ -40,7 +40,6 @@ class HashRankGroupLimitEvaluatorFactory(
     minRowsBetweenCompactionChecks: Long,
     enableRadixSort: Boolean,
     limit: Int,
-    maxAppendRatio: Double = 0.9,
     mode: WindowGroupLimitMode = Partial)
   extends HashGroupLimitEvaluatorFactory {
 
@@ -56,7 +55,7 @@ class HashRankGroupLimitEvaluatorFactory(
     new HashRankGroupLimitAccumulator(
       partitionSpec, orderSpec, rankLikeFunction, childOutput, numOutputRows, peakMemory,
       spillSize, numTasksFallBacked, minCompactionRatio, minRowsBetweenCompactionChecks,
-      enableRadixSort, limit, maxAppendRatio, mode)
+      enableRadixSort, limit, mode)
 
   class HashRankGroupLimitPartitionEvaluator
     extends PartitionEvaluator[InternalRow, InternalRow] {

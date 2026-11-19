@@ -94,10 +94,10 @@ import org.apache.spark.unsafe.KVIterator
  * the whole list against the *final* slot contents.
  *
  * Falls back to sorting exactly like [[HashRowNumberGroupLimitAccumulator]] (same three triggers:
- * the map or the arena running out of memory, or the periodic compaction-ratio/append-ratio
- * efficiency check) -- draining through the real [[RankLimitIterator]]/[[DenseRankLimitIterator]]
- * (picked by `isDenseRank`) instead of [[SimpleLimitIterator]], since the fallback's sorted stream
- * needs the same `RANK`/`DENSE_RANK`-aware cutoff the hash path implements.
+ * the map or the arena running out of memory, or the periodic compaction-ratio efficiency check)
+ * -- draining through the real [[RankLimitIterator]]/[[DenseRankLimitIterator]] (picked by
+ * `isDenseRank`) instead of [[SimpleLimitIterator]], since the fallback's sorted stream needs the
+ * same `RANK`/`DENSE_RANK`-aware cutoff the hash path implements.
  */
 class HashRankGroupLimitAccumulator(
     partitionSpec: Seq[Expression],
@@ -112,7 +112,6 @@ class HashRankGroupLimitAccumulator(
     minRowsBetweenCompactionChecks: Long = 100000L,
     enableRadixSort: Boolean = true,
     limit: Int = 1,
-    maxAppendRatio: Double = 0.9,
     mode: WindowGroupLimitMode = Partial) extends HashGroupLimitAccumulator with Logging {
 
   private val isDenseRank = rankLikeFunction.isInstanceOf[DenseRank]
@@ -309,7 +308,6 @@ class HashRankGroupLimitAccumulator(
       minRowsBetweenCompactionChecks
     }
   private var nextCompactionCheckAt: Long = currentCheckInterval
-  private var appendsSinceLastCheck: Long = 0L
 
   // See the identical field (and its doc) in HashRowNumberGroupLimitAccumulator: a
   // SorterFallbackDestination is used for mode == Partial (must still filter before the shuffle),
@@ -340,7 +338,6 @@ class HashRankGroupLimitAccumulator(
       if (fallbackDestination != null) return
       buffer.setLong(
         slotRowCountOrdinal(matchSlot), buffer.getLong(slotRowCountOrdinal(matchSlot)) + 1)
-      appendsSinceLastCheck += 1
       revalidateTrailingSlots(buffer, matchSlot, slotCount)
     } else {
       val pos = findInsertionPos(buffer, orderKey, slotCount)
@@ -350,7 +347,6 @@ class HashRankGroupLimitAccumulator(
         insertSlotAt(buffer, pos, orderKey, slotCount)
         val newSlotCount = math.min(slotCount + 1, limit)
         buffer.setLong(slotCountOrdinal, newSlotCount)
-        appendsSinceLastCheck += 1
         // The new slot at `pos` only shares its own weight (1) with every slot shifted after it
         // (see insertSlotAt), which can push one of *those* slots' preceding weight to `limit`
         // even though the array wasn't at capacity -- a slot ejected purely by running out of the
@@ -364,10 +360,9 @@ class HashRankGroupLimitAccumulator(
     }
     rowsConsumed += 1
     if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
-      maybeBailOutForPoorEfficiency(currentCheckInterval)
+      maybeBailOutForPoorEfficiency()
       currentCheckInterval = math.min(currentCheckInterval * 2, minRowsBetweenCompactionChecks)
       nextCompactionCheckAt = rowsConsumed + currentCheckInterval
-      appendsSinceLastCheck = 0L
     }
   }
 
@@ -484,20 +479,12 @@ class HashRankGroupLimitAccumulator(
   }
 
   /** Mirrors [[HashRowNumberGroupLimitAccumulator.maybeBailOutForPoorEfficiency]]. */
-  private def maybeBailOutForPoorEfficiency(completedWindowSize: Long): Unit = {
+  private def maybeBailOutForPoorEfficiency(): Unit = {
     val numKeys = map.getNumKeys()
     if (numKeys > 0 && rowsConsumed.toDouble / numKeys < minCompactionRatio) {
       val ratio = rowsConsumed.toDouble / numKeys
       logInfo(s"Hash-based window group limit falling back to sort-based: compaction ratio " +
         s"$ratio after $rowsConsumed rows is below the minimum $minCompactionRatio.")
-      switchToFallbackProactively()
-      return
-    }
-    val appendRatio = appendsSinceLastCheck.toDouble / completedWindowSize
-    if (appendRatio > maxAppendRatio) {
-      logInfo(s"Hash-based window group limit falling back to sort-based: $appendRatio of the " +
-        s"last $completedWindowSize rows triggered a candidate append, above the " +
-        s"maximum $maxAppendRatio.")
       switchToFallbackProactively()
     }
   }

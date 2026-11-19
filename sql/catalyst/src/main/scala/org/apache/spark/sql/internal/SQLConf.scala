@@ -5450,34 +5450,14 @@ object SQLConf {
         "hash pushdown is enabled. For ROW_NUMBER() this slot array is the entirety of a key's " +
         "state, so it bounds total per-key memory; for RANK()/DENSE_RANK(), a key additionally " +
         "retains every row tied at a kept order-key value in a separate, data-dependent-size " +
-        "row list that this limit does NOT bound -- see " +
-        // Hardcoded rather than interpolated: WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MAX_APPEND_RATIO
-        // is declared later in this object, so a `.key` reference to it here would
-        // forward-reference an uninitialized val and NPE at SQLConf object init.
-        "'spark.sql.windowExec.groupLimit.hashPushdown.maxAppendRatio' for the guard against " +
-        "that case.")
+        "row list that this limit does NOT bound -- an adversarial input with many rows tied " +
+        "at few distinct order-key values is still caught by the hash map/row arena running " +
+        "out of memory, same as any other oversized per-key state.")
       .version("4.5.0")
       .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
       .intConf
       .checkValue(_ > 0, "The maximum hash pushdown limit must be positive.")
       .createWithDefault(100)
-
-  val WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MAX_APPEND_RATIO =
-    buildConf("spark.sql.windowExec.groupLimit.hashPushdown.maxAppendRatio")
-      .doc("The maximum fraction of rows, within a periodic evaluation window (see " +
-        s"'${WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key}'), that may actually trigger a " +
-        "write into the hash-based accumulator's row storage before it proactively falls back " +
-        "to the sort-based path. This catches a pattern the distinct-key compaction ratio (see " +
-        s"'${WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key}') cannot: a healthy " +
-        "number of distinct keys, but almost every row still replacing/extending its key's " +
-        "kept state (e.g. taking the latest row per key from a roughly time-ordered stream), " +
-        "which grows the accumulator's row storage close to linearly in the row count instead " +
-        "of the key count.")
-      .version("4.5.0")
-      .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
-      .doubleConf
-      .checkValue(v => v > 0.0 && v <= 1.0, "The maximum append ratio must be in (0.0, 1.0].")
-      .createWithDefault(0.9)
 
   val COLLAPSE_WINDOW_WITH_EMPTY_ORDER_SPEC_IN_CHILD =
     buildConf("spark.sql.optimizer.collapseWindowWithEmptyOrderSpecInChild")
@@ -10633,9 +10613,6 @@ class SQLConf extends Serializable with Logging with SqlApiConf {
 
   def windowGroupLimitHashPushdownMaxLimit: Int =
     getConf(WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MAX_LIMIT)
-
-  def windowGroupLimitHashPushdownMaxAppendRatio: Double =
-    getConf(WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MAX_APPEND_RATIO)
 
   def windowMonotonicDequeEnabled: Boolean = getConf(WINDOW_MONOTONIC_DEQUE_ENABLED)
 

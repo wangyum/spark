@@ -40,7 +40,6 @@ class HashRowNumberGroupLimitEvaluatorFactory(
     minRowsBetweenCompactionChecks: Long,
     enableRadixSort: Boolean,
     limit: Int,
-    maxAppendRatio: Double = 0.9,
     mode: WindowGroupLimitMode = Partial)
   extends HashGroupLimitEvaluatorFactory {
 
@@ -56,7 +55,7 @@ class HashRowNumberGroupLimitEvaluatorFactory(
     new HashRowNumberGroupLimitAccumulator(
       partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
       numTasksFallBacked, minCompactionRatio, minRowsBetweenCompactionChecks, enableRadixSort,
-      limit = limit, maxAppendRatio = maxAppendRatio, mode = mode)
+      limit = limit, mode = mode)
 
   class HashRowNumberGroupLimitPartitionEvaluator
     extends PartitionEvaluator[InternalRow, InternalRow] {

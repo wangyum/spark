@@ -65,15 +65,12 @@ import org.apache.spark.unsafe.KVIterator
  *     ([[switchToFallback]]); or
  *   - `rowArena` could no longer acquire memory for a row's bytes (also [[switchToFallback]],
  *     same trigger, see [[consumeRow]]); or
- *   - periodically ([[maybeBailOutForPoorEfficiency]], [[switchToFallbackProactively]]), either
- *     the ratio of rows processed to distinct keys seen falls below `minCompactionRatio` (hash
- *     accumulation isn't pruning enough duplicate rows to be worth its per-row overhead -- mirrors
+ *   - periodically ([[maybeBailOutForPoorEfficiency]], [[switchToFallbackProactively]]), the ratio
+ *     of rows processed to distinct keys seen falls below `minCompactionRatio` (hash accumulation
+ *     isn't pruning enough duplicate rows to be worth its per-row overhead -- mirrors
  *     `HashAggregateExec`'s adaptive partial aggregation, which uses the same compaction-ratio
  *     heuristic, `spark.sql.execution.aggregate.adaptivePartialAggregation.*`, for the same
- *     reason, against a different fallback mechanism here), or the fraction of rows that actually
- *     triggered a heap write exceeds `maxAppendRatio` (a healthy distinct-key ratio alone misses
- *     a key whose kept rows keep getting replaced/extended by almost every row, e.g. taking the
- *     latest `limit` rows per key from a roughly time-ordered stream).
+ *     reason, against a different fallback mechanism here).
  */
 class HashRowNumberGroupLimitAccumulator(
     partitionSpec: Seq[Expression],
@@ -87,7 +84,6 @@ class HashRowNumberGroupLimitAccumulator(
     minRowsBetweenCompactionChecks: Long = 100000L,
     enableRadixSort: Boolean = true,
     limit: Int,
-    maxAppendRatio: Double = 0.9,
     mode: WindowGroupLimitMode = Partial) extends HashGroupLimitAccumulator with Logging {
 
   private val numOrderCols = orderSpec.length
@@ -271,14 +267,6 @@ class HashRowNumberGroupLimitAccumulator(
     }
   private var nextCompactionCheckAt: Long = currentCheckInterval
 
-  // Rows, within the just-completed check interval (see currentCheckInterval), that actually
-  // triggered a write into a heap slot (insert or replace) rather than being discarded outright.
-  // Reset to 0 every time the periodic check runs (see consumeRow), so this is always a count over
-  // exactly the interval just completed, not a cumulative total -- a windowed count reacts to a
-  // mid-stream shift from healthy to unhealthy compaction, where a cumulative ratio would stay
-  // diluted by an earlier healthy stretch. See maybeBailOutForPoorEfficiency.
-  private var appendsSinceLastCheck: Long = 0L
-
   // Non-null once the map or the row arena could no longer acquire memory, or the compaction
   // ratio proved too low; from then on every row -- including ones already recorded as kept -- is
   // routed here instead, and the hash map/row arena are abandoned. A [[SorterFallbackDestination]]
@@ -315,7 +303,6 @@ class HashRowNumberGroupLimitAccumulator(
     if (heapSize < limit) {
       storeAtSlot(row, orderKey, buffer, heapSize)
       if (fallbackDestination != null) return
-      appendsSinceLastCheck += 1
       buffer.setLong(heapSizeOrdinal, heapSize + 1)
       siftUp(buffer, heapSize)
     } else if (compareToSlot(orderKey, buffer, 0) < 0) {
@@ -327,15 +314,13 @@ class HashRowNumberGroupLimitAccumulator(
       // outcome for a well-compacting key, not an exceptional case to exclude from the ratio.
       storeAtSlot(row, orderKey, buffer, 0)
       if (fallbackDestination != null) return
-      appendsSinceLastCheck += 1
       siftDown(buffer, 0, limit)
     }
     rowsConsumed += 1
     if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
-      maybeBailOutForPoorEfficiency(currentCheckInterval)
+      maybeBailOutForPoorEfficiency()
       currentCheckInterval = math.min(currentCheckInterval * 2, minRowsBetweenCompactionChecks)
       nextCompactionCheckAt = rowsConsumed + currentCheckInterval
-      appendsSinceLastCheck = 0L
     }
   }
 
@@ -452,36 +437,18 @@ class HashRowNumberGroupLimitAccumulator(
   }
 
   /**
-   * Checks two independent signals of whether hash accumulation is still paying off, proactively
-   * falling back rather than waiting for the hash map to genuinely run out of memory (which, for
-   * high-cardinality keys, may happen far later than it should, if at all -- see
-   * [[HashRowNumberGroupLimitAccumulator]]'s class doc):
-   *   - rows-processed-per-distinct-key has fallen below `minCompactionRatio` -- duplicate keys
-   *     aren't being pruned enough to offset the hash map's per-row overhead; or
-   *   - the fraction of rows, in the just-completed window, that actually triggered a heap write
-   *     exceeds `maxAppendRatio` -- the first signal alone misses a healthy-looking distinct-key
-   *     ratio where almost every row still replaces/extends its key's kept state anyway (e.g.
-   *     taking the latest `limit` rows per key from a roughly time-ordered stream), which grows
-   *     the arena close to linearly in the row count instead of the key count.
-   *
-   * @param completedWindowSize the number of rows in the just-completed check window -- not
-   *                             always `minRowsBetweenCompactionChecks`, see
-   *                             `currentCheckInterval`.
+   * Checks whether hash accumulation is still paying off, proactively falling back rather than
+   * waiting for the hash map to genuinely run out of memory (which, for high-cardinality keys, may
+   * happen far later than it should, if at all -- see [[HashRowNumberGroupLimitAccumulator]]'s
+   * class doc): rows-processed-per-distinct-key has fallen below `minCompactionRatio` -- duplicate
+   * keys aren't being pruned enough to offset the hash map's per-row overhead.
    */
-  private def maybeBailOutForPoorEfficiency(completedWindowSize: Long): Unit = {
+  private def maybeBailOutForPoorEfficiency(): Unit = {
     val numKeys = map.getNumKeys()
     if (numKeys > 0 && rowsConsumed.toDouble / numKeys < minCompactionRatio) {
       val ratio = rowsConsumed.toDouble / numKeys
       logInfo(s"Hash-based window group limit falling back to sort-based: compaction ratio " +
         s"$ratio after $rowsConsumed rows is below the minimum $minCompactionRatio.")
-      switchToFallbackProactively()
-      return
-    }
-    val appendRatio = appendsSinceLastCheck.toDouble / completedWindowSize
-    if (appendRatio > maxAppendRatio) {
-      logInfo(s"Hash-based window group limit falling back to sort-based: $appendRatio of the " +
-        s"last $completedWindowSize rows triggered a heap write, above the maximum " +
-        s"$maxAppendRatio.")
       switchToFallbackProactively()
     }
   }

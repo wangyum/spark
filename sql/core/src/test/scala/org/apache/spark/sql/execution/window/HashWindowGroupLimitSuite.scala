@@ -267,9 +267,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       // so the periodic check must never trigger a bail-out despite running every 50 rows. ts
       // decreases within each key's own occurrences (n - i, round-robin over k = i % 10), so a
       // key's very first row is immediately its final winner and every later occurrence of that
-      // key is discarded without touching the arena -- healthy by the append-ratio signal too
-      // (see SPARK-61804's "bails out when almost every row triggers an append" test for the
-      // mirror-image, unhealthy case this deliberately avoids).
+      // key is discarded without touching the arena.
       val n = 1000
       val df = (0 until n).map(i => (i % 10, (n - i).toLong, (n - i).toLong)).toDF("k", "ts", "v")
       val resultDf = dedupLatest(df)
@@ -867,39 +865,6 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       assert(numTasksFallBacked.value == 0,
         "a well-compacting key (heap fills early, then discards everything else) must not " +
           "spuriously bail out to the sort-based path")
-    }
-  }
-
-  test("SPARK-61804: limit > 1 bails out when almost every row triggers an append despite a" +
-      " healthy distinct-key ratio (monotonically improving values)") {
-    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
-      val kAttr = AttributeReference("k", IntegerType)()
-      val tsAttr = AttributeReference("ts", LongType)()
-      val partitionSpec = Seq(kAttr)
-      val orderSpec = Seq(SortOrder(tsAttr, Descending))
-      val childOutput = Seq(kAttr, tsAttr)
-      val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
-      val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
-      val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
-      val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
-      val accumulator = new HashRowNumberGroupLimitAccumulator(
-        partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBacked, minCompactionRatio = 1.05, minRowsBetweenCompactionChecks = 100L,
-        limit = 3)
-
-      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
-      // A single key with strictly ascending ts: every row past the initial 3-row fill beats the
-      // current worst-kept and triggers a fresh append, so the distinct-key compaction ratio
-      // alone (rowsConsumed / 1 key, always huge here) would never catch this -- only an
-      // append-ratio signal can.
-      (0 until 500).foreach { ts =>
-        accumulator.consumeRow(rowProjection(InternalRow(1, ts.toLong)).copy())
-      }
-      accumulator.finish()
-      assert(numTasksFallBacked.value > 0,
-        "an append-ratio health check should have proactively bailed out here; if this stops " +
-          "triggering, the fix for the monotonic-improvement memory-growth gap may have " +
-          "regressed")
     }
   }
 
