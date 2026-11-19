@@ -670,11 +670,9 @@ case class SortMergeJoinExec(
            |scala.collection.Iterator $iterator;
            |if ($relVar != null) {
            |  ${keys.code}
-           |  // beginProbe protects $relVar from being released by a TaskMemoryManager spill
-           |  // triggered across the inner while loop's nested consume() calls below, without
-           |  // paying wrapOutstanding's per-probe Iterator allocation and virtual dispatch.
-           |  $sessionTerm.beginProbe();
-           |  $iterator = $candidateExpr;
+           |  // wrapOutstanding protects $relVar from being released by a TaskMemoryManager
+           |  // spill triggered across the inner while loop's nested consume() calls below.
+           |  $iterator = $sessionTerm.wrapOutstanding($candidateExpr);
            |} else {
            |  $iterator = $matches.generateIterator();
            |}
@@ -725,9 +723,9 @@ case class SortMergeJoinExec(
            |  $loadStreamed
            |  $guardOutputRow
            |  // This bypasses the inner candidate loop -- and the finishProbe call that normally
-           |  // follows it -- entirely, so beginProbe()'s in-flight marker must be cleared here
-           |  // too, or a real TaskMemoryManager spill request would be declined for the rest of
-           |  // this group even though nothing is reading the index anymore.
+           |  // follows it -- entirely, so wrapOutstanding's in-flight marker must be cleared
+           |  // here too, or a real TaskMemoryManager spill request would be declined for the
+           |  // rest of this group even though nothing is reading the index anymore.
            |  ${finishProbeCode(probeSessionTerm)}
            |  continue;
            |}

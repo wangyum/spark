@@ -580,18 +580,18 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     }
   }
 
-  test("Session.beginProbe/finishProbe allows an immediate spill when a probe finds no match") {
+  test("Session.finishProbe is a harmless no-op once the wrapped iterator already " +
+    "self-cleared on an empty probe") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
       val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
       probeThroughGate(session, array)
       assert(session.currentRelationOrNull != null, "the group must be indexed by now")
 
-      // Mirrors whole-stage codegen's indexed probe path (SortMergeJoinExec's createIterator):
-      // beginProbe() marks the probe in-flight before reading the index directly, with no
-      // wrapOutstanding wrapper to auto-detect exhaustion. finishProbe() must still be called
-      // once the candidate loop ends even when it never found a match - e.g. LeftSemi finding
-      // no matching buffered row at all for this streamed row.
-      session.beginProbe()
+      // A streamed row whose window matches no buffered point (routine for LeftSemi): codegen's
+      // own `while (it.hasNext())` loop condition already drains and self-clears the wrapped
+      // iterator before finishProbe() runs, so finishProbe() must still be safe to call.
+      val candidates = session.candidates(array, InternalRow(1L, 1000L, 1001L))
+      assert(!candidates.hasNext)
       session.finishProbe()
 
       val otherConsumer = neverSpillConsumer(tc.taskMemoryManager())

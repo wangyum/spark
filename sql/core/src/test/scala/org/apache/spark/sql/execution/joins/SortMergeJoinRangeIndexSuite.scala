@@ -401,10 +401,11 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
   test("sort merge point-in-range left outer join calls finishProbe on the streamed-only " +
     "guard's early continue") {
     // When the condition also has a streamed-only conjunct and splitStreamedSideJoinCondition
-    // hoists it, createIterator's onProbe/beginProbe already ran before the guard is checked,
-    // so a row the guard rejects must still call finishProbe() before its "continue;" -
-    // otherwise probeActive stays stuck true for the rest of the group, the same bug class
-    // fixed for LeftSemi above, just reached through the guard path instead of the match loop.
+    // hoists it, createIterator's onProbe/wrapOutstanding already ran before the guard is
+    // checked, so a row the guard rejects must still call finishProbe() before its "continue;"
+    // - otherwise the wrapped candidate iterator stays marked in-flight for the rest of the
+    // group, the same bug class fixed for LeftSemi above, just reached through the guard path
+    // instead of the match loop.
     val events = largeGroupEvents()
     val spans = largeGroupSpans()
     // `e_id > 5` references only the streamed (left) side and is a total comparison (safe to
@@ -449,9 +450,9 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
   test("sort merge point-in-range left semi join calls finishProbe even when a streamed row " +
     "has no match") {
     // finishProbe() must run unconditionally once the candidate loop ends, not only inside the
-    // branch that found a match - otherwise a streamed row with no match at all (routine for
-    // LeftSemi) leaves the probe permanently "in flight" (RangeGroupProbe.Session.beginProbe
-    // never paired with a finishProbe) and blocks later spills for the rest of the group.
+    // branch that found a match: a match found on an early candidate breaks out of the loop
+    // leaving RangeGroupProbe.Session.wrapOutstanding's iterator undrained and marked "in
+    // flight", which would otherwise block spills for the rest of the group.
     val events = largeGroupEvents()
     val spans = largeGroupSpans()
     val cond = pointCond(events, spans)
