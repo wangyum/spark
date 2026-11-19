@@ -318,62 +318,6 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
     }
   }
 
-  test("SPARK-61804: the ramp-up's early check catches an all-unique-key case well before" +
-      " a large minRows would") {
-    withSQLConf(
-      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
-      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key -> "4000",
-      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key -> "1.05") {
-      // All-unique keys with a large (4000) minRows, but fewer total rows (1500) than minRows
-      // itself: without a smaller early check, the periodic check's condition
-      // (rowsConsumed >= minRows) never becomes true within these 1500 rows, so no bail-out could
-      // ever happen -- a large-minRows task that will never see that many rows would otherwise pay
-      // the full hash-map cost (map/hash-table growth) for nothing. The ramp-up's first check, at
-      // minRows / 4 = 1000 rows here, must still catch this. repartition(1) guarantees all 1500
-      // rows land in the single Partial-stage task this reasoning depends on.
-      val n = 1500
-      val df = (0 until n).map(i => (i, i.toLong, i.toLong)).toDF("k", "ts", "v").repartition(1)
-      val resultDf = dedupLatest(df)
-      val result = resultDf.collect()
-      assert(result.length == n,
-        "bailing out to the sort-based path must not lose or duplicate rows")
-
-      val plan = resultDf.queryExecution.executedPlan
-      val fallbackCounts = collectWithSubqueries(plan) { case w: WindowGroupLimitExec => w }
-        .flatMap(_.metrics.get("numTasksFallBacked"))
-        .map(_.value)
-      assert(fallbackCounts.exists(_ > 0),
-        "expected the ramp-up's early check to have bailed out well before all 1500 rows, got " +
-          s"fallback counts: $fallbackCounts")
-    }
-  }
-
-  test("SPARK-61804: the ramp-up's smaller early checks do not spuriously bail out a healthy," +
-      " large-minRows case") {
-    withSQLConf(
-      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
-      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key -> "4000",
-      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key -> "1.05") {
-      // 50 distinct keys, round-robin, ts decreasing within each key's own occurrences (so a
-      // key's very first row is immediately its final winner, exactly like the healthy-ratio test
-      // above): by row 1000 -- the ramp-up's first, smaller check (minRows / 4 = 1000) -- roughly
-      // 20 rows/key have already been seen, a compaction ratio far above the 1.05 threshold, so
-      // even the smaller early checks ramp-up introduces must not bail out.
-      val n = 1500
-      val df = (0 until n).map(i => (i % 50, (n - i).toLong, (n - i).toLong))
-        .toDF("k", "ts", "v").repartition(1)
-      val resultDf = dedupLatest(df)
-      checkAnswer(resultDf, (0 until 50).map(k => Row(k, (n - k).toLong, (n - k).toLong)))
-
-      val plan = resultDf.queryExecution.executedPlan
-      val fallbackCounts = collectWithSubqueries(plan) { case w: WindowGroupLimitExec => w }
-        .flatMap(_.metrics.get("numTasksFallBacked"))
-        .map(_.value)
-      assert(fallbackCounts.forall(_ == 0),
-        s"expected no bail-out with a healthy compaction ratio, got: $fallbackCounts")
-    }
-  }
-
   // Shared by the low-level forced-OOM tests below: a standalone TaskMemoryManager/TaskContext
   // backed by TestMemoryManager with a small page size and a tight execution-memory budget,
   // mirroring the WindowSegmentTreeMemorySuite / HashAggregateExecSuite pattern, instead of going

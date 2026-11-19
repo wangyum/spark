@@ -299,15 +299,7 @@ class HashRankGroupLimitAccumulator(
   private val spillSizeBefore = TaskContext.get().taskMetrics().memoryBytesSpilled
 
   private var rowsConsumed: Long = 0L
-  // See the identical field (and its doc) in HashRowNumberGroupLimitAccumulator.
-  private var currentCheckInterval: Long =
-    if (minRowsBetweenCompactionChecks >
-        HashGroupLimitAccumulator.COMPACTION_CHECK_RAMP_UP_THRESHOLD) {
-      math.max(1L, minRowsBetweenCompactionChecks / 4)
-    } else {
-      minRowsBetweenCompactionChecks
-    }
-  private var nextCompactionCheckAt: Long = currentCheckInterval
+  private var nextCompactionCheckAt: Long = minRowsBetweenCompactionChecks
 
   // See the identical field (and its doc) in HashRowNumberGroupLimitAccumulator: a
   // SorterFallbackDestination is used for mode == Partial (must still filter before the shuffle),
@@ -361,8 +353,7 @@ class HashRankGroupLimitAccumulator(
     rowsConsumed += 1
     if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
       maybeBailOutForPoorEfficiency()
-      currentCheckInterval = math.min(currentCheckInterval * 2, minRowsBetweenCompactionChecks)
-      nextCompactionCheckAt = rowsConsumed + currentCheckInterval
+      nextCompactionCheckAt = rowsConsumed + minRowsBetweenCompactionChecks
     }
   }
 

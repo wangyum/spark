@@ -97,16 +97,6 @@ object HashGroupLimitAccumulator {
   // Matches UnsafeHashedRelation/LongToUnsafeRowMap's own choice of initial page size for a
   // BytesToBytesMap-backed structure expected to often hold little data (see HashedRelation.scala).
   private[window] val INITIAL_PAGE_SIZE_BYTES: Long = 1L << 20
-
-  // Below this, the periodic compaction check always runs at the fixed
-  // minRowsBetweenCompactionChecks interval, unchanged from before ramp-up existed -- several
-  // low-level tests hand-tune small minRowsBetweenCompactionChecks values (down to single digits)
-  // to land the check's first-ever evaluation on an exact row, including one that must coincide
-  // with a specific genuine-OOM row found by trial and error; a value this far below any of those
-  // is guaranteed not to disturb them. At or above it (in particular, the real, much larger
-  // default of 100000), ramp-up's smaller first checks start paying for themselves: see
-  // HashRowNumberGroupLimitAccumulator.consumeRow's doc.
-  private[window] val COMPACTION_CHECK_RAMP_UP_THRESHOLD: Long = 1000L
 }
 
 /**

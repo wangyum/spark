@@ -247,25 +247,7 @@ class HashRowNumberGroupLimitAccumulator(
   // only to decide when to run the next periodic efficiency check.
   private var rowsConsumed: Long = 0L
 
-  // The interval before the next periodic check. Below COMPACTION_CHECK_RAMP_UP_THRESHOLD this
-  // stays pinned at minRowsBetweenCompactionChecks forever (unchanged original behavior). At or
-  // above it, it starts at a quarter of minRowsBetweenCompactionChecks and doubles (capped at
-  // minRowsBetweenCompactionChecks) every time a check doesn't bail out: a task whose true row
-  // count never reaches minRowsBetweenCompactionChecks (e.g. an all-unique-key task under the
-  // large, 100000-row default) would otherwise never run the check at all, paying the full cost of
-  // growing the hash map/table for nothing -- see HashRowNumberGroupLimitAccumulator's class doc's
-  // "periodically" bullet. A genuinely healthy task (e.g. few distinct keys) passes these smaller
-  // early checks just as easily, since their ratio is already high well before minRowsBetween
-  // CompactionChecks, and settles into the original, larger steady-state interval after a few
-  // doublings.
-  private var currentCheckInterval: Long =
-    if (minRowsBetweenCompactionChecks >
-        HashGroupLimitAccumulator.COMPACTION_CHECK_RAMP_UP_THRESHOLD) {
-      math.max(1L, minRowsBetweenCompactionChecks / 4)
-    } else {
-      minRowsBetweenCompactionChecks
-    }
-  private var nextCompactionCheckAt: Long = currentCheckInterval
+  private var nextCompactionCheckAt: Long = minRowsBetweenCompactionChecks
 
   // Non-null once the map or the row arena could no longer acquire memory, or the compaction
   // ratio proved too low; from then on every row -- including ones already recorded as kept -- is
@@ -319,8 +301,7 @@ class HashRowNumberGroupLimitAccumulator(
     rowsConsumed += 1
     if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
       maybeBailOutForPoorEfficiency()
-      currentCheckInterval = math.min(currentCheckInterval * 2, minRowsBetweenCompactionChecks)
-      nextCompactionCheckAt = rowsConsumed + currentCheckInterval
+      nextCompactionCheckAt = rowsConsumed + minRowsBetweenCompactionChecks
     }
   }
 
