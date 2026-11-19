@@ -734,23 +734,22 @@ case class SortMergeJoinExec(
     }
 
     val scan = JoinScanCodegen(findNextJoinRows, beforeLoop, iterator, bufferedRow, condCheck,
-      outputRow, eagerCleanup)
+      outputRow, eagerCleanup, finishProbeCode(probeSessionTerm))
     val doJoin = joinType match {
       case _: InnerLike =>
         val cleanedFlag =
           ctx.addMutableState(CodeGenerator.JAVA_BOOLEAN, "cleanedFlag", v => s"$v = false;")
-        codegenInner(scan, cleanedFlag, probeSessionTerm)
+        codegenInner(scan, cleanedFlag)
       case LeftOuter | RightOuter =>
-        codegenOuter(streamedInput, scan, ctx.freshName("hasOutputRow"), probeSessionTerm)
+        codegenOuter(streamedInput, scan, ctx.freshName("hasOutputRow"))
       case LeftSemi =>
         val cleanedFlag =
           ctx.addMutableState(CodeGenerator.JAVA_BOOLEAN, "cleanedFlag", v => s"$v = false;")
-        codegenSemi(scan, ctx.freshName("hasOutputRow"), cleanedFlag, probeSessionTerm)
+        codegenSemi(scan, ctx.freshName("hasOutputRow"), cleanedFlag)
       case LeftAnti =>
-        codegenAnti(streamedInput, scan, loadStreamed, ctx.freshName("hasMatchedRow"),
-          probeSessionTerm)
+        codegenAnti(streamedInput, scan, loadStreamed, ctx.freshName("hasMatchedRow"))
       case ExistenceJoin(_) =>
-        codegenExistence(streamedInput, scan, loadStreamed, existsVar.get, probeSessionTerm)
+        codegenExistence(streamedInput, scan, loadStreamed, existsVar.get)
       case x =>
         throw new IllegalArgumentException(
           s"SortMergeJoin.doProduce should not take $x as the JoinType")
@@ -782,7 +781,8 @@ case class SortMergeJoinExec(
       bufferedRow: String,
       conditionCheck: String,
       outputRow: String,
-      eagerCleanup: String)
+      eagerCleanup: String,
+      finishProbe: String = "")
 
   /**
    * A match stops reading the candidate iterator before it drains (or, for Anti/Existence, a
@@ -797,11 +797,9 @@ case class SortMergeJoinExec(
    */
   private def codegenInner(
       scan: JoinScanCodegen,
-      cleanedFlag: String,
-      probeSessionTerm: Option[String]): String = {
+      cleanedFlag: String): String = {
     val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
-      outputRow, eagerCleanup) = scan
-    val finishProbe = finishProbeCode(probeSessionTerm)
+      outputRow, eagerCleanup, finishProbe) = scan
     s"""
        |if($cleanedFlag) {
        |  return;
@@ -828,11 +826,9 @@ case class SortMergeJoinExec(
   private def codegenOuter(
       streamedInput: String,
       scan: JoinScanCodegen,
-      hasOutputRow: String,
-      probeSessionTerm: Option[String]): String = {
+      hasOutputRow: String): String = {
     val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
-      outputRow, eagerCleanup) = scan
-    val finishProbe = finishProbeCode(probeSessionTerm)
+      outputRow, eagerCleanup, finishProbe) = scan
     s"""
        |while ($streamedInput.hasNext()) {
        |  $findNextJoinRows;
@@ -860,11 +856,9 @@ case class SortMergeJoinExec(
   private def codegenSemi(
       scan: JoinScanCodegen,
       hasOutputRow: String,
-      cleanedFlag: String,
-      probeSessionTerm: Option[String]): String = {
+      cleanedFlag: String): String = {
     val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
-      outputRow, eagerCleanup) = scan
-    val finishProbe = finishProbeCode(probeSessionTerm)
+      outputRow, eagerCleanup, finishProbe) = scan
     s"""
        |if($cleanedFlag) {
        |  return;
@@ -895,11 +889,9 @@ case class SortMergeJoinExec(
       streamedInput: String,
       scan: JoinScanCodegen,
       loadStreamed: String,
-      hasMatchedRow: String,
-      probeSessionTerm: Option[String]): String = {
+      hasMatchedRow: String): String = {
     val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
-      outputRow, eagerCleanup) = scan
-    val finishProbe = finishProbeCode(probeSessionTerm)
+      outputRow, eagerCleanup, finishProbe) = scan
     s"""
        |while ($streamedInput.hasNext()) {
        |  $findNextJoinRows;
@@ -932,11 +924,9 @@ case class SortMergeJoinExec(
       streamedInput: String,
       scan: JoinScanCodegen,
       loadStreamed: String,
-      exists: String,
-      probeSessionTerm: Option[String]): String = {
+      exists: String): String = {
     val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
-      outputRow, eagerCleanup) = scan
-    val finishProbe = finishProbeCode(probeSessionTerm)
+      outputRow, eagerCleanup, finishProbe) = scan
     s"""
        |while ($streamedInput.hasNext()) {
        |  $findNextJoinRows;
