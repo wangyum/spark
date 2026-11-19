@@ -509,30 +509,40 @@ class HashRankGroupLimitAccumulator(
           }
           if (!exhausted) {
             val address = nextAddress
-            val candidateRow = rowArena.getRow(address, resultRow)
+            nextAddress = rowArena.getRowAndNext(address, resultRow)
             if (!hasEvictions) {
-              pending = candidateRow
+              pending = resultRow
             } else if (currentSlotCount > 0) {
-              val orderKey = orderKeyProjection(candidateRow)
+              val orderKey = orderKeyProjection(resultRow)
               if (boundOrdering.compare(orderKey, cutoffScratch) <= 0) {
-                pending = candidateRow
+                pending = resultRow
               }
             }
-            nextAddress = rowArena.getNext(address)
           }
         }
       }
 
+      private var uncommittedOutputRows = 0
+
       override def hasNext: Boolean = {
         advance()
-        pending != null
+        val hasMore = pending != null
+        if (!hasMore && uncommittedOutputRows > 0) {
+          numOutputRows += uncommittedOutputRows
+          uncommittedOutputRows = 0
+        }
+        hasMore
       }
 
       override def next(): InternalRow = {
         if (!hasNext) throw new NoSuchElementException
         val result = pending
         pending = null
-        numOutputRows += 1
+        uncommittedOutputRows += 1
+        if (uncommittedOutputRows == 1024) {
+          numOutputRows += 1024
+          uncommittedOutputRows = 0
+        }
         result
       }
     }

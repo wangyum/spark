@@ -402,16 +402,27 @@ class HashRowNumberGroupLimitAccumulator(
         }
       }
 
+      private var uncommittedOutputRows = 0
+
       override def hasNext: Boolean = {
         advanceToValidEntry()
-        nextSlot < currentHeapSize
+        val hasMore = nextSlot < currentHeapSize
+        if (!hasMore && uncommittedOutputRows > 0) {
+          numOutputRows += uncommittedOutputRows
+          uncommittedOutputRows = 0
+        }
+        hasMore
       }
 
       override def next(): InternalRow = {
         if (!hasNext) throw new NoSuchElementException
         val address = currentBuffer.getLong(slotAddrOrdinal(nextSlot))
         nextSlot += 1
-        numOutputRows += 1
+        uncommittedOutputRows += 1
+        if (uncommittedOutputRows == 1024) {
+          numOutputRows += 1024
+          uncommittedOutputRows = 0
+        }
         rowArena.getRow(address, resultRow)
       }
     }

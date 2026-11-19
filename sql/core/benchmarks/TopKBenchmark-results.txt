@@ -6,18 +6,18 @@ OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 Benchmark Top-K:                                                 Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 -----------------------------------------------------------------------------------------------------------------------------------------------
-ROW_NUMBER (PARTITION: , WindowGroupLimit: false)                         7278           7865         569          2.9         347.0       1.0X
-ROW_NUMBER (PARTITION: , WindowGroupLimit: true)                          1015           1029          14         20.7          48.4       7.2X
-ROW_NUMBER (PARTITION: PARTITION BY b, WindowGroupLimit: false)          10991          11594         591          1.9         524.1       0.7X
-ROW_NUMBER (PARTITION: PARTITION BY b, WindowGroupLimit: true)            3914           3997          75          5.4         186.6       1.9X
-RANK (PARTITION: , WindowGroupLimit: false)                               7527           7755         266          2.8         358.9       1.0X
-RANK (PARTITION: , WindowGroupLimit: true)                                1337           1380          45         15.7          63.8       5.4X
-RANK (PARTITION: PARTITION BY b, WindowGroupLimit: false)                11296          11514         225          1.9         538.6       0.6X
-RANK (PARTITION: PARTITION BY b, WindowGroupLimit: true)                  3880           4057         264          5.4         185.0       1.9X
-DENSE_RANK (PARTITION: , WindowGroupLimit: false)                         7326           7716         471          2.9         349.3       1.0X
-DENSE_RANK (PARTITION: , WindowGroupLimit: true)                          1344           1414          66         15.6          64.1       5.4X
-DENSE_RANK (PARTITION: PARTITION BY b, WindowGroupLimit: false)          11184          11383         250          1.9         533.3       0.7X
-DENSE_RANK (PARTITION: PARTITION BY b, WindowGroupLimit: true)            3882           4000         106          5.4         185.1       1.9X
+ROW_NUMBER (PARTITION: , WindowGroupLimit: false)                         7135           7400         212          2.9         340.2       1.0X
+ROW_NUMBER (PARTITION: , WindowGroupLimit: true)                          1020           1044          17         20.6          48.7       7.0X
+ROW_NUMBER (PARTITION: PARTITION BY b, WindowGroupLimit: false)          10385          10644         232          2.0         495.2       0.7X
+ROW_NUMBER (PARTITION: PARTITION BY b, WindowGroupLimit: true)            3862           3925          66          5.4         184.2       1.8X
+RANK (PARTITION: , WindowGroupLimit: false)                               7001           7151         145          3.0         333.8       1.0X
+RANK (PARTITION: , WindowGroupLimit: true)                                1376           1426          61         15.2          65.6       5.2X
+RANK (PARTITION: PARTITION BY b, WindowGroupLimit: false)                10486          10687         177          2.0         500.0       0.7X
+RANK (PARTITION: PARTITION BY b, WindowGroupLimit: true)                  3796           3929         205          5.5         181.0       1.9X
+DENSE_RANK (PARTITION: , WindowGroupLimit: false)                         7226           7290          41          2.9         344.5       1.0X
+DENSE_RANK (PARTITION: , WindowGroupLimit: true)                          1351           1435          90         15.5          64.4       5.3X
+DENSE_RANK (PARTITION: PARTITION BY b, WindowGroupLimit: false)          10891          11033         101          1.9         519.3       0.7X
+DENSE_RANK (PARTITION: PARTITION BY b, WindowGroupLimit: true)            3857           3946          43          5.4         183.9       1.8X
 
 
 ================================================================================================
@@ -28,15 +28,15 @@ OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 Top-1 ROW_NUMBER dedup (few large groups, 1024 distinct keys):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ---------------------------------------------------------------------------------------------------------------------------------------------
-hash pushdown: false (sort-based)                                      11504          11846         296          1.8         548.6       1.0X
-hash pushdown: true                                                     1139           1221          66         18.4          54.3      10.1X
+hash pushdown: false (sort-based)                                      10766          10873          69          1.9         513.3       1.0X
+hash pushdown: true                                                     1136           1186          43         18.5          54.2       9.5X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 Top-1 ROW_NUMBER dedup (all-unique keys, 20971520 distinct keys):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------------------------------
-hash pushdown: false (sort-based)                                         10903          11570         879          1.9         519.9       1.0X
-hash pushdown: true                                                       10278          10453         146          2.0         490.1       1.1X
+hash pushdown: false (sort-based)                                         10876          10980          83          1.9         518.6       1.0X
+hash pushdown: true                                                       10169          10236          79          2.1         484.9       1.1X
 
 
 ================================================================================================
@@ -47,43 +47,43 @@ OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 Top-5 row_number dedup (few large groups, 1024 distinct keys):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ---------------------------------------------------------------------------------------------------------------------------------------------
-hash pushdown: false (sort-based)                                      11234          11499         273          1.9         535.7       1.0X
-hash pushdown: true                                                     1188           1215          18         17.6          56.7       9.5X
+hash pushdown: false (sort-based)                                      10953          11017          50          1.9         522.3       1.0X
+hash pushdown: true                                                     1215           1220           5         17.3          57.9       9.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 Top-5 rank dedup (few large groups, 1024 distinct keys):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ---------------------------------------------------------------------------------------------------------------------------------------
-hash pushdown: false (sort-based)                                11098          11416         236          1.9         529.2       1.0X
-hash pushdown: true                                               1519           1543          28         13.8          72.4       7.3X
+hash pushdown: false (sort-based)                                10991          11055          53          1.9         524.1       1.0X
+hash pushdown: true                                               1491           1497           6         14.1          71.1       7.4X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 Top-5 dense_rank dedup (few large groups, 1024 distinct keys):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ---------------------------------------------------------------------------------------------------------------------------------------------
-hash pushdown: false (sort-based)                                      11278          11383         162          1.9         537.8       1.0X
-hash pushdown: true                                                     1452           1463           9         14.4          69.3       7.8X
+hash pushdown: false (sort-based)                                      11019          11230         309          1.9         525.4       1.0X
+hash pushdown: true                                                     1454           1463           8         14.4          69.3       7.6X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 Top-5 row_number dedup (all-unique keys, 20971520 distinct keys):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------------------------------
-hash pushdown: false (sort-based)                                         11209          11324         115          1.9         534.5       1.0X
-hash pushdown: true                                                       10416          10505          91          2.0         496.7       1.1X
+hash pushdown: false (sort-based)                                         11129          11191          64          1.9         530.7       1.0X
+hash pushdown: true                                                       10247          10376         206          2.0         488.6       1.1X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 Top-5 rank dedup (all-unique keys, 20971520 distinct keys):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------------------------
-hash pushdown: false (sort-based)                                   12713          12897         400          1.6         606.2       1.0X
-hash pushdown: true                                                 11256          11328          62          1.9         536.7       1.1X
+hash pushdown: false (sort-based)                                   12301          12457         275          1.7         586.6       1.0X
+hash pushdown: true                                                 10934          11124         240          1.9         521.4       1.1X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 Top-5 dense_rank dedup (all-unique keys, 20971520 distinct keys):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------------------------------
-hash pushdown: false (sort-based)                                         12551          12907         386          1.7         598.5       1.0X
-hash pushdown: true                                                       11136          11550         513          1.9         531.0       1.1X
+hash pushdown: false (sort-based)                                         11747          11958         226          1.8         560.1       1.0X
+hash pushdown: true                                                       10414          10988         364          2.0         496.6       1.1X
 
 
 ================================================================================================
@@ -94,14 +94,14 @@ OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 Top-100 rank with spread ties (10000 distinct keys):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 -----------------------------------------------------------------------------------------------------------------------------------
-hash pushdown: false (sort-based)                             6851           7189         285          3.1         326.7       1.0X
-hash pushdown: true                                           3016           3039          30          7.0         143.8       2.3X
+hash pushdown: false (sort-based)                             7446           7620         240          2.8         355.1       1.0X
+hash pushdown: true                                           3060           3107          53          6.9         145.9       2.4X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 Top-100 dense_rank with spread ties (10000 distinct keys):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 -----------------------------------------------------------------------------------------------------------------------------------------
-hash pushdown: false (sort-based)                                  14427          14661         390          1.5         687.9       1.0X
-hash pushdown: true                                                14336          14895         571          1.5         683.6       1.0X
+hash pushdown: false (sort-based)                                  15655          15834         178          1.3         746.5       1.0X
+hash pushdown: true                                                14286          14711         326          1.5         681.2       1.1X
 
 

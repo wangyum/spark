@@ -65,6 +65,7 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
   private var page: MemoryBlock =
     allocatePage(UnsafeRowArena.INITIAL_PAGE_SIZE_BYTES - pageHeaderBytes)
   private var cursor: Long = page.getBaseOffset
+  private var pageEnd: Long = page.getBaseOffset + page.size()
 
   // Mirrors UnsafeFixedWidthAggregationMap's own defensive registration: guarantees the arena's
   // pages are freed at task end even if a caller (e.g. a downstream LIMIT) never fully drains the
@@ -88,35 +89,42 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
   def append(row: UnsafeRow): Long = {
     require(!linked, "append() is not supported on an arena constructed for linked mode; use" +
       " appendLinked() instead.")
-    appendInternal(row, next = None)
-  }
-
-  /**
-   * Like [[append]], but also stores `next` as a trailing 8-byte link readable via [[getNext]],
-   * threading this entry into a singly-linked list of rows tied at the same order-key value (see
-   * the class doc). Only valid on an arena constructed with `linked = true`.
-   */
-  def appendLinked(row: UnsafeRow, next: Long): Long = {
-    require(linked, "appendLinked() is not supported on an arena constructed for non-linked" +
-      " mode; use append() instead.")
-    appendInternal(row, next = Some(next))
-  }
-
-  private def appendInternal(row: UnsafeRow, next: Option[Long]): Long = {
     val sizeInBytes = row.getSizeInBytes
     if (sizeInBytes >= (1 << UnsafeRowArena.SIZE_BITS)) {
       throw QueryExecutionErrors.rowLargerThan256MUnsupportedError()
     }
-    val linkBytes = if (next.isDefined) java.lang.Long.BYTES else 0
-    grow(sizeInBytes + linkBytes)
+    if (cursor + sizeInBytes > pageEnd) {
+      grow(sizeInBytes)
+    }
     val offset = cursor
     Platform.copyMemory(
       row.getBaseObject, row.getBaseOffset, page.getBaseObject, cursor, sizeInBytes)
     cursor += sizeInBytes
-    next.foreach { nextAddress =>
-      Platform.putLong(page.getBaseObject, cursor, nextAddress)
-      cursor += linkBytes
+    UnsafeRowArena.toAddress(offset - page.getBaseOffset, sizeInBytes)
+  }
+
+  /**
+   * Like [[append]], but also stores `next` as a trailing 8-byte link readable via [[getNext]] or
+   * [[getRowAndNext]], threading this entry into a singly-linked list of rows tied at the same
+   * order-key value (see the class doc). Only valid on an arena constructed with `linked = true`.
+   */
+  def appendLinked(row: UnsafeRow, next: Long): Long = {
+    require(linked, "appendLinked() is not supported on an arena constructed for non-linked" +
+      " mode; use append() instead.")
+    val sizeInBytes = row.getSizeInBytes
+    if (sizeInBytes >= (1 << UnsafeRowArena.SIZE_BITS)) {
+      throw QueryExecutionErrors.rowLargerThan256MUnsupportedError()
     }
+    val totalSize = sizeInBytes + java.lang.Long.BYTES
+    if (cursor + totalSize > pageEnd) {
+      grow(totalSize)
+    }
+    val offset = cursor
+    Platform.copyMemory(
+      row.getBaseObject, row.getBaseOffset, page.getBaseObject, cursor, sizeInBytes)
+    cursor += sizeInBytes
+    Platform.putLong(page.getBaseObject, cursor, next)
+    cursor += java.lang.Long.BYTES
     UnsafeRowArena.toAddress(offset - page.getBaseOffset, sizeInBytes)
   }
 
@@ -135,6 +143,18 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
     val rowEnd =
       page.getBaseOffset + UnsafeRowArena.toOffset(address) + UnsafeRowArena.toSize(address)
     Platform.getLong(page.getBaseObject, rowEnd)
+  }
+
+  /**
+   * Points `resultRow` at `address` and returns the trailing `next` link stored alongside it,
+   * combining [[getRow]] and [[getNext]] in a single address decode. Requires `linked = true`.
+   */
+  def getRowAndNext(address: Long, resultRow: UnsafeRow): Long = {
+    val offset = UnsafeRowArena.toOffset(address)
+    val size = UnsafeRowArena.toSize(address)
+    val base = page.getBaseOffset + offset
+    resultRow.pointTo(page.getBaseObject, base, size)
+    Platform.getLong(page.getBaseObject, base + size)
   }
 
   /** Current bytes held (not a high-water mark; callers combine with their own peak tracking). */
@@ -177,6 +197,7 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
       freePage(page)
       page = newPage
       cursor = page.getBaseOffset + usedBytes
+      pageEnd = page.getBaseOffset + page.size()
     }
   }
 
@@ -185,6 +206,7 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
     if (page != null) {
       freePage(page)
       page = null
+      pageEnd = 0L
     }
   }
 }
