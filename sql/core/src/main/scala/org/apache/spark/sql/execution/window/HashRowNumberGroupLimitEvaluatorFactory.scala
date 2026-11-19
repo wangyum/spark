@@ -248,7 +248,7 @@ class HashRowNumberGroupLimitAccumulator(
 
   private val spillSizeBefore = TaskContext.get().taskMetrics().memoryBytesSpilled
 
-  // Rows consumed by the hash path (not counting rows already routed to fallbackSorter), used
+  // Rows consumed by the hash path (not counting rows already routed to fallbackDestination), used
   // only to decide when to run the next periodic efficiency check.
   private var rowsConsumed: Long = 0L
 
@@ -282,35 +282,27 @@ class HashRowNumberGroupLimitAccumulator(
 
   // Non-null once the map or the row arena could no longer acquire memory, or the compaction
   // ratio proved too low; from then on every row -- including ones already recorded as kept -- is
-  // routed here instead, and the hash map/row arena are abandoned. Used when `mode == Partial`
-  // (see `fallbackArray` for `Final`): Partial's fallback output still has to be filtered down to
-  // `limit` rows per key, since it is the only thing standing between its task's rows and the
-  // shuffle -- skipping that filtering would ship every row across the network, losing the whole
-  // point of the pre-filter. A sort-based filter needs sorted input, hence a real sorter here.
-  private var fallbackSorter: UnsafeExternalRowSorter = null
+  // routed here instead, and the hash map/row arena are abandoned. A [[SorterFallbackDestination]]
+  // under `mode == Partial`: its fallback output still has to be filtered down to `limit` rows per
+  // key, since it is the only thing standing between its task's rows and the shuffle -- skipping
+  // that filtering would ship every row across the network, losing the whole point of the
+  // pre-filter, and a sort-based filter needs sorted input, hence a real sorter. An
+  // [[ArrayFallbackDestination]] under `mode == Final`, where every row is instead appended
+  // unfiltered and unsorted: safe specifically because a hash-eligible WindowGroupLimitExec always
+  // declares outputOrdering = Nil (see isHashEligible), so EnsureRequirements unconditionally
+  // plants a real Sort directly above a Final node feeding the real WindowExec + its
+  // Filter(rn <= limit) above that -- which recomputes the correct answer from whatever rows
+  // arrive, regardless of how many that is. Skipping Final's own sort-then-filter here avoids
+  // sorting the same rows twice: once internally (for no benefit, since nothing downstream relies
+  // on Final's output being pre-filtered) and again in that unconditional Sort.
+  private var fallbackDestination: FallbackDestination = null
 
-  // Non-null once `mode == Final` has fallen back (same two triggers as `fallbackSorter`); from
-  // then on every row is appended here, unfiltered and unsorted, instead. Safe specifically
-  // because a hash-eligible WindowGroupLimitExec always declares outputOrdering = Nil (see
-  // isHashEligible), so EnsureRequirements unconditionally plants a real Sort directly above a
-  // Final node feeding the real WindowExec + its Filter(rn <= limit) above that -- which
-  // recomputes the correct answer from whatever rows arrive, regardless of how many that is.
-  // Skipping Final's own sort-then-filter here avoids sorting the same rows twice: once internally
-  // (for no benefit, since nothing downstream relies on Final's output being pre-filtered) and
-  // again in that unconditional Sort.
-  private var fallbackArray: ExternalAppendOnlyUnsafeRowArray = null
-
-  override def fallbackSorterOrNull: UnsafeExternalRowSorter = fallbackSorter
-  override def fallbackArrayOrNull: ExternalAppendOnlyUnsafeRowArray = fallbackArray
+  override def fallbackDestinationOrNull: FallbackDestination = fallbackDestination
 
   /** Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input. */
   def consumeRow(row: UnsafeRow): Unit = {
-    if (fallbackArray != null) {
-      fallbackArray.add(row)
-      return
-    }
-    if (fallbackSorter != null) {
-      fallbackSorter.insertRow(row)
+    if (fallbackDestination != null) {
+      fallbackDestination.insertRow(row)
       return
     }
     val key = groupingProjection(row)
@@ -323,7 +315,7 @@ class HashRowNumberGroupLimitAccumulator(
     val orderKey = orderKeyProjection(row)
     if (heapSize < limit) {
       storeAtSlot(row, orderKey, buffer, heapSize)
-      if (fallbackSorter != null || fallbackArray != null) return
+      if (fallbackDestination != null) return
       appendsSinceLastCheck += 1
       buffer.setLong(heapSizeOrdinal, heapSize + 1)
       siftUp(buffer, heapSize)
@@ -335,7 +327,7 @@ class HashRowNumberGroupLimitAccumulator(
       // original K=1 code, still counts toward rowsConsumed: a discard is the expected, desired
       // outcome for a well-compacting key, not an exceptional case to exclude from the ratio.
       storeAtSlot(row, orderKey, buffer, 0)
-      if (fallbackSorter != null || fallbackArray != null) return
+      if (fallbackDestination != null) return
       appendsSinceLastCheck += 1
       siftDown(buffer, 0, limit)
     }
@@ -376,13 +368,20 @@ class HashRowNumberGroupLimitAccumulator(
     buffer.setLong(slotAddrOrdinal(slot), address)
   }
 
-  /** Call once, after every row has been passed to [[consumeRow]], to get the output rows. */
-  def finish(): Iterator[InternalRow] = {
-    if (fallbackArray != null) {
-      peakMemory.set(math.max(peakMemory.value, fallbackArray.spillSize))
+  /**
+   * Call once, after every row has been passed to [[consumeRow]], to get the output rows.
+   * [[fallbackDestination]]'s two cases finish in genuinely different ways -- `Final`'s array
+   * needs no further filtering or sorting (see `fallbackDestination`'s doc), while `Partial`'s
+   * sorter output must still be sorted and filtered down to `limit` rows per key -- so, unlike
+   * every other [[FallbackDestination]] call site, this one pattern-matches on the concrete
+   * destination rather than going through [[FallbackDestination.insertRow]].
+   */
+  def finish(): Iterator[InternalRow] = fallbackDestination match {
+    case ArrayFallbackDestination(array) =>
+      peakMemory.set(math.max(peakMemory.value, array.spillSize))
       spillSize.set(
         TaskContext.get().taskMetrics().memoryBytesSpilled - spillSizeBefore)
-      val rawIter = fallbackArray.generateIterator()
+      val rawIter = array.generateIterator()
       new Iterator[InternalRow] {
         override def hasNext: Boolean = rawIter.hasNext
         override def next(): InternalRow = {
@@ -390,11 +389,11 @@ class HashRowNumberGroupLimitAccumulator(
           rawIter.next()
         }
       }
-    } else if (fallbackSorter != null) {
-      peakMemory.set(math.max(peakMemory.value, fallbackSorter.getPeakMemoryUsage))
+    case SorterFallbackDestination(sorter) =>
+      peakMemory.set(math.max(peakMemory.value, sorter.getPeakMemoryUsage))
       spillSize.set(
         TaskContext.get().taskMetrics().memoryBytesSpilled - spillSizeBefore)
-      val sortedIter = fallbackSorter.sort()
+      val sortedIter = sorter.sort()
       val limitFunc =
         (iter: Iterator[InternalRow]) => SimpleLimitIterator(iter, limit, numOutputRows)
       if (partitionSpec.isEmpty) {
@@ -402,15 +401,15 @@ class HashRowNumberGroupLimitAccumulator(
       } else {
         new GroupedLimitIterator(sortedIter, childOutput, partitionSpec, limitFunc)
       }
-    } else {
+    case null =>
       peakMemory.set(math.max(peakMemory.value, map.getPeakMemoryUsedBytes + rowArena.bytesUsed))
       // Lazy: the map's own TaskCompletionListener (registered in its constructor) and
       // rowArena's (registered in UnsafeRowArena's constructor) guarantee eventual cleanup even
       // if this iterator is never fully drained (e.g. a downstream LIMIT), so there is no eager
-      // map.free()/rowArena.free() call here the way the fallback branch above has for the
-      // sorter -- both structures must stay alive for as long as the returned rows are read.
+      // map.free()/rowArena.free() call here the way the fallback branches above have for their
+      // own destinations -- both structures must stay alive for as long as the returned rows are
+      // read.
       kvIteratorToScala(map.iterator())
-    }
   }
 
   /**
@@ -492,20 +491,20 @@ class HashRowNumberGroupLimitAccumulator(
    * Reached when the hash map or the row arena could no longer acquire memory. Dumps every row
    * already known to be kept, plus `pendingRow` (the row that just failed to be
    * inserted/updated), into the fallback destination (a sorter for `Partial`, an unsorted array
-   * for `Final`; see `fallbackSorter`/`fallbackArray`). Every row consumed after this point (see
+   * for `Final`; see `fallbackDestination`'s doc). Every row consumed after this point (see
    * [[consumeRow]]) goes straight there instead of the hash map.
    */
   private def switchToFallback(pendingRow: UnsafeRow): Unit = {
     logInfo("Hash-based window group limit falling back to sort-based: could not acquire more " +
       "memory for the hash map or the row arena.")
-    if (mode == Final) {
+    fallbackDestination = if (mode == Final) {
       val array = buildFallbackArray()
       array.add(pendingRow)
-      fallbackArray = array
+      ArrayFallbackDestination(array)
     } else {
       val sorter = buildFallbackSorter()
       sorter.insertRow(pendingRow)
-      fallbackSorter = sorter
+      SorterFallbackDestination(sorter)
     }
     numTasksFallBacked += 1
   }
@@ -516,10 +515,10 @@ class HashRowNumberGroupLimitAccumulator(
    * this check was already fully processed into `rowArena`/the map.
    */
   private def switchToFallbackProactively(): Unit = {
-    if (mode == Final) {
-      fallbackArray = buildFallbackArray()
+    fallbackDestination = if (mode == Final) {
+      ArrayFallbackDestination(buildFallbackArray())
     } else {
-      fallbackSorter = buildFallbackSorter()
+      SorterFallbackDestination(buildFallbackSorter())
     }
     numTasksFallBacked += 1
   }
@@ -561,7 +560,7 @@ class HashRowNumberGroupLimitAccumulator(
    * Builds the `Final`-mode fallback destination: an unsorted, append-only, spill-capable row
    * array -- the same kind [[WindowExec]]'s own frame buffering uses -- seeded with every row
    * [[drainWinnersAndFreeStructures]] already knows to be kept. Deliberately not a sorter: see
-   * `fallbackArray`'s doc for why `Final` never needs one.
+   * `fallbackDestination`'s doc for why `Final` never needs one.
    */
   private def buildFallbackArray(): ExternalAppendOnlyUnsafeRowArray = {
     val winners = drainWinnersAndFreeStructures()

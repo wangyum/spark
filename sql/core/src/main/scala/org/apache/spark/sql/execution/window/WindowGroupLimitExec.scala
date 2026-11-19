@@ -37,6 +37,34 @@ case object Partial extends WindowGroupLimitMode
 case object Final extends WindowGroupLimitMode
 
 /**
+ * Where a [[HashGroupLimitAccumulator]] routes every row once it has permanently fallen back from
+ * hash accumulation (see the concrete accumulators' class docs for the possible triggers): an
+ * [[UnsafeExternalRowSorter]] under `mode == Partial` (its output still needs per-key filtering
+ * before the shuffle), or an [[ExternalAppendOnlyUnsafeRowArray]] under `mode == Final` (output is
+ * unfiltered -- see [[HashRowNumberGroupLimitAccumulator.buildFallbackArray]] for why). Unifying
+ * both behind one `insertRow` lets every post-fallback call site -- `consumeRow`, `switchTo*`, and
+ * `WindowGroupLimitExec.doConsume`'s generated code -- dispatch through a single check regardless
+ * of `mode`, instead of maintaining two parallel nullable fields and re-deriving the same
+ * `mode == Final` branch at every one of them. Must stay public (not `private[window]`): generated
+ * code lives outside this package and calls `insertRow` directly.
+ */
+trait FallbackDestination {
+  def insertRow(row: UnsafeRow): Unit
+}
+
+/** [[FallbackDestination]] for `mode == Partial`. */
+case class SorterFallbackDestination(sorter: UnsafeExternalRowSorter)
+  extends FallbackDestination {
+  override def insertRow(row: UnsafeRow): Unit = sorter.insertRow(row)
+}
+
+/** [[FallbackDestination]] for `mode == Final`. */
+case class ArrayFallbackDestination(array: ExternalAppendOnlyUnsafeRowArray)
+  extends FallbackDestination {
+  override def insertRow(row: UnsafeRow): Unit = array.add(row)
+}
+
+/**
  * Common interface over [[HashRowNumberGroupLimitAccumulator]] and
  * [[HashRankGroupLimitAccumulator]] so [[WindowGroupLimitExec]]'s whole-stage codegen (`doProduce`
  * / `doConsume`) can drive either one through a single generated-code variable, regardless of
@@ -48,24 +76,15 @@ trait HashGroupLimitAccumulator {
   def finish(): Iterator[InternalRow]
 
   /**
-   * Non-null once this accumulator has permanently fallen back to sort-based output under
-   * `mode == Partial` (see the concrete implementations' class docs for the possible triggers;
-   * always null under `mode == Final`, which falls back to [[fallbackArrayOrNull]] instead).
-   * Exposed so `doConsume`'s generated code can, once a task enters permanent fallback, insert
-   * directly into this sorter -- the same direct dispatch
-   * [[org.apache.spark.sql.execution.SortExec]]'s own `doConsume` uses -- instead of paying
-   * `consumeRow`'s extra virtual dispatch (through this trait) plus its own internal null check on
-   * every one of the, possibly many million, remaining rows.
+   * Non-null once this accumulator has permanently fallen back to [[FallbackDestination]] output
+   * (see the concrete implementations' class docs for the possible triggers). Exposed so
+   * `doConsume`'s generated code can, once a task enters permanent fallback, insert directly into
+   * this destination -- the same direct dispatch [[org.apache.spark.sql.execution.SortExec]]'s own
+   * `doConsume` uses for its sorter -- instead of paying `consumeRow`'s extra virtual dispatch
+   * (through this trait) plus its own internal null check on every one of the, possibly many
+   * million, remaining rows.
    */
-  def fallbackSorterOrNull: UnsafeExternalRowSorter
-
-  /**
-   * Non-null once this accumulator has permanently fallen back to unfiltered array output under
-   * `mode == Final` (always null under `mode == Partial`, which falls back to
-   * [[fallbackSorterOrNull]] instead). Exposed for the same reason as [[fallbackSorterOrNull]], so
-   * `doConsume`'s generated code can dispatch directly into this array for `Final` plans.
-   */
-  def fallbackArrayOrNull: ExternalAppendOnlyUnsafeRowArray
+  def fallbackDestinationOrNull: FallbackDestination
 }
 
 /**
@@ -275,44 +294,28 @@ case class WindowGroupLimitExec(
   }
 
   override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
-    // Checks fallbackSorterOrNull/fallbackArrayOrNull on every row rather than caching it in a
-    // mutable state once seen non-null: consumeRow() itself needs the identical check (the
-    // interpreted path drives it directly, without going through doConsume at all), so there is no
-    // simpler, still-correct alternative -- but once non-null it stays non-null for the rest of
-    // the task (see HashGroupLimitAccumulator's doc), so the JIT's branch predictor settles on the
-    // fallback branch immediately, leaving the direct insertRow/add call as a direct dispatch on a
-    // concrete class, exactly like SortExec.doConsume's own insertRow call -- unlike routing every
-    // such row through consumeRow's own virtual dispatch (through this trait) *plus* its internal
-    // null check. `mode` is a constructor parameter, so it's static at codegen time: generating the
-    // check for the fallback destination this plan can actually populate (see
-    // HashGroupLimitAccumulator's fallbackSorterOrNull/fallbackArrayOrNull docs for which mode
-    // populates which) avoids paying for an always-null check against the other one on every row.
-    mode match {
-      case Partial =>
-        val sorterTerm = ctx.freshName("fallbackSorter")
-        val sorterClass = classOf[UnsafeExternalRowSorter].getName
-        s"""
-           |${row.code}
-           |$sorterClass $sorterTerm = $accumulatorTerm.fallbackSorterOrNull();
-           |if ($sorterTerm != null) {
-           |  $sorterTerm.insertRow((UnsafeRow) ${row.value});
-           |} else {
-           |  $accumulatorTerm.consumeRow((UnsafeRow) ${row.value});
-           |}
-         """.stripMargin
-      case Final =>
-        val arrayTerm = ctx.freshName("fallbackArray")
-        val arrayClass = classOf[ExternalAppendOnlyUnsafeRowArray].getName
-        s"""
-           |${row.code}
-           |$arrayClass $arrayTerm = $accumulatorTerm.fallbackArrayOrNull();
-           |if ($arrayTerm != null) {
-           |  $arrayTerm.add((UnsafeRow) ${row.value});
-           |} else {
-           |  $accumulatorTerm.consumeRow((UnsafeRow) ${row.value});
-           |}
-         """.stripMargin
-    }
+    // Checks fallbackDestinationOrNull on every row rather than caching it in a mutable state once
+    // seen non-null: consumeRow() itself needs the identical check (the interpreted path drives it
+    // directly, without going through doConsume at all), so there is no simpler, still-correct
+    // alternative -- but once non-null it stays non-null for the rest of the task (see
+    // HashGroupLimitAccumulator's doc), so the JIT's branch predictor settles on the fallback
+    // branch immediately, leaving destTerm.insertRow as a direct dispatch on a concrete class,
+    // exactly like SortExec.doConsume's own insertRow call -- unlike routing every such row through
+    // consumeRow's own virtual dispatch (through this trait) *plus* its internal null check. One
+    // check covers both `mode`s: FallbackDestination hides whether it's backed by the Partial-mode
+    // sorter or the Final-mode array (see FallbackDestination's doc), so there is nothing left for
+    // `mode` to select between here.
+    val destTerm = ctx.freshName("fallbackDestination")
+    val destClass = classOf[FallbackDestination].getName
+    s"""
+       |${row.code}
+       |$destClass $destTerm = $accumulatorTerm.fallbackDestinationOrNull();
+       |if ($destTerm != null) {
+       |  $destTerm.insertRow((UnsafeRow) ${row.value});
+       |} else {
+       |  $accumulatorTerm.consumeRow((UnsafeRow) ${row.value});
+       |}
+     """.stripMargin
   }
 
   override protected def withNewChildInternal(newChild: SparkPlan): WindowGroupLimitExec =

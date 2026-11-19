@@ -313,25 +313,19 @@ class HashRankGroupLimitAccumulator(
   private var nextCompactionCheckAt: Long = currentCheckInterval
   private var appendsSinceLastCheck: Long = 0L
 
-  // See the identical pair of fields (and their doc) in HashRowNumberGroupLimitAccumulator:
-  // fallbackSorter is used for mode == Partial (must still filter before the shuffle),
-  // fallbackArray for mode == Final (correctness is guaranteed by the mandatory downstream
-  // Sort + WindowExec + Filter, so there is no benefit to filtering, or therefore sorting, again
-  // here).
-  private var fallbackSorter: UnsafeExternalRowSorter = null
-  private var fallbackArray: ExternalAppendOnlyUnsafeRowArray = null
+  // See the identical field (and its doc) in HashRowNumberGroupLimitAccumulator: a
+  // SorterFallbackDestination is used for mode == Partial (must still filter before the shuffle),
+  // an ArrayFallbackDestination for mode == Final (correctness is guaranteed by the mandatory
+  // downstream Sort + WindowExec + Filter, so there is no benefit to filtering, or therefore
+  // sorting, again here).
+  private var fallbackDestination: FallbackDestination = null
 
-  override def fallbackSorterOrNull: UnsafeExternalRowSorter = fallbackSorter
-  override def fallbackArrayOrNull: ExternalAppendOnlyUnsafeRowArray = fallbackArray
+  override def fallbackDestinationOrNull: FallbackDestination = fallbackDestination
 
   /** Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input. */
   def consumeRow(row: UnsafeRow): Unit = {
-    if (fallbackArray != null) {
-      fallbackArray.add(row)
-      return
-    }
-    if (fallbackSorter != null) {
-      fallbackSorter.insertRow(row)
+    if (fallbackDestination != null) {
+      fallbackDestination.insertRow(row)
       return
     }
     val key = groupingProjection(row)
@@ -345,7 +339,7 @@ class HashRankGroupLimitAccumulator(
     val matchSlot = findMatchingSlot(buffer, orderKey, slotCount)
     if (matchSlot >= 0) {
       appendCandidate(row, buffer)
-      if (fallbackSorter != null || fallbackArray != null) return
+      if (fallbackDestination != null) return
       buffer.setLong(
         slotRowCountOrdinal(matchSlot), buffer.getLong(slotRowCountOrdinal(matchSlot)) + 1)
       appendsSinceLastCheck += 1
@@ -354,7 +348,7 @@ class HashRankGroupLimitAccumulator(
       val pos = findInsertionPos(buffer, orderKey, slotCount)
       if (sumWeights(buffer, pos) < limit) {
         appendCandidate(row, buffer)
-        if (fallbackSorter != null || fallbackArray != null) return
+        if (fallbackDestination != null) return
         insertSlotAt(buffer, pos, orderKey, slotCount)
         val newSlotCount = math.min(slotCount + 1, limit)
         buffer.setLong(slotCountOrdinal, newSlotCount)
@@ -399,12 +393,17 @@ class HashRankGroupLimitAccumulator(
     buffer.setLong(headAddressOrdinal, address)
   }
 
-  /** Call once, after every row has been passed to [[consumeRow]], to get the output rows. */
-  def finish(): Iterator[InternalRow] = {
-    if (fallbackArray != null) {
-      peakMemory.set(math.max(peakMemory.value, fallbackArray.spillSize))
+  /**
+   * Call once, after every row has been passed to [[consumeRow]], to get the output rows. Mirrors
+   * [[HashRowNumberGroupLimitAccumulator.finish]] in pattern-matching on the concrete
+   * [[FallbackDestination]] rather than going through [[FallbackDestination.insertRow]]: see that
+   * method's doc for why.
+   */
+  def finish(): Iterator[InternalRow] = fallbackDestination match {
+    case ArrayFallbackDestination(array) =>
+      peakMemory.set(math.max(peakMemory.value, array.spillSize))
       spillSize.set(TaskContext.get().taskMetrics().memoryBytesSpilled - spillSizeBefore)
-      val rawIter = fallbackArray.generateIterator()
+      val rawIter = array.generateIterator()
       new Iterator[InternalRow] {
         override def hasNext: Boolean = rawIter.hasNext
         override def next(): InternalRow = {
@@ -412,10 +411,10 @@ class HashRankGroupLimitAccumulator(
           rawIter.next()
         }
       }
-    } else if (fallbackSorter != null) {
-      peakMemory.set(math.max(peakMemory.value, fallbackSorter.getPeakMemoryUsage))
+    case SorterFallbackDestination(sorter) =>
+      peakMemory.set(math.max(peakMemory.value, sorter.getPeakMemoryUsage))
       spillSize.set(TaskContext.get().taskMetrics().memoryBytesSpilled - spillSizeBefore)
-      val sortedIter = fallbackSorter.sort()
+      val sortedIter = sorter.sort()
       val limitFunc = (iter: Iterator[InternalRow]) =>
         if (isDenseRank) {
           DenseRankLimitIterator(childOutput, iter, orderSpec, limit, numOutputRows)
@@ -427,10 +426,9 @@ class HashRankGroupLimitAccumulator(
       } else {
         new GroupedLimitIterator(sortedIter, childOutput, partitionSpec, limitFunc)
       }
-    } else {
+    case null =>
       peakMemory.set(math.max(peakMemory.value, map.getPeakMemoryUsedBytes + rowArena.bytesUsed))
       kvIteratorToScala(map.iterator())
-    }
   }
 
   /**
@@ -510,24 +508,24 @@ class HashRankGroupLimitAccumulator(
   private def switchToFallback(pendingRow: UnsafeRow): Unit = {
     logInfo("Hash-based window group limit falling back to sort-based: could not acquire more " +
       "memory for the hash map or the row arena.")
-    if (mode == Final) {
+    fallbackDestination = if (mode == Final) {
       val array = buildFallbackArray()
       array.add(pendingRow)
-      fallbackArray = array
+      ArrayFallbackDestination(array)
     } else {
       val sorter = buildFallbackSorter()
       sorter.insertRow(pendingRow)
-      fallbackSorter = sorter
+      SorterFallbackDestination(sorter)
     }
     numTasksFallBacked += 1
   }
 
   /** Mirrors [[HashRowNumberGroupLimitAccumulator.switchToFallbackProactively]]. */
   private def switchToFallbackProactively(): Unit = {
-    if (mode == Final) {
-      fallbackArray = buildFallbackArray()
+    fallbackDestination = if (mode == Final) {
+      ArrayFallbackDestination(buildFallbackArray())
     } else {
-      fallbackSorter = buildFallbackSorter()
+      SorterFallbackDestination(buildFallbackSorter())
     }
     numTasksFallBacked += 1
   }
