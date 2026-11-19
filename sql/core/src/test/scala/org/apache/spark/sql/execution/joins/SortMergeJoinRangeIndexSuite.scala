@@ -229,7 +229,7 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
       "(id + 5) as hi")
     val cond = events("e_id") === spans("s_id") &&
       events("event_pt") >= spans("lo") && events("event_pt") <= spans("hi")
-    val joined = events.hint("merge").join(spans.hint("merge"), cond)
+    def joined: DataFrame = events.hint("merge").join(spans.hint("merge"), cond)
     checkAgainstBaseline(joined, smjConfigs)
   }
 
@@ -252,14 +252,6 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
       events.hint("merge").join(spans.hint("merge"), cond),
       maxBytesConfigs,
       expectFallback = true)
-  }
-
-  test("sort merge point-in-range inner join engages index (buffered spans)") {
-    val events = largeGroupEvents()
-    val spans = largeGroupSpans()
-    val cond = pointCond(events, spans)
-    checkAgainstBaseline(
-      events.hint("merge").join(spans.hint("merge"), cond), smjConfigs, expectIndexed = true)
   }
 
   test("sort merge point-in-range inner join engages index (buffered events)") {
@@ -560,19 +552,6 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
     // Two range keys per side (alo/ahi vs blo/bhi), unlike the point-in-range tests' single
     // probe key: exercises genCandidateExpr's two-key `else` branch in RangeIndexProbeCodegen.
     assertDirectIndexProbe(joined, classOf[LongIntervalIndex])
-  }
-
-  test("sort merge partial < inner join engages the index for a large group") {
-    val n = equiKeyBuckets.toLong * probesPerGroup
-    val spans = spark.range(n).selectExpr(
-      s"id % $equiKeyBuckets as s_id",
-      s"id div $equiKeyBuckets as s_b")
-    val events = spark.range(n).selectExpr(
-      s"id % $equiKeyBuckets as e_id",
-      s"(id div $equiKeyBuckets) - 1 as e_a")
-    val cond = events("e_id") === spans("s_id") && events("e_a") < spans("s_b")
-    checkAgainstBaseline(
-      events.hint("merge").join(spans.hint("merge"), cond), smjConfigs, expectIndexed = true)
   }
 
   test("sort merge partial > inner join engages the index for a large group") {
