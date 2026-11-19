@@ -678,6 +678,38 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
     }
   }
 
+  test("SPARK-61804: Final-mode genuine OOM fallback safely short-circuits without accessing" +
+      " freed memory") {
+    withStandaloneTaskContext(budgetBytes = 2 * 1024 * 1024 + 300 * 1024, pageSizeBytes = "2m") {
+      val kAttr = AttributeReference("k", IntegerType)()
+      val tsAttr = AttributeReference("ts", LongType)()
+      val padAttr = AttributeReference("pad", StringType)()
+      val partitionSpec = Seq(kAttr)
+      val orderSpec = Seq(SortOrder(tsAttr, Descending))
+      val childOutput = Seq(kAttr, tsAttr, padAttr)
+      val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+      val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+      val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+      val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
+      val accumulator = new HashRowNumberGroupLimitAccumulator(
+        partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
+        numTasksFallBacked, minCompactionRatio = 0.0, minRowsBetweenCompactionChecks = 0L,
+        limit = 1, mode = Final)
+
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      val pad = UTF8String.fromString("x" * 100)
+      val n = 5000
+      (0 until n).foreach { i =>
+        accumulator.consumeRow(rowProjection(InternalRow(i, i.toLong, pad)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      assert(result.length == n,
+        s"Final-mode fallback must emit every one of the $n rows, got ${result.length}")
+      assert(numTasksFallBacked.value > 0,
+        "this test is only meaningful if the genuine-OOM fallback actually triggered")
+    }
+  }
+
   test("SPARK-61804: hash path fuses into WholeStageCodegenExec") {
     val df = Seq((1, 1L, "a"), (1, 2L, "b")).toDF("k", "ts", "v")
     withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {

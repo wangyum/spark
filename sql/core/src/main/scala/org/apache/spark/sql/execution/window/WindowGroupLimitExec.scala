@@ -26,8 +26,8 @@ import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCo
   GenerateOrdering}
 import org.apache.spark.sql.catalyst.plans.physical.{AllTuples, ClusteredDistribution,
   Distribution, Partitioning}
-import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport, SparkPlan,
-  UnaryExecNode, UnsafeExternalRowSorter}
+import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport,
+  ExternalAppendOnlyUnsafeRowArray, SparkPlan, UnaryExecNode, UnsafeExternalRowSorter}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
 sealed trait WindowGroupLimitMode
@@ -48,14 +48,24 @@ trait HashGroupLimitAccumulator {
   def finish(): Iterator[InternalRow]
 
   /**
-   * Non-null once this accumulator has permanently fallen back to sort-based output (see the
-   * concrete implementations' class docs for the possible triggers). Exposed so `doConsume`'s
-   * generated code can, once a task enters permanent fallback, insert directly into this sorter
-   * -- the same direct dispatch [[org.apache.spark.sql.execution.SortExec]]'s own `doConsume`
-   * uses -- instead of paying `consumeRow`'s extra virtual dispatch (through this trait) plus its
-   * own internal null check on every one of the, possibly many million, remaining rows.
+   * Non-null once this accumulator has permanently fallen back to sort-based output under
+   * `mode == Partial` (see the concrete implementations' class docs for the possible triggers;
+   * always null under `mode == Final`, which falls back to [[fallbackArrayOrNull]] instead).
+   * Exposed so `doConsume`'s generated code can, once a task enters permanent fallback, insert
+   * directly into this sorter -- the same direct dispatch
+   * [[org.apache.spark.sql.execution.SortExec]]'s own `doConsume` uses -- instead of paying
+   * `consumeRow`'s extra virtual dispatch (through this trait) plus its own internal null check on
+   * every one of the, possibly many million, remaining rows.
    */
   def fallbackSorterOrNull: UnsafeExternalRowSorter
+
+  /**
+   * Non-null once this accumulator has permanently fallen back to unfiltered array output under
+   * `mode == Final` (always null under `mode == Partial`, which falls back to
+   * [[fallbackSorterOrNull]] instead). Exposed for the same reason as [[fallbackSorterOrNull]], so
+   * `doConsume`'s generated code can dispatch directly into this array for `Final` plans.
+   */
+  def fallbackArrayOrNull: ExternalAppendOnlyUnsafeRowArray
 }
 
 /**
@@ -265,25 +275,44 @@ case class WindowGroupLimitExec(
   }
 
   override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
-    // Checks fallbackSorterOrNull on every row rather than caching it in a mutable state once seen
-    // non-null: consumeRow() itself needs the identical check (the interpreted path drives it
-    // directly, without going through doConsume at all), so there is no simpler, still-correct
-    // alternative -- but once non-null it stays non-null for the rest of the task (see
-    // HashGroupLimitAccumulator's doc), so the JIT's branch predictor settles on the fallback
-    // branch immediately, leaving sorterTerm.insertRow as a direct dispatch on a concrete class,
-    // exactly like SortExec.doConsume's own insertRow call -- unlike routing every such row through
-    // consumeRow's own virtual dispatch (through this trait) *plus* its internal null check.
-    val sorterTerm = ctx.freshName("fallbackSorter")
-    val sorterClass = classOf[UnsafeExternalRowSorter].getName
-    s"""
-       |${row.code}
-       |$sorterClass $sorterTerm = $accumulatorTerm.fallbackSorterOrNull();
-       |if ($sorterTerm != null) {
-       |  $sorterTerm.insertRow((UnsafeRow) ${row.value});
-       |} else {
-       |  $accumulatorTerm.consumeRow((UnsafeRow) ${row.value});
-       |}
-     """.stripMargin
+    // Checks fallbackSorterOrNull/fallbackArrayOrNull on every row rather than caching it in a
+    // mutable state once seen non-null: consumeRow() itself needs the identical check (the
+    // interpreted path drives it directly, without going through doConsume at all), so there is no
+    // simpler, still-correct alternative -- but once non-null it stays non-null for the rest of
+    // the task (see HashGroupLimitAccumulator's doc), so the JIT's branch predictor settles on the
+    // fallback branch immediately, leaving the direct insertRow/add call as a direct dispatch on a
+    // concrete class, exactly like SortExec.doConsume's own insertRow call -- unlike routing every
+    // such row through consumeRow's own virtual dispatch (through this trait) *plus* its internal
+    // null check. `mode` is a constructor parameter, so it's static at codegen time: generating the
+    // check for the fallback destination this plan can actually populate (see
+    // HashGroupLimitAccumulator's fallbackSorterOrNull/fallbackArrayOrNull docs for which mode
+    // populates which) avoids paying for an always-null check against the other one on every row.
+    mode match {
+      case Partial =>
+        val sorterTerm = ctx.freshName("fallbackSorter")
+        val sorterClass = classOf[UnsafeExternalRowSorter].getName
+        s"""
+           |${row.code}
+           |$sorterClass $sorterTerm = $accumulatorTerm.fallbackSorterOrNull();
+           |if ($sorterTerm != null) {
+           |  $sorterTerm.insertRow((UnsafeRow) ${row.value});
+           |} else {
+           |  $accumulatorTerm.consumeRow((UnsafeRow) ${row.value});
+           |}
+         """.stripMargin
+      case Final =>
+        val arrayTerm = ctx.freshName("fallbackArray")
+        val arrayClass = classOf[ExternalAppendOnlyUnsafeRowArray].getName
+        s"""
+           |${row.code}
+           |$arrayClass $arrayTerm = $accumulatorTerm.fallbackArrayOrNull();
+           |if ($arrayTerm != null) {
+           |  $arrayTerm.add((UnsafeRow) ${row.value});
+           |} else {
+           |  $accumulatorTerm.consumeRow((UnsafeRow) ${row.value});
+           |}
+         """.stripMargin
+    }
   }
 
   override protected def withNewChildInternal(newChild: SparkPlan): WindowGroupLimitExec =

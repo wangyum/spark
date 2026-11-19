@@ -322,6 +322,7 @@ class HashRankGroupLimitAccumulator(
   private var fallbackArray: ExternalAppendOnlyUnsafeRowArray = null
 
   override def fallbackSorterOrNull: UnsafeExternalRowSorter = fallbackSorter
+  override def fallbackArrayOrNull: ExternalAppendOnlyUnsafeRowArray = fallbackArray
 
   /** Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input. */
   def consumeRow(row: UnsafeRow): Unit = {
@@ -344,7 +345,7 @@ class HashRankGroupLimitAccumulator(
     val matchSlot = findMatchingSlot(buffer, orderKey, slotCount)
     if (matchSlot >= 0) {
       appendCandidate(row, buffer)
-      if (fallbackSorter != null) return
+      if (fallbackSorter != null || fallbackArray != null) return
       buffer.setLong(
         slotRowCountOrdinal(matchSlot), buffer.getLong(slotRowCountOrdinal(matchSlot)) + 1)
       appendsSinceLastCheck += 1
@@ -353,7 +354,7 @@ class HashRankGroupLimitAccumulator(
       val pos = findInsertionPos(buffer, orderKey, slotCount)
       if (sumWeights(buffer, pos) < limit) {
         appendCandidate(row, buffer)
-        if (fallbackSorter != null) return
+        if (fallbackSorter != null || fallbackArray != null) return
         insertSlotAt(buffer, pos, orderKey, slotCount)
         val newSlotCount = math.min(slotCount + 1, limit)
         buffer.setLong(slotCountOrdinal, newSlotCount)

@@ -301,6 +301,7 @@ class HashRowNumberGroupLimitAccumulator(
   private var fallbackArray: ExternalAppendOnlyUnsafeRowArray = null
 
   override def fallbackSorterOrNull: UnsafeExternalRowSorter = fallbackSorter
+  override def fallbackArrayOrNull: ExternalAppendOnlyUnsafeRowArray = fallbackArray
 
   /** Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input. */
   def consumeRow(row: UnsafeRow): Unit = {
@@ -322,7 +323,7 @@ class HashRowNumberGroupLimitAccumulator(
     val orderKey = orderKeyProjection(row)
     if (heapSize < limit) {
       storeAtSlot(row, orderKey, buffer, heapSize)
-      if (fallbackSorter != null) return
+      if (fallbackSorter != null || fallbackArray != null) return
       appendsSinceLastCheck += 1
       buffer.setLong(heapSizeOrdinal, heapSize + 1)
       siftUp(buffer, heapSize)
@@ -334,7 +335,7 @@ class HashRowNumberGroupLimitAccumulator(
       // original K=1 code, still counts toward rowsConsumed: a discard is the expected, desired
       // outcome for a well-compacting key, not an exceptional case to exclude from the ratio.
       storeAtSlot(row, orderKey, buffer, 0)
-      if (fallbackSorter != null) return
+      if (fallbackSorter != null || fallbackArray != null) return
       appendsSinceLastCheck += 1
       siftDown(buffer, 0, limit)
     }

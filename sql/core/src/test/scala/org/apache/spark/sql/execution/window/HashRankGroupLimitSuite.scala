@@ -296,6 +296,34 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
     }
   }
 
+  test("SPARK-61804: Final-mode genuine OOM fallback safely short-circuits without accessing" +
+      " freed memory") {
+    withStandaloneTaskContext(budgetBytes = 2 * 1024 * 1024 + 300 * 1024, pageSizeBytes = "2m") {
+      val padAttr = AttributeReference("pad", StringType)()
+      val wideChildOutput = Seq(kAttr, tsAttr, padAttr)
+      val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+      val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+      val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+      val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
+      val accumulator = new HashRankGroupLimitAccumulator(
+        partitionSpec, orderSpec, new Rank(), wideChildOutput, numOutputRows, peakMemory,
+        spillSize, numTasksFallBacked, minCompactionRatio = 0.0,
+        minRowsBetweenCompactionChecks = 0L, enableRadixSort = true, limit = 1, mode = Final)
+
+      val rowProjection = UnsafeProjection.create(wideChildOutput.map(_.dataType).toArray)
+      val pad = UTF8String.fromString("x" * 100)
+      val n = 5000
+      (0 until n).foreach { k =>
+        accumulator.consumeRow(rowProjection(InternalRow(k, k.toLong, pad)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      assert(result.length == n,
+        s"Final-mode fallback must emit every one of the $n rows, got ${result.length}")
+      assert(numTasksFallBacked.value > 0,
+        "this test is only meaningful if the genuine-OOM fallback actually triggered")
+    }
+  }
+
   // SQL-level tests exercising the full isHashEligible routing (optimizer -> WindowGroupLimitExec
   // -> HashRankGroupLimitEvaluatorFactory), not just the accumulator directly.
 
