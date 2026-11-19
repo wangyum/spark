@@ -6,156 +6,154 @@ OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, group size sweep (probe=10000, groups=200, groupSize=8):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 -------------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                      23             33           8          0.4        2273.6       1.0X
-Range index enabled                                                                       18             24           5          0.6        1793.7       1.3X
+Range index disabled                                                                      18             23           3          0.5        1839.8       1.0X
+Range index enabled                                                                       18             20           2          0.6        1796.9       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, group size sweep (probe=10000, groups=200, groupSize=16):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 --------------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                       18             21           4          0.6        1776.9       1.0X
-Range index enabled                                                                        16             21           4          0.6        1628.4       1.1X
+Range index disabled                                                                       16             19           2          0.6        1592.8       1.0X
+Range index enabled                                                                        15             18           3          0.7        1483.4       1.1X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, group size sweep (probe=10000, groups=200, groupSize=64):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 --------------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                       18             22           4          0.6        1789.7       1.0X
-Range index enabled                                                                        17             21           4          0.6        1690.2       1.1X
+Range index disabled                                                                       17             21           3          0.6        1693.4       1.0X
+Range index enabled                                                                        16             19           2          0.6        1625.8       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, group size sweep (probe=10000, groups=200, groupSize=256):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                        26             29           4          0.4        2586.3       1.0X
-Range index enabled                                                                         25             30           3          0.4        2549.7       1.0X
+Range index disabled                                                                        25             28           3          0.4        2512.1       1.0X
+Range index enabled                                                                         25             28           3          0.4        2548.1       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, group size sweep (probe=10000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                         61             77          20          0.2        6129.3       1.0X
-Range index enabled                                                                          61             66           6          0.2        6066.3       1.0X
+Range index disabled                                                                         59             62           2          0.2        5870.0       1.0X
+Range index enabled                                                                          59             62           3          0.2        5884.2       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, group size sweep (probe=10000, groups=200, groupSize=4096):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                        214            226           8          0.0       21408.9       1.0X
-Range index enabled                                                                         212            223           7          0.0       21184.2       1.0X
+Range index disabled                                                                        210            226          11          0.0       20977.7       1.0X
+Range index enabled                                                                         202            217           9          0.0       20168.3       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, reuse sweep (probe=200, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ---------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                  33             37           5          0.0      165554.0       1.0X
-Range index enabled                                                                   32             36           4          0.0      162028.5       1.0X
+Range index disabled                                                                  33             37           4          0.0      167026.0       1.0X
+Range index enabled                                                                   32             36           4          0.0      158604.4       1.1X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, reuse sweep (probe=2000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ----------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                   38             42           3          0.1       19006.2       1.0X
-Range index enabled                                                                    38             41           4          0.1       18914.0       1.0X
+Range index disabled                                                                   37             40           3          0.1       18611.6       1.0X
+Range index enabled                                                                    36             40           3          0.1       18200.3       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, reuse sweep (probe=20000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 -----------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                    86             89           3          0.2        4299.6       1.0X
-Range index enabled                                                                     89             91           3          0.2        4436.9       1.0X
+Range index disabled                                                                    85             90           3          0.2        4252.8       1.0X
+Range index enabled                                                                     87             91           6          0.2        4352.9       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, reuse sweep (probe=200000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                    589            596          11          0.3        2944.6       1.0X
-Range index enabled                                                                     187            193           5          1.1         934.5       3.2X
+Range index disabled                                                                    584            586           3          0.3        2918.7       1.0X
+Range index enabled                                                                     210            286          72          1.0        1048.1       2.8X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, reuse sweep (probe=2000000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 -------------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                    5514           5567          74          0.4        2757.0       1.0X
-Range index enabled                                                                      604            609           4          3.3         302.2       9.1X
+Range index disabled                                                                    6036           6359         458          0.3        3017.9       1.0X
+Range index enabled                                                                      750            751           2          2.7         375.0       8.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, large group steady state (probe=1000000, groups=200, groupSize=16384):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                                 46373          46583         297          0.0       46373.0       1.0X
-Range index enabled                                                                                   2318           2339          29          0.4        2317.9      20.0X
+Range index disabled                                                                                 46434          46905         666          0.0       46433.7       1.0X
+Range index enabled                                                                                   2537           2563          36          0.4        2537.3      18.3X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range inner, full overlap (probe=2000, groups=50, groupSize=100):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ---------------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                                  17             20           5         11.7          85.3       1.0X
-Range index enabled                                                                   18             20           2         11.4          88.0       1.0X
+Range index disabled                                                                  19             23           5         10.5          95.6       1.0X
+Range index enabled                                                                   18             22           4         11.2          89.5       1.1X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 interval overlap inner (probe=10000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                         57             60           3          0.2        5661.8       1.0X
-Range index enabled                                                          57             60           3          0.2        5683.1       1.0X
+Range index disabled                                                         57             61           3          0.2        5734.9       1.0X
+Range index enabled                                                          58             62           3          0.2        5792.9       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 partial < inner (probe=10000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 -----------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                 174            179           3          0.1       17354.7       1.0X
-Range index enabled                                                  175            183           9          0.1       17470.3       1.0X
+Range index disabled                                                 176            179           2          0.1       17621.3       1.0X
+Range index enabled                                                  176            182           3          0.1       17601.9       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 partial > inner (probe=10000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 -----------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                 185            191           4          0.1       18505.9       1.0X
-Range index enabled                                                  164            170           5          0.1       16422.6       1.1X
+Range index disabled                                                 165            173           4          0.1       16484.0       1.0X
+Range index enabled                                                  173            177           2          0.1       17314.9       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range left outer (probe=10000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ---------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                            62             65           4          0.2        6210.4       1.0X
-Range index enabled                                                             61             65           5          0.2        6087.3       1.0X
+Range index disabled                                                            57             61           3          0.2        5710.2       1.0X
+Range index enabled                                                             62             72          20          0.2        6243.0       0.9X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range left semi (probe=10000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 --------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                           30             33           3          0.3        3037.3       1.0X
-Range index enabled                                                            31             33           3          0.3        3093.6       1.0X
+Range index disabled                                                           33             35           3          0.3        3256.1       1.0X
+Range index enabled                                                            32             35           3          0.3        3221.5       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range left anti (probe=10000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 --------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                           53             56           3          0.2        5302.9       1.0X
-Range index enabled                                                            54             57           3          0.2        5375.0       1.0X
+Range index disabled                                                           56             60           3          0.2        5571.9       1.0X
+Range index enabled                                                            59             62           4          0.2        5867.5       0.9X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 point-in-range right outer (probe=10000, groups=200, groupSize=1024):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 ----------------------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled                                                             53             56           3          0.2        5311.3       1.0X
-Range index enabled                                                              62             65           3          0.2        6180.7       0.9X
+Range index disabled                                                             62             68           8          0.2        6177.2       1.0X
+Range index enabled                                                              64             68           3          0.2        6379.8       1.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
 sort merge inner range join with codegen, (n=4096, m=100):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
 -----------------------------------------------------------------------------------------------------------------------------------------
-Range index disabled, wholestage on                                 5743           5756          17          0.1       14021.9       1.0X
-Range index enabled, wholestage on                                   639            657          12          0.6        1561.2       9.0X
+Range index disabled, wholestage on                                 5725           5801         107          0.1       13978.0       1.0X
+Range index enabled, wholestage on                                   638            645           6          0.6        1557.7       9.0X
 
 OpenJDK 64-Bit Server VM 21.0.10+7-LTS on Mac OS X 26.4.1
 Apple M2 Max
-sort merge inner range join, (n=4096, m=100):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
-----------------------------------------------------------------------------------------------------------------------------
-Range index disabled, wholestage off                  23329          23396          95          0.0       56955.8       1.0X
-Range index enabled, wholestage off                    1254           1262          11          0.3        3061.9      18.6X
-Range index disabled, wholestage on                    5665           5732          95          0.1       13831.0       4.1X
-Range index enabled, wholestage on                      638            640           3          0.6        1556.6      36.6X
+sort merge inner range join without codegen, (n=4096, m=100):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------
+Range index disabled, wholestage off                                  14025          20100        8592          0.0       34240.3       1.0X
+Range index enabled, wholestage off                                     971            978           8          0.4        2370.2      14.4X
 
 

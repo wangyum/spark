@@ -56,11 +56,11 @@ import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
  * every row, and the remaining shapes (interval overlap, partial `<`, partial `>`)
  * and join types (left outer, left semi, left anti, right outer) are each measured
  * once at that same 50-probe representative shape -- further parity checks under the
- * default policy. The last case reproduces the motivating workload from the original
- * SPARK-24020 PR (apache/spark#21109), where each group is probed thousands of times,
- * so the default policy does admit it and the win shows; it runs across both the
- * range-index flag and whole-stage codegen, since that PR's non-indexed implementation
- * only sped things up with codegen on.
+ * default policy. The last two cases reproduce the motivating workload from the original
+ * SPARK-24020 PR (apache/spark#21109), where each group is probed thousands of times, so
+ * the default policy does admit it and the win shows; one runs with whole-stage codegen
+ * on and the other with it off, since that PR's non-indexed implementation only sped
+ * things up with codegen on.
  *
  * To run this benchmark:
  * {{{
@@ -291,8 +291,8 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     benchmark.run()
   }
 
-  private def originalPrCase(): Unit = {
-    val name = s"sort merge inner range join, (n=$originalPrN, m=$originalPrM)"
+  private def originalPrCaseNoCodegen(): Unit = {
+    val name = s"sort merge inner range join without codegen, (n=$originalPrN, m=$originalPrM)"
     if (!shouldRun(name)) return
     val rows = originalPrN.toLong * originalPrM
     val benchmark = new Benchmark(name, rows, output = output)
@@ -301,12 +301,6 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     }
     benchmark.addCase("Range index enabled, wholestage off") { _ =>
       runOriginalPr(indexEnabled = true, wholeStageEnabled = false)
-    }
-    benchmark.addCase("Range index disabled, wholestage on") { _ =>
-      runOriginalPr(indexEnabled = false, wholeStageEnabled = true)
-    }
-    benchmark.addCase("Range index enabled, wholestage on") { _ =>
-      runOriginalPr(indexEnabled = true, wholeStageEnabled = true)
     }
     benchmark.run()
   }
@@ -398,7 +392,7 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
       otherShapeCases()
       joinTypeCases()
       originalPrCaseCodegen()
-      originalPrCase()
+      originalPrCaseNoCodegen()
     }
   }
 }
