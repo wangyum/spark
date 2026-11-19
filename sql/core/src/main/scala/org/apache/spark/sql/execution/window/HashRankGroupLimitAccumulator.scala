@@ -125,6 +125,7 @@ class HashRankGroupLimitAccumulator(
   private val slotCountOrdinal: Int = limit * slotWidth
   private val headAddressOrdinal: Int = slotCountOrdinal + 1
   private val hasEvictionsOrdinal: Int = headAddressOrdinal + 1
+  private val lastSlotOrdinal: Int = hasEvictionsOrdinal + 1
 
   private val bufferSchema = StructType(
     (0 until limit).flatMap { slot =>
@@ -133,7 +134,8 @@ class HashRankGroupLimitAccumulator(
       } :+ StructField(s"rowCount_$slot", LongType, nullable = false)
     }.toArray :+ StructField("slotCount", LongType, nullable = false) :+
       StructField("headAddress", LongType, nullable = false) :+
-      StructField("hasEvictions", LongType, nullable = false))
+      StructField("hasEvictions", LongType, nullable = false) :+
+      StructField("lastSlot", LongType, nullable = false))
 
   private val groupingKeySchema = StructType(partitionSpec.zipWithIndex.map { case (e, i) =>
     StructField(s"k$i", e.dataType, e.nullable)
@@ -144,10 +146,11 @@ class HashRankGroupLimitAccumulator(
   // failed (see consumeRow): in both cases finish() and buildFallbackSorter() have nothing to
   // drain for this key.
   private val emptyBuffer: InternalRow = {
-    val values = new Array[Any](hasEvictionsOrdinal + 1)
+    val values = new Array[Any](lastSlotOrdinal + 1)
     values(slotCountOrdinal) = 0L
     values(headAddressOrdinal) = UnsafeRowArena.NO_NEXT
     values(hasEvictionsOrdinal) = 0L
+    values(lastSlotOrdinal) = 0L
     UnsafeProjection.create(bufferSchema).apply(new GenericInternalRow(values))
   }
 
@@ -371,9 +374,20 @@ class HashRankGroupLimitAccumulator(
     }
     val slotCount = buffer.getLong(slotCountOrdinal).toInt
     val orderKey = orderKeyProjection(row)
-    val idx = binarySearchSlot(buffer, orderKey, slotCount)
-    if (idx >= 0) {
-      val matchSlot = idx
+    val lastSlot = buffer.getLong(lastSlotOrdinal).toInt
+    val matchSlot =
+      if (lastSlot < slotCount && compareToSlot(orderKey, buffer, lastSlot) == 0) {
+        lastSlot
+      } else {
+        val nextSlot = if (lastSlot + 1 < slotCount) lastSlot + 1 else 0
+        if (nextSlot < slotCount && compareToSlot(orderKey, buffer, nextSlot) == 0) {
+          nextSlot
+        } else {
+          -1
+        }
+      }
+    if (matchSlot >= 0) {
+      buffer.setLong(lastSlotOrdinal, matchSlot)
       appendCandidate(row, buffer)
       if (fallbackDestination != null) return
       // DENSE_RANK never reads rowCount, and revalidateTrailingSlots is already a no-op for it
@@ -384,17 +398,31 @@ class HashRankGroupLimitAccumulator(
         revalidateTrailingSlots(buffer, matchSlot, slotCount)
       }
     } else {
-      val pos = -idx - 1
-      if (sumWeights(buffer, pos) < limit) {
+      val idx = binarySearchSlot(buffer, orderKey, slotCount)
+      if (idx >= 0) {
+        val matched = idx
+        buffer.setLong(lastSlotOrdinal, matched)
         appendCandidate(row, buffer)
         if (fallbackDestination != null) return
-        insertSlotAt(buffer, pos, orderKey, slotCount)
-        val newSlotCount = math.min(slotCount + 1, limit)
-        buffer.setLong(slotCountOrdinal, newSlotCount)
-        revalidateTrailingSlots(buffer, pos, newSlotCount)
+        if (!isDenseRank) {
+          buffer.setLong(
+            slotRowCountOrdinal(matched), buffer.getLong(slotRowCountOrdinal(matched)) + 1)
+          revalidateTrailingSlots(buffer, matched, slotCount)
+        }
+      } else {
+        val pos = -idx - 1
+        buffer.setLong(lastSlotOrdinal, math.min(pos, limit - 1))
+        if (sumWeights(buffer, pos) < limit) {
+          appendCandidate(row, buffer)
+          if (fallbackDestination != null) return
+          insertSlotAt(buffer, pos, orderKey, slotCount)
+          val newSlotCount = math.min(slotCount + 1, limit)
+          buffer.setLong(slotCountOrdinal, newSlotCount)
+          revalidateTrailingSlots(buffer, pos, newSlotCount)
+        }
+        // else: orderKey's true rank already exceeds limit and can only get worse from here (see
+        // class doc) -- discarded without ever touching the arena.
       }
-      // else: orderKey's true rank already exceeds limit and can only get worse from here (see
-      // class doc) -- discarded without ever touching the arena.
     }
     rowsConsumed += 1
     if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
