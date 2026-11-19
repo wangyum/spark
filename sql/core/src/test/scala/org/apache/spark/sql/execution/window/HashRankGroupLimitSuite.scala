@@ -405,4 +405,33 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
     assert(codegenOn == baseline, "hash path (codegen) must match the sort-based baseline")
     assert(codegenOff == baseline, "hash path (interpreted) must match the sort-based baseline")
   }
+
+  test("SPARK-61804 (rank hash pushdown): RANK()/DENSE_RANK() hash path matches sort-based path" +
+      " under heavy slot eviction churn (drain-time cutoff check)") {
+    // Exercises kvIteratorToScala's O(1) cutoff-based admission check (see its doc): many more
+    // distinct values than `limit` arrive per key, in random order, forcing repeated tail
+    // eviction interleaved with brand-new, never-admitted values -- ties land on still-admitted
+    // values, already-evicted values, and values that were never admitted at all, the combination
+    // most likely to expose a bug in comparing only against the final cutoff instead of
+    // re-deriving each candidate's own slot.
+    val limit = 20
+    val numKeys = 10
+    val valuesPerKey = 200
+    val rand = new scala.util.Random(42)
+    val df = (0 until numKeys).flatMap { k =>
+      rand.shuffle((0 until valuesPerKey).toList).flatMap(v => Seq.fill(2)((k, v.toLong)))
+    }.toDF("key", "ts")
+
+    Seq(topKByRank(df, limit) -> "RANK", topKByDenseRank(df, limit) -> "DENSE_RANK").foreach {
+      case (query, label) =>
+        val withHash = withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+          query.collect().toSet
+        }
+        val withoutHash =
+          withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "false") {
+            query.collect().toSet
+          }
+        assert(withHash == withoutHash, s"$label hash path must match the sort-based baseline")
+    }
+  }
 }

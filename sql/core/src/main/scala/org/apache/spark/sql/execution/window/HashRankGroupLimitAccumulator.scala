@@ -168,6 +168,10 @@ class HashRankGroupLimitAccumulator(
   }
   private val scratchA = newOrderKeyScratchRow()
 
+  // Reused by kvIteratorToScala to hold the current key's cutoff slot's order-key fields,
+  // extracted once per key rather than once per candidate row -- see that method's doc.
+  private val cutoffScratch = newOrderKeyScratchRow()
+
   private def extractSlotInto(buffer: UnsafeRow, slot: Int, dest: UnsafeRow): Unit = {
     var i = 0
     while (i < numOrderCols) {
@@ -210,11 +214,11 @@ class HashRankGroupLimitAccumulator(
    * Binary-searches `buffer`'s `0 until slotCount` sorted, best-to-worst slot values (see the
    * class doc's "Data structure" section) for where `orderKey` belongs: the first slot index
    * whose value is not strictly better than `orderKey`, i.e. the slot `orderKey` either matches
-   * (if equal) or should be inserted ahead of (if not) -- the same position
-   * [[findMatchingSlot]]/[[insertSlotAt]]'s callers need. O(log slotCount), since the slots are
-   * already kept sorted for exactly this purpose; a linear scan here previously made every tie or
-   * insertion attempt O(slotCount), which a RANK()/DENSE_RANK() query with many genuine ties at a
-   * large `limit` hits on nearly every row (see SPARK-61804's TopKBenchmark "spread ties" case).
+   * (if equal) or should be inserted ahead of (if not) -- the same position [[insertSlotAt]]'s
+   * caller needs. O(log slotCount), since the slots are already kept sorted for exactly this
+   * purpose; a linear scan here previously made every tie or insertion attempt O(slotCount), which
+   * a RANK()/DENSE_RANK() query with many genuine ties at a large `limit` hits on nearly every row
+   * (see SPARK-61804's TopKBenchmark "spread ties" case).
    */
   private def lowerBound(buffer: UnsafeRow, orderKey: UnsafeRow, slotCount: Int): Int = {
     var lo = 0
@@ -230,17 +234,21 @@ class HashRankGroupLimitAccumulator(
     lo
   }
 
-  /** The slot index whose value equals `orderKey`, or -1 if no slot in `0 until slotCount` does. */
-  private def findMatchingSlot(buffer: UnsafeRow, orderKey: UnsafeRow, slotCount: Int): Int = {
-    val pos = lowerBound(buffer, orderKey, slotCount)
-    if (pos < slotCount && compareToSlot(orderKey, buffer, pos) == 0) pos else -1
-  }
-
-  /** `RANK`: each slot's own row count. `DENSE_RANK`: a flat 1 -- only position matters. */
+  /**
+   * Each slot's weight, used only by [[sumWeights]]/[[revalidateTrailingSlots]]'s RANK-only
+   * admission/revalidation math -- both already skip calling this for `DENSE_RANK`, whose flat
+   * per-slot weight of 1 (only position, not row count, matters -- see the class doc) never needs
+   * it.
+   */
   private def slotWeight(buffer: UnsafeRow, slot: Int): Long =
-    if (isDenseRank) 1L else buffer.getLong(slotRowCountOrdinal(slot))
+    buffer.getLong(slotRowCountOrdinal(slot))
 
+  /**
+   * Sum of slots `0 until until`'s weights -- `DENSE_RANK`'s flat per-slot weight of 1 makes this
+   * trivially `until` itself, without reading a single slot.
+   */
   private def sumWeights(buffer: UnsafeRow, until: Int): Long = {
+    if (isDenseRank) return until.toLong
     var sum = 0L
     var i = 0
     while (i < until) {
@@ -446,12 +454,25 @@ class HashRankGroupLimitAccumulator(
    * key's *final* slots (see the class doc: a candidate's slot may have since been evicted by a
    * better value, in which case it's silently skipped here rather than physically removed from
    * the arena).
+   *
+   * Checks admission with a single comparison against the key's cutoff -- slot `slotCount - 1`,
+   * the worst value still kept -- instead of searching all `slotCount` slots for a match on every
+   * candidate. This is sound because a slot is only ever evicted from the tail (by
+   * [[insertSlotAt]]'s capacity eviction or [[revalidateTrailingSlots]]'s truncation), both of
+   * which preserve the best-to-worst sort order, so at any point every slot still in
+   * `0 until slotCount` is at least as good as the cutoff, and every evicted value is worse than
+   * it; combined with eviction being permanent (see the class doc's "preceding weight" argument --
+   * a value's preceding weight can only grow, never shrink), the *final* cutoff alone is enough to
+   * tell whether a candidate appended at any earlier point is still admitted, without needing to
+   * know which exact slot (if any) it currently occupies. Extracting the cutoff once per key,
+   * rather than re-deriving it on every one of that key's candidates, turns an
+   * O(candidates * slotCount) drain into O(candidates) -- the dominant cost for a RANK()/
+   * DENSE_RANK() query where most rows are genuine ties (see SPARK-61804's TopKBenchmark
+   * "spread ties" case, where candidates-per-key and slotCount are both large).
    */
   private def kvIteratorToScala(kvIter: KVIterator[UnsafeRow, UnsafeRow]): Iterator[InternalRow] = {
     val resultRow = new UnsafeRow(childOutput.length)
     new Iterator[InternalRow] {
-      private var currentBuffer: UnsafeRow = null
-      private var currentSlotCount: Int = 0
       private var nextAddress: Long = UnsafeRowArena.NO_NEXT
       private var pending: InternalRow = null
       private var exhausted = false
@@ -460,8 +481,9 @@ class HashRankGroupLimitAccumulator(
         while (pending == null && !exhausted) {
           while (nextAddress == UnsafeRowArena.NO_NEXT && !exhausted) {
             if (kvIter.next()) {
-              currentBuffer = kvIter.getValue
-              currentSlotCount = currentBuffer.getLong(slotCountOrdinal).toInt
+              val currentBuffer = kvIter.getValue
+              val currentSlotCount = currentBuffer.getLong(slotCountOrdinal).toInt
+              extractSlotInto(currentBuffer, currentSlotCount - 1, cutoffScratch)
               nextAddress = currentBuffer.getLong(headAddressOrdinal)
             } else {
               exhausted = true
@@ -471,7 +493,7 @@ class HashRankGroupLimitAccumulator(
             val address = nextAddress
             val candidateRow = rowArena.getRow(address, resultRow)
             val orderKey = orderKeyProjection(candidateRow)
-            if (findMatchingSlot(currentBuffer, orderKey, currentSlotCount) >= 0) {
+            if (boundOrdering.compare(orderKey, cutoffScratch) <= 0) {
               pending = candidateRow
             }
             nextAddress = rowArena.getNext(address)
