@@ -791,8 +791,7 @@ case class SortMergeJoinExec(
   private def codegenInner(
       scan: JoinScanCodegen,
       cleanedFlag: String): String = {
-    val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
-      outputRow, eagerCleanup, finishProbe) = scan
+    import scan._
     s"""
        |if($cleanedFlag) {
        |  return;
@@ -820,8 +819,7 @@ case class SortMergeJoinExec(
       streamedInput: String,
       scan: JoinScanCodegen,
       hasOutputRow: String): String = {
-    val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
-      outputRow, eagerCleanup, finishProbe) = scan
+    import scan._
     s"""
        |while ($streamedInput.hasNext()) {
        |  $findNextJoinRows;
@@ -850,8 +848,7 @@ case class SortMergeJoinExec(
       scan: JoinScanCodegen,
       hasOutputRow: String,
       cleanedFlag: String): String = {
-    val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
-      outputRow, eagerCleanup, finishProbe) = scan
+    import scan._
     s"""
        |if($cleanedFlag) {
        |  return;
@@ -883,8 +880,7 @@ case class SortMergeJoinExec(
       scan: JoinScanCodegen,
       loadStreamed: String,
       hasMatchedRow: String): String = {
-    val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
-      outputRow, eagerCleanup, finishProbe) = scan
+    import scan._
     s"""
        |while ($streamedInput.hasNext()) {
        |  $findNextJoinRows;
@@ -918,8 +914,7 @@ case class SortMergeJoinExec(
       scan: JoinScanCodegen,
       loadStreamed: String,
       exists: String): String = {
-    val JoinScanCodegen(findNextJoinRows, beforeLoop, matchIterator, bufferedRow, conditionCheck,
-      outputRow, eagerCleanup, finishProbe) = scan
+    import scan._
     s"""
        |while ($streamedInput.hasNext()) {
        |  $findNextJoinRows;
