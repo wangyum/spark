@@ -491,17 +491,7 @@ object ExtractRangeJoinKeys extends PredicateHelper {
 
   def unapply(plan: LogicalPlan): Option[ReturnType] = plan match {
     case Join(left, right, _, Some(condition), _) =>
-      val predicates = splitConjunctivePredicates(condition)
-      val rangePreds = predicates.collect {
-        case RangePredicate(dt, low, high, strict) if supportedType(dt) => (dt, low, high, strict)
-      }
-      if (rangePreds.isEmpty) {
-        None
-      } else {
-        pointInRange(rangePreds, left, right)
-          .orElse(intervalOverlap(rangePreds, left, right))
-          .orElse(partialRange(rangePreds, left, right))
-      }
+      extractRangeJoinKeys(condition, left.outputSet, right.outputSet)
     case _ => None
   }
 
@@ -512,14 +502,28 @@ object ExtractRangeJoinKeys extends PredicateHelper {
   def fromJoinCondition(
       condition: Expression,
       leftOutput: Seq[Attribute],
-      rightOutput: Seq[Attribute]): Option[ReturnType] = {
-    val synthetic = Join(
-      LocalRelation(leftOutput),
-      LocalRelation(rightOutput),
-      Inner,
-      Some(condition),
-      JoinHint.NONE)
-    unapply(synthetic)
+      rightOutput: Seq[Attribute]): Option[ReturnType] =
+    extractRangeJoinKeys(condition, AttributeSet(leftOutput), AttributeSet(rightOutput))
+
+  /**
+   * Shared by `unapply` and `fromJoinCondition`: the actual shape-recognition logic below only
+   * ever needs each side's output set, not a full `Join`/child-plan pair.
+   */
+  private def extractRangeJoinKeys(
+      condition: Expression,
+      leftOutputSet: AttributeSet,
+      rightOutputSet: AttributeSet): Option[ReturnType] = {
+    val predicates = splitConjunctivePredicates(condition)
+    val rangePreds = predicates.collect {
+      case RangePredicate(dt, low, high, strict) if supportedType(dt) => (dt, low, high, strict)
+    }
+    if (rangePreds.isEmpty) {
+      None
+    } else {
+      pointInRange(rangePreds, leftOutputSet, rightOutputSet)
+        .orElse(intervalOverlap(rangePreds, leftOutputSet, rightOutputSet))
+        .orElse(partialRange(rangePreds, leftOutputSet, rightOutputSet))
+    }
   }
 
   /**
@@ -541,15 +545,15 @@ object ExtractRangeJoinKeys extends PredicateHelper {
    */
   private def pairJoin(
       rangePreds: Seq[(DataType, Expression, Expression, Boolean)],
-      left: LogicalPlan,
-      right: LogicalPlan,
+      leftOutputSet: AttributeSet,
+      rightOutputSet: AttributeSet,
       rangeJoinKind: RangeJoinKind)(
       shape: PartialFunction[(Expression, Expression, Expression, Expression),
         (Seq[Expression], Seq[Expression])]): Option[ReturnType] = {
     rangePreds.combinations(2).collectFirst(Function.unlift {
       case Seq((d1, l1, h1, _), (d2, l2, h2, _)) if d1 == d2 =>
         shape.lift((l1, h1, l2, h2)).flatMap { case (keysA, keysB) =>
-          place(keysA, keysB, left, right).filter { case (l, r) =>
+          place(keysA, keysB, leftOutputSet, rightOutputSet).filter { case (l, r) =>
             supportedKeys(l, r)
           }.map { case (leftKeys, rightKeys) =>
             (leftKeys, rightKeys, rangeJoinKind)
@@ -561,9 +565,9 @@ object ExtractRangeJoinKeys extends PredicateHelper {
 
   private def pointInRange(
       rangePreds: Seq[(DataType, Expression, Expression, Boolean)],
-      left: LogicalPlan,
-      right: LogicalPlan): Option[ReturnType] = {
-    pairJoin(rangePreds, left, right, PointInRangeJoin)({
+      leftOutputSet: AttributeSet,
+      rightOutputSet: AttributeSet): Option[ReturnType] = {
+    pairJoin(rangePreds, leftOutputSet, rightOutputSet, PointInRangeJoin)({
       case (l1, h1, l2, h2)
           if h1.semanticEquals(l2) && !l1.semanticEquals(h2) && l1.dataType == h2.dataType =>
         (Seq(l2), Seq(l1, h2))
@@ -572,6 +576,10 @@ object ExtractRangeJoinKeys extends PredicateHelper {
         (Seq(l1), Seq(l2, h1))
     })
   }
+
+  /** `expr.references.subsetOf(outputSet)`: the part of `canEvaluate` that doesn't need a plan. */
+  private def canEvaluate(expr: Expression, outputSet: AttributeSet): Boolean =
+    expr.references.subsetOf(outputSet)
 
   /**
    * Puts `leftExprs` on the left child when that child can evaluate all of them
@@ -582,12 +590,13 @@ object ExtractRangeJoinKeys extends PredicateHelper {
   private def place(
       leftExprs: Seq[Expression],
       rightExprs: Seq[Expression],
-      left: LogicalPlan,
-      right: LogicalPlan): Option[(Seq[Expression], Seq[Expression])] = {
-    if (leftExprs.forall(canEvaluate(_, left)) && rightExprs.forall(canEvaluate(_, right))) {
+      leftOutputSet: AttributeSet,
+      rightOutputSet: AttributeSet): Option[(Seq[Expression], Seq[Expression])] = {
+    if (leftExprs.forall(canEvaluate(_, leftOutputSet)) &&
+        rightExprs.forall(canEvaluate(_, rightOutputSet))) {
       Some((leftExprs, rightExprs))
-    } else if (leftExprs.forall(canEvaluate(_, right)) &&
-        rightExprs.forall(canEvaluate(_, left))) {
+    } else if (leftExprs.forall(canEvaluate(_, rightOutputSet)) &&
+        rightExprs.forall(canEvaluate(_, leftOutputSet))) {
       Some((rightExprs, leftExprs))
     } else {
       None
@@ -596,9 +605,9 @@ object ExtractRangeJoinKeys extends PredicateHelper {
 
   private def intervalOverlap(
       rangePreds: Seq[(DataType, Expression, Expression, Boolean)],
-      left: LogicalPlan,
-      right: LogicalPlan): Option[ReturnType] = {
-    pairJoin(rangePreds, left, right, IntervalOverlapJoin)({
+      leftOutputSet: AttributeSet,
+      rightOutputSet: AttributeSet): Option[ReturnType] = {
+    pairJoin(rangePreds, leftOutputSet, rightOutputSet, IntervalOverlapJoin)({
       case (l1, h1, l2, h2)
           if !l1.semanticEquals(h2) && !l2.semanticEquals(h1) &&
             l1.dataType == h2.dataType && l2.dataType == h1.dataType =>
@@ -615,21 +624,22 @@ object ExtractRangeJoinKeys extends PredicateHelper {
 
   private def partialRange(
       rangePreds: Seq[(DataType, Expression, Expression, Boolean)],
-      left: LogicalPlan,
-      right: LogicalPlan): Option[ReturnType] = {
+      leftOutputSet: AttributeSet,
+      rightOutputSet: AttributeSet): Option[ReturnType] = {
     rangePreds.iterator.flatMap { case (_, low, high, strict) =>
       if (low.semanticEquals(high) || low.dataType != high.dataType ||
           !supportedKeys(Seq(low, high))) {
         None
       } else {
         // Unswapped, the left child holds `low`. Swapped, it holds `high`.
-        place(Seq(low), Seq(high), left, right).map { case (leftKeys, rightKeys) =>
-          val rangeJoinKind = if (canEvaluate(low, left)) {
-            LessPartialRangeJoin(strict)
-          } else {
-            GreaterPartialRangeJoin(strict)
-          }
-          (leftKeys, rightKeys, rangeJoinKind)
+        place(Seq(low), Seq(high), leftOutputSet, rightOutputSet).map {
+          case (leftKeys, rightKeys) =>
+            val rangeJoinKind = if (canEvaluate(low, leftOutputSet)) {
+              LessPartialRangeJoin(strict)
+            } else {
+              GreaterPartialRangeJoin(strict)
+            }
+            (leftKeys, rightKeys, rangeJoinKind)
         }
       }
     }.nextOption()
