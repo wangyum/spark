@@ -29,6 +29,8 @@ import org.apache.spark.sql.catalyst.plans.physical.{AllTuples, ClusteredDistrib
 import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport,
   ExternalAppendOnlyUnsafeRowArray, SparkPlan, UnaryExecNode, UnsafeExternalRowSorter}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.types.{BooleanType, ByteType, DateType, DoubleType, FloatType,
+  IntegerType, LongType, ShortType, TimestampNTZType, TimestampType}
 
 sealed trait WindowGroupLimitMode
 
@@ -88,6 +90,33 @@ trait HashGroupLimitAccumulator {
     consumeRow(row, key, key.hashCode(), orderKey)
 
   def consumeRow(row: UnsafeRow, key: UnsafeRow, keyHash: Int, orderKey: UnsafeRow): Unit
+
+  def consumeRow(
+      row: UnsafeRow,
+      key: UnsafeRow,
+      keyHash: Int,
+      orderKeyVal: Long,
+      orderKeyIsNull: Boolean): Unit = {
+    val orderKey = new UnsafeRow(1)
+    val bytes = new Array[Byte](16)
+    orderKey.pointTo(bytes, 16)
+    if (orderKeyIsNull) orderKey.setNullAt(0) else orderKey.setLong(0, orderKeyVal)
+    consumeRow(row, key, keyHash, orderKey)
+  }
+
+  def consumeRow(
+      row: UnsafeRow,
+      key: UnsafeRow,
+      keyHash: Int,
+      keyVal: Long,
+      keyIsNull: Boolean,
+      orderKeyVal: Long,
+      orderKeyIsNull: Boolean): Unit = {
+    consumeRow(row, key, keyHash, orderKeyVal, orderKeyIsNull)
+  }
+
+  def finishAccumulator(): Unit
+  def nextResultRow(resultRow: UnsafeRow): Boolean
   def finish(): Iterator[InternalRow]
 
   /**
@@ -300,9 +329,6 @@ case class WindowGroupLimitExec(
       "groupLimitAccumulator",
       v => s"$v = $factoryTerm.createAccumulator();",
       forceInline = true)
-    val resultIterTerm = ctx.addMutableState(
-      "scala.collection.Iterator<InternalRow>", "groupLimitResultIter", forceInline = true)
-
     val consumeGroupLimitInput = ctx.freshName("consumeGroupLimitInput")
     val consumeInputFuncName = ctx.addNewFunction(consumeGroupLimitInput,
       s"""
@@ -312,14 +338,16 @@ case class WindowGroupLimitExec(
        """.stripMargin)
 
     val outputRow = ctx.freshName("groupLimitRow")
+    ctx.INPUT_ROW = outputRow
     s"""
        | if ($needToConsume) {
        |   $consumeInputFuncName(partitionIndex);
-       |   $resultIterTerm = $accumulatorTerm.finish();
+       |   $accumulatorTerm.finishAccumulator();
        |   $needToConsume = false;
        | }
-       | while ($limitNotReachedCond $resultIterTerm.hasNext()) {
-       |   UnsafeRow $outputRow = (UnsafeRow) $resultIterTerm.next();
+       | org.apache.spark.sql.catalyst.expressions.UnsafeRow $outputRow =
+       |   new org.apache.spark.sql.catalyst.expressions.UnsafeRow(${child.output.length});
+       | while ($limitNotReachedCond $accumulatorTerm.nextResultRow($outputRow)) {
        |   ${consume(ctx, null, outputRow)}
        |   if (shouldStop()) return;
        | }
@@ -359,8 +387,81 @@ case class WindowGroupLimitExec(
     val boundOrderKeyExprs =
       BindReferences.bindReferences[Expression](orderSpec.map(_.child), child.output)
     val keyCode = GenerateUnsafeProjection.createCode(ctx, boundPartitionSpec)
-    val orderKeyCode = GenerateUnsafeProjection.createCode(ctx, boundOrderKeyExprs)
     val keyHashTerm = ctx.freshName("keyHash")
+
+    val isSinglePartitionCol = boundPartitionSpec.length == 1 &&
+      (boundPartitionSpec.head.dataType match {
+        case LongType | TimestampType | TimestampNTZType |
+             IntegerType | DateType | ShortType | ByteType => true
+        case _ => false
+      })
+    val isSingleOrderCol = boundOrderKeyExprs.length == 1 &&
+      (boundOrderKeyExprs.head.dataType match {
+        case LongType | TimestampType | TimestampNTZType |
+             IntegerType | DateType | ShortType | ByteType |
+             BooleanType | FloatType | DoubleType => true
+        case _ => false
+      })
+
+    val (keySetup, keyArgs) = if (isSinglePartitionCol) {
+      val keyExpr = boundPartitionSpec.head
+      val keyEv = keyExpr.genCode(ctx)
+      val keyValTerm = ctx.freshName("keyVal")
+      val keyNullTerm = ctx.freshName("keyNull")
+      val toLongKeyCode = keyExpr.dataType match {
+        case LongType | TimestampType | TimestampNTZType =>
+          s"${keyEv.value}"
+        case IntegerType | DateType | ShortType | ByteType =>
+          s"(long) ${keyEv.value}"
+        case _ => ""
+      }
+      val setup =
+        s"""
+           |${keyEv.code}
+           |long $keyValTerm = ${keyEv.isNull} ? 0L : $toLongKeyCode;
+           |boolean $keyNullTerm = ${keyEv.isNull};
+         """.stripMargin
+      (setup, s"$keyValTerm, $keyNullTerm")
+    } else {
+      ("", "")
+    }
+
+    val (orderKeySetup, orderKeyArgs) = if (isSingleOrderCol) {
+      val orderExpr = boundOrderKeyExprs.head
+      val orderEv = orderExpr.genCode(ctx)
+      val orderValTerm = ctx.freshName("orderVal")
+      val orderNullTerm = ctx.freshName("orderNull")
+      val toLongCode = orderExpr.dataType match {
+        case LongType | TimestampType | TimestampNTZType =>
+          s"${orderEv.value}"
+        case IntegerType | DateType | ShortType | ByteType =>
+          s"(long) ${orderEv.value}"
+        case BooleanType =>
+          s"${orderEv.value} ? 1L : 0L"
+        case FloatType =>
+          s"(long) java.lang.Float.floatToIntBits(${orderEv.value})"
+        case DoubleType =>
+          s"java.lang.Double.doubleToLongBits(${orderEv.value})"
+        case _ => ""
+      }
+      val setup =
+        s"""
+           |${orderEv.code}
+           |long $orderValTerm = ${orderEv.isNull} ? 0L : $toLongCode;
+           |boolean $orderNullTerm = ${orderEv.isNull};
+         """.stripMargin
+      (setup, s"$orderValTerm, $orderNullTerm")
+    } else {
+      val orderKeyCode = GenerateUnsafeProjection.createCode(ctx, boundOrderKeyExprs)
+      (orderKeyCode.code.toString, s"(UnsafeRow) ${orderKeyCode.value}")
+    }
+
+    val consumeArgs = if (isSinglePartitionCol && isSingleOrderCol) {
+      s"(UnsafeRow) ${row.value}, (UnsafeRow) ${keyCode.value}, $keyHashTerm, " +
+        s"$keyArgs, $orderKeyArgs"
+    } else {
+      s"(UnsafeRow) ${row.value}, (UnsafeRow) ${keyCode.value}, $keyHashTerm, $orderKeyArgs"
+    }
 
     s"""
        |$destClass $destTerm = $accumulatorTerm.fallbackDestinationOrNull();
@@ -370,10 +471,10 @@ case class WindowGroupLimitExec(
        |} else {
        |  ${keyCode.code}
        |  int $keyHashTerm = ${keyCode.value}.hashCode();
-       |  ${orderKeyCode.code}
+       |  $keySetup
+       |  $orderKeySetup
        |  ${row.code}
-       |  $accumulatorTerm.consumeRow((UnsafeRow) ${row.value}, (UnsafeRow) ${keyCode.value},
-       |    $keyHashTerm, (UnsafeRow) ${orderKeyCode.value});
+       |  $accumulatorTerm.consumeRow($consumeArgs);
        |}
      """.stripMargin
   }

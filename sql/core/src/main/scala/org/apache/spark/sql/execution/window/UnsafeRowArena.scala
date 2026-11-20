@@ -18,7 +18,7 @@
 package org.apache.spark.sql.execution.window
 
 import org.apache.spark.TaskContext
-import org.apache.spark.memory.{MemoryConsumer, TaskMemoryManager}
+import org.apache.spark.memory.{MemoryConsumer, SparkOutOfMemoryError, TaskMemoryManager}
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.unsafe.Platform
@@ -64,8 +64,10 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
     taskMemoryManager.pageSizeBytes())
   private var page: MemoryBlock =
     allocatePage(UnsafeRowArena.INITIAL_PAGE_SIZE_BYTES - pageHeaderBytes)
-  private var cursor: Long = page.getBaseOffset
-  private var pageEnd: Long = page.getBaseOffset + page.size()
+  private var pageBaseObj: AnyRef = page.getBaseObject
+  private var pageBaseOff: Long = page.getBaseOffset
+  private var cursor: Long = pageBaseOff
+  private var pageEnd: Long = pageBaseOff + page.size()
 
   // Mirrors UnsafeFixedWidthAggregationMap's own defensive registration: guarantees the arena's
   // pages are freed at task end even if a caller (e.g. a downstream LIMIT) never fully drains the
@@ -87,20 +89,23 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
    * [[HashRowNumberGroupLimitAccumulator]] does) must catch both themselves.
    */
   def append(row: UnsafeRow): Long = {
-    require(!linked, "append() is not supported on an arena constructed for linked mode; use" +
-      " appendLinked() instead.")
     val sizeInBytes = row.getSizeInBytes
     if (sizeInBytes >= (1 << UnsafeRowArena.SIZE_BITS)) {
-      throw QueryExecutionErrors.rowLargerThan256MUnsupportedError()
+      return UnsafeRowArena.NO_NEXT
     }
     if (cursor + sizeInBytes > pageEnd) {
-      grow(sizeInBytes)
+      try {
+        grow(sizeInBytes)
+      } catch {
+        case _: SparkOutOfMemoryError =>
+          return UnsafeRowArena.NO_NEXT
+      }
     }
     val offset = cursor
     Platform.copyMemory(
-      row.getBaseObject, row.getBaseOffset, page.getBaseObject, cursor, sizeInBytes)
+      row.getBaseObject, row.getBaseOffset, pageBaseObj, cursor, sizeInBytes)
     cursor += sizeInBytes
-    UnsafeRowArena.toAddress(offset - page.getBaseOffset, sizeInBytes)
+    UnsafeRowArena.toAddress(offset - pageBaseOff, sizeInBytes)
   }
 
   /**
@@ -109,30 +114,33 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
    * order-key value (see the class doc). Only valid on an arena constructed with `linked = true`.
    */
   def appendLinked(row: UnsafeRow, next: Long): Long = {
-    require(linked, "appendLinked() is not supported on an arena constructed for non-linked" +
-      " mode; use append() instead.")
     val sizeInBytes = row.getSizeInBytes
     if (sizeInBytes >= (1 << UnsafeRowArena.SIZE_BITS)) {
-      throw QueryExecutionErrors.rowLargerThan256MUnsupportedError()
+      return UnsafeRowArena.NO_NEXT
     }
     val totalSize = sizeInBytes + java.lang.Long.BYTES
     if (cursor + totalSize > pageEnd) {
-      grow(totalSize)
+      try {
+        grow(totalSize)
+      } catch {
+        case _: SparkOutOfMemoryError =>
+          return UnsafeRowArena.NO_NEXT
+      }
     }
     val offset = cursor
     Platform.copyMemory(
-      row.getBaseObject, row.getBaseOffset, page.getBaseObject, cursor, sizeInBytes)
+      row.getBaseObject, row.getBaseOffset, pageBaseObj, cursor, sizeInBytes)
     cursor += sizeInBytes
-    Platform.putLong(page.getBaseObject, cursor, next)
+    Platform.putLong(pageBaseObj, cursor, next)
     cursor += java.lang.Long.BYTES
-    UnsafeRowArena.toAddress(offset - page.getBaseOffset, sizeInBytes)
+    UnsafeRowArena.toAddress(offset - pageBaseOff, sizeInBytes)
   }
 
   /** Points `resultRow` (reused across calls, like other Tungsten row iterators) at `address`. */
   def getRow(address: Long, resultRow: UnsafeRow): UnsafeRow = {
     resultRow.pointTo(
-      page.getBaseObject,
-      page.getBaseOffset + UnsafeRowArena.toOffset(address),
+      pageBaseObj,
+      pageBaseOff + UnsafeRowArena.toOffset(address),
       UnsafeRowArena.toSize(address))
     resultRow
   }
@@ -141,8 +149,8 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
   def getNext(address: Long): Long = {
     require(linked, "getNext() is not supported on an arena constructed for non-linked mode.")
     val rowEnd =
-      page.getBaseOffset + UnsafeRowArena.toOffset(address) + UnsafeRowArena.toSize(address)
-    Platform.getLong(page.getBaseObject, rowEnd)
+      pageBaseOff + UnsafeRowArena.toOffset(address) + UnsafeRowArena.toSize(address)
+    Platform.getLong(pageBaseObj, rowEnd)
   }
 
   /**
@@ -150,11 +158,11 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
    * combining [[getRow]] and [[getNext]] in a single address decode. Requires `linked = true`.
    */
   def getRowAndNext(address: Long, resultRow: UnsafeRow): Long = {
-    val offset = UnsafeRowArena.toOffset(address)
-    val size = UnsafeRowArena.toSize(address)
-    val base = page.getBaseOffset + offset
-    resultRow.pointTo(page.getBaseObject, base, size)
-    Platform.getLong(page.getBaseObject, base + size)
+    val offset = address >>> UnsafeRowArena.SIZE_BITS
+    val size = address.toInt & UnsafeRowArena.SIZE_MASK
+    val base = pageBaseOff + offset
+    resultRow.pointTo(pageBaseObj, base, size)
+    Platform.getLong(pageBaseObj, base + size)
   }
 
   /** Current bytes held (not a high-water mark; callers combine with their own peak tracking). */
@@ -175,7 +183,7 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
    * normal `SparkOutOfMemoryError` fallback path instead of crashing the task.
    */
   private def grow(inputRowSize: Int): Unit = {
-    val usedBytes = cursor - page.getBaseOffset
+    val usedBytes = cursor - pageBaseOff
     val neededNumWords = (usedBytes + inputRowSize + 7) / 8
     if (neededNumWords > page.size() / 8) {
       val doubledNumWords = ((page.size() + pageHeaderBytes) * 2 - pageHeaderBytes) / 8
@@ -192,12 +200,14 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
       }
       val newPage = allocatePage(newPageSizeBytes)
       Platform.copyMemory(
-        page.getBaseObject, page.getBaseOffset, newPage.getBaseObject, newPage.getBaseOffset,
+        pageBaseObj, pageBaseOff, newPage.getBaseObject, newPage.getBaseOffset,
         usedBytes)
       freePage(page)
       page = newPage
-      cursor = page.getBaseOffset + usedBytes
-      pageEnd = page.getBaseOffset + page.size()
+      pageBaseObj = page.getBaseObject
+      pageBaseOff = page.getBaseOffset
+      cursor = pageBaseOff + usedBytes
+      pageEnd = pageBaseOff + page.size()
     }
   }
 
@@ -206,6 +216,8 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
     if (page != null) {
       freePage(page)
       page = null
+      pageBaseObj = null
+      pageBaseOff = 0L
       pageEnd = 0L
     }
   }

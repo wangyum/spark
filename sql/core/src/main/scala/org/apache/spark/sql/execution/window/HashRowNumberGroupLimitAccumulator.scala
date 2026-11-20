@@ -19,9 +19,8 @@ package org.apache.spark.sql.execution.window
 
 import scala.collection.mutable.ArrayBuffer
 
-import org.apache.spark.{SparkUnsupportedOperationException, TaskContext}
+import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
-import org.apache.spark.memory.SparkOutOfMemoryError
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, BindReferences,
   BoundReference, Expression, GenericInternalRow, NullsFirst, RowOrdering, SortOrder, SortPrefix,
@@ -33,7 +32,7 @@ import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, SortPre
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.{BooleanType, ByteType, DateType, DoubleType, FloatType,
   IntegerType, LongType, ShortType, StructField, StructType, TimestampNTZType, TimestampType}
-import org.apache.spark.unsafe.KVIterator
+import org.apache.spark.unsafe.{KVIterator, Platform}
 
 /**
  * One task's worth of state for the hash-based top-`limit` `ROW_NUMBER()` accumulation described
@@ -152,37 +151,28 @@ class HashRowNumberGroupLimitAccumulator(
     }
   }
 
-  private val singleColComparator: ((Long, Long) => Int) =
+  private val singleColTypeTag: Int =
     if (numOrderCols == 1) {
       orderSpec.head.child.dataType match {
-        case LongType | TimestampType | TimestampNTZType =>
-          (v1: Long, v2: Long) => java.lang.Long.compare(v1, v2)
-        case IntegerType | DateType =>
-          (v1: Long, v2: Long) => java.lang.Integer.compare(v1.toInt, v2.toInt)
-        case ShortType =>
-          (v1: Long, v2: Long) => java.lang.Short.compare(v1.toShort, v2.toShort)
-        case ByteType =>
-          (v1: Long, v2: Long) => java.lang.Byte.compare(v1.toByte, v2.toByte)
-        case BooleanType =>
-          (v1: Long, v2: Long) => java.lang.Boolean.compare(v1 != 0, v2 != 0)
-        case FloatType =>
-          (v1: Long, v2: Long) =>
-            java.lang.Float.compare(
-              java.lang.Float.intBitsToFloat(v1.toInt),
-              java.lang.Float.intBitsToFloat(v2.toInt))
-        case DoubleType =>
-          (v1: Long, v2: Long) =>
-            java.lang.Double.compare(
-              java.lang.Double.longBitsToDouble(v1),
-              java.lang.Double.longBitsToDouble(v2))
-        case _ => null
+        case LongType | TimestampType | TimestampNTZType => 1
+        case IntegerType | DateType => 2
+        case DoubleType => 3
+        case FloatType => 4
+        case ShortType => 5
+        case ByteType => 6
+        case BooleanType => 7
+        case _ => 0
       }
     } else {
-      null
+      0
     }
 
   private val isSingleColAscending = numOrderCols == 1 && orderSpec.head.direction == Ascending
   private val isSingleColNullsFirst = numOrderCols == 1 && orderSpec.head.nullOrdering == NullsFirst
+  private val isSingleColNullable = numOrderCols == 1 && orderSpec.head.child.nullable
+  private val bitSetWidthInBytes =
+    UnsafeRow.calculateBitSetWidthInBytes(bufferSchema.length)
+  private val heapSizeByteOffset = bitSetWidthInBytes + heapSizeOrdinal * 8L
 
   /** Writes `src`'s (0-based) order-key fields into slot `slot` of `buffer`. */
   private def writeSlotFrom(buffer: UnsafeRow, slot: Int, src: UnsafeRow): Unit = {
@@ -200,7 +190,7 @@ class HashRowNumberGroupLimitAccumulator(
   }
 
   private def compareSlots(buffer: UnsafeRow, a: Int, b: Int): Int = {
-    if (singleColComparator != null) {
+    if (singleColTypeTag != 0) {
       val ordA = slotOrderOrdinal(a, 0)
       val ordB = slotOrderOrdinal(b, 0)
       val aNull = buffer.isNullAt(ordA)
@@ -208,7 +198,24 @@ class HashRowNumberGroupLimitAccumulator(
       if (aNull && bNull) return 0
       if (aNull) return if (isSingleColNullsFirst) -1 else 1
       if (bNull) return if (isSingleColNullsFirst) 1 else -1
-      val cmp = singleColComparator(buffer.getLong(ordA), buffer.getLong(ordB))
+      val aVal = buffer.getLong(ordA)
+      val bVal = buffer.getLong(ordB)
+      val cmp = singleColTypeTag match {
+        case 1 => java.lang.Long.compare(aVal, bVal)
+        case 2 => java.lang.Integer.compare(aVal.toInt, bVal.toInt)
+        case 3 =>
+          java.lang.Double.compare(
+            java.lang.Double.longBitsToDouble(aVal),
+            java.lang.Double.longBitsToDouble(bVal))
+        case 4 =>
+          java.lang.Float.compare(
+            java.lang.Float.intBitsToFloat(aVal.toInt),
+            java.lang.Float.intBitsToFloat(bVal.toInt))
+        case 5 => java.lang.Short.compare(aVal.toShort, bVal.toShort)
+        case 6 => java.lang.Byte.compare(aVal.toByte, bVal.toByte)
+        case 7 => java.lang.Boolean.compare(aVal != 0, bVal != 0)
+        case _ => 0
+      }
       if (isSingleColAscending) cmp else -cmp
     } else {
       extractSlotInto(buffer, a, scratchA)
@@ -217,17 +224,56 @@ class HashRowNumberGroupLimitAccumulator(
     }
   }
 
-  /** `< 0` if `orderKey` is strictly better (should win) than slot `slot`'s current key. */
-  private def compareToSlot(orderKey: UnsafeRow, buffer: UnsafeRow, slot: Int): Int = {
-    if (singleColComparator != null) {
-      val ord = slotOrderOrdinal(slot, 0)
-      val kNull = orderKey.isNullAt(0)
-      val sNull = buffer.isNullAt(ord)
+  private def compareSlotSingle(
+      kVal: Long, kNull: Boolean, baseObj: AnyRef, baseOffset: Long, slot: Int): Int = {
+    val ord = slotOrderOrdinal(slot, 0)
+    if (isSingleColNullable) {
+      val sNull = (Platform.getByte(baseObj, baseOffset + (ord >>> 3)) & (1 << (ord & 7))) != 0
       if (kNull && sNull) return 0
       if (kNull) return if (isSingleColNullsFirst) -1 else 1
       if (sNull) return if (isSingleColNullsFirst) 1 else -1
-      val cmp = singleColComparator(orderKey.getLong(0), buffer.getLong(ord))
-      if (isSingleColAscending) cmp else -cmp
+    }
+    val sVal = Platform.getLong(baseObj, baseOffset + bitSetWidthInBytes + ord * 8L)
+    val cmp = singleColTypeTag match {
+      case 1 => java.lang.Long.compare(kVal, sVal)
+      case 2 => java.lang.Integer.compare(kVal.toInt, sVal.toInt)
+      case 3 =>
+        java.lang.Double.compare(
+          java.lang.Double.longBitsToDouble(kVal),
+          java.lang.Double.longBitsToDouble(sVal))
+      case 4 =>
+        java.lang.Float.compare(
+          java.lang.Float.intBitsToFloat(kVal.toInt),
+          java.lang.Float.intBitsToFloat(sVal.toInt))
+      case 5 => java.lang.Short.compare(kVal.toShort, sVal.toShort)
+      case 6 => java.lang.Byte.compare(kVal.toByte, sVal.toByte)
+      case 7 => java.lang.Boolean.compare(kVal != 0, sVal != 0)
+      case _ => 0
+    }
+    if (isSingleColAscending) cmp else -cmp
+  }
+
+  private def compareSlotSingle(
+      kVal: Long, kNull: Boolean, buffer: UnsafeRow, slot: Int): Int = {
+    compareSlotSingle(kVal, kNull, buffer.getBaseObject, buffer.getBaseOffset, slot)
+  }
+
+  private def storeAtSlotSingle(
+      row: UnsafeRow, kVal: Long, kNull: Boolean, buffer: UnsafeRow, slot: Int): Unit = {
+    val address = rowArena.append(row)
+    if (address == UnsafeRowArena.NO_NEXT) {
+      switchToFallback(row)
+      return
+    }
+    val ord = slotOrderOrdinal(slot, 0)
+    if (kNull) buffer.setNullAt(ord) else buffer.setLong(ord, kVal)
+    buffer.setLong(slotAddrOrdinal(slot), address)
+  }
+
+  /** `< 0` if `orderKey` is strictly better (should win) than slot `slot`'s current key. */
+  private def compareToSlot(orderKey: UnsafeRow, buffer: UnsafeRow, slot: Int): Int = {
+    if (singleColTypeTag != 0) {
+      compareSlotSingle(orderKey.getLong(0), orderKey.isNullAt(0), buffer, slot)
     } else {
       extractSlotInto(buffer, slot, scratchA)
       boundOrdering.compare(orderKey, scratchA)
@@ -393,6 +439,96 @@ class HashRowNumberGroupLimitAccumulator(
     }
   }
 
+  override def consumeRow(
+      row: UnsafeRow,
+      key: UnsafeRow,
+      keyHash: Int,
+      orderKeyVal: Long,
+      orderKeyIsNull: Boolean): Unit = {
+    val buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
+    if (buffer == null) {
+      switchToFallback(row)
+      return
+    }
+    val heapSize = buffer.getLong(heapSizeOrdinal).toInt
+    if (heapSize < limit) {
+      storeAtSlotSingle(row, orderKeyVal, orderKeyIsNull, buffer, heapSize)
+      if (fallbackDestination != null) return
+      buffer.setLong(heapSizeOrdinal, heapSize + 1)
+      siftUp(buffer, heapSize)
+    } else if (compareSlotSingle(orderKeyVal, orderKeyIsNull, buffer, 0) < 0) {
+      storeAtSlotSingle(row, orderKeyVal, orderKeyIsNull, buffer, 0)
+      if (fallbackDestination != null) return
+      siftDown(buffer, 0, limit)
+    }
+    rowsConsumed += 1
+    if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
+      maybeBailOutForPoorEfficiency()
+      nextCompactionCheckAt = rowsConsumed + minRowsBetweenCompactionChecks
+    }
+  }
+
+  private val keyCacheSize = 16384
+  private val keyCacheMask = keyCacheSize - 1
+  private val cachedKeyVals = new Array[Long](keyCacheSize)
+  private val cachedKeyHashes = new Array[Int](keyCacheSize)
+  private val cachedBaseOffsets = new Array[Long](keyCacheSize)
+  private val cachedBaseObjects = new Array[AnyRef](keyCacheSize)
+  java.util.Arrays.fill(cachedBaseOffsets, -1L)
+
+  override def consumeRow(
+      row: UnsafeRow,
+      key: UnsafeRow,
+      keyHash: Int,
+      keyVal: Long,
+      keyIsNull: Boolean,
+      orderKeyVal: Long,
+      orderKeyIsNull: Boolean): Unit = {
+    val cacheIdx = keyHash & keyCacheMask
+    val cachedOff = cachedBaseOffsets(cacheIdx)
+    var baseObj: AnyRef = null
+    var baseOffset: Long = 0L
+    var buffer: UnsafeRow = null
+    if (cachedOff != -1L && !keyIsNull &&
+        cachedKeyHashes(cacheIdx) == keyHash &&
+        cachedKeyVals(cacheIdx) == keyVal) {
+      baseOffset = cachedOff
+      baseObj = cachedBaseObjects(cacheIdx)
+    } else {
+      buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
+      if (buffer == null) {
+        switchToFallback(row)
+        return
+      }
+      baseObj = buffer.getBaseObject
+      baseOffset = buffer.getBaseOffset
+      if (!keyIsNull) {
+        cachedKeyVals(cacheIdx) = keyVal
+        cachedKeyHashes(cacheIdx) = keyHash
+        cachedBaseOffsets(cacheIdx) = baseOffset
+        cachedBaseObjects(cacheIdx) = baseObj
+      }
+    }
+    val heapSize = Platform.getLong(baseObj, baseOffset + heapSizeByteOffset).toInt
+    if (heapSize < limit) {
+      if (buffer == null) buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
+      storeAtSlotSingle(row, orderKeyVal, orderKeyIsNull, buffer, heapSize)
+      if (fallbackDestination != null) return
+      Platform.putLong(baseObj, baseOffset + heapSizeByteOffset, heapSize + 1)
+      siftUp(buffer, heapSize)
+    } else if (compareSlotSingle(orderKeyVal, orderKeyIsNull, baseObj, baseOffset, 0) < 0) {
+      if (buffer == null) buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
+      storeAtSlotSingle(row, orderKeyVal, orderKeyIsNull, buffer, 0)
+      if (fallbackDestination != null) return
+      siftDown(buffer, 0, limit)
+    }
+    rowsConsumed += 1
+    if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
+      maybeBailOutForPoorEfficiency()
+      nextCompactionCheckAt = rowsConsumed + minRowsBetweenCompactionChecks
+    }
+  }
+
   /**
    * Appends `row` to `rowArena` and writes its order-key fields and address into slot `slot` of
    * `buffer`. Appends *before* touching `buffer`: if `rowArena.append` fails, `buffer` must be
@@ -409,39 +545,28 @@ class HashRowNumberGroupLimitAccumulator(
    */
   private def storeAtSlot(
       row: UnsafeRow, orderKey: UnsafeRow, buffer: UnsafeRow, slot: Int): Unit = {
-    val address =
-      try {
-        rowArena.append(row)
-      } catch {
-        case _: SparkOutOfMemoryError | _: SparkUnsupportedOperationException =>
-          switchToFallback(row)
-          return
-      }
+    val address = rowArena.append(row)
+    if (address == UnsafeRowArena.NO_NEXT) {
+      switchToFallback(row)
+      return
+    }
     writeSlotFrom(buffer, slot, orderKey)
     buffer.setLong(slotAddrOrdinal(slot), address)
   }
 
-  /**
-   * Call once, after every row has been passed to [[consumeRow]], to get the output rows.
-   * [[fallbackDestination]]'s two cases finish in genuinely different ways -- `Final`'s array
-   * needs no further filtering or sorting (see `fallbackDestination`'s doc), while `Partial`'s
-   * sorter output must still be sorted and filtered down to `limit` rows per key -- so, unlike
-   * every other [[FallbackDestination]] call site, this one pattern-matches on the concrete
-   * destination rather than going through [[FallbackDestination.insertRow]].
-   */
-  def finish(): Iterator[InternalRow] = fallbackDestination match {
+  private var kvIter: KVIterator[UnsafeRow, UnsafeRow] = _
+  private var fallbackIter: Iterator[InternalRow] = _
+  private var currentBuffer: UnsafeRow = _
+  private var currentHeapSize: Int = 0
+  private var nextSlot: Int = 0
+  private var uncommittedOutputRows: Int = 0
+
+  override def finishAccumulator(): Unit = fallbackDestination match {
     case ArrayFallbackDestination(array) =>
       peakMemory.set(math.max(peakMemory.value, array.spillSize))
       spillSize.set(
         TaskContext.get().taskMetrics().memoryBytesSpilled - spillSizeBefore)
-      val rawIter = array.generateIterator()
-      new Iterator[InternalRow] {
-        override def hasNext: Boolean = rawIter.hasNext
-        override def next(): InternalRow = {
-          numOutputRows += 1
-          rawIter.next()
-        }
-      }
+      fallbackIter = array.generateIterator()
     case SorterFallbackDestination(sorter) =>
       peakMemory.set(math.max(peakMemory.value, sorter.getPeakMemoryUsage))
       spillSize.set(
@@ -449,69 +574,75 @@ class HashRowNumberGroupLimitAccumulator(
       val sortedIter = sorter.sort()
       val limitFunc =
         (iter: Iterator[InternalRow]) => SimpleLimitIterator(iter, limit, numOutputRows)
-      if (partitionSpec.isEmpty) {
+      fallbackIter = if (partitionSpec.isEmpty) {
         limitFunc(sortedIter)
       } else {
         new GroupedLimitIterator(sortedIter, childOutput, partitionSpec, limitFunc)
       }
     case null =>
       peakMemory.set(math.max(peakMemory.value, map.getPeakMemoryUsedBytes + rowArena.bytesUsed))
-      // Lazy: the map's own TaskCompletionListener (registered in its constructor) and
-      // rowArena's (registered in UnsafeRowArena's constructor) guarantee eventual cleanup even
-      // if this iterator is never fully drained (e.g. a downstream LIMIT), so there is no eager
-      // map.free()/rowArena.free() call here the way the fallback branches above have for their
-      // own destinations -- both structures must stay alive for as long as the returned rows are
-      // read.
-      kvIteratorToScala(map.iterator())
+      kvIter = map.iterator()
   }
 
-  /**
-   * Adapts UnsafeFixedWidthAggregationMap's KVIterator (`next(): Boolean` advances, then
-   * `getKey`/`getValue` read the current entry) into a Scala `Iterator`, draining every populated
-   * slot (`0 until heapSize`, see `emptyBuffer`'s doc) of each key in turn.
-   */
-  private def kvIteratorToScala(kvIter: KVIterator[UnsafeRow, UnsafeRow]): Iterator[InternalRow] = {
-    val resultRow = new UnsafeRow(childOutput.length)
-    new Iterator[InternalRow] {
-      private var currentBuffer: UnsafeRow = null
-      private var currentHeapSize: Int = 0
-      private var nextSlot: Int = 0
-      private var exhausted = false
-
-      private def advanceToValidEntry(): Unit = {
-        while (nextSlot >= currentHeapSize && !exhausted) {
-          if (kvIter.next()) {
-            currentBuffer = kvIter.getValue
-            currentHeapSize = currentBuffer.getLong(heapSizeOrdinal).toInt
-            nextSlot = 0
-          } else {
-            exhausted = true
+  override def nextResultRow(resultRow: UnsafeRow): Boolean = {
+    if (fallbackIter != null) {
+      if (fallbackIter.hasNext) {
+        val r = fallbackIter.next().asInstanceOf[UnsafeRow]
+        resultRow.pointTo(r.getBaseObject, r.getBaseOffset, r.getSizeInBytes)
+        numOutputRows += 1
+        true
+      } else {
+        false
+      }
+    } else {
+      while (true) {
+        if (nextSlot < currentHeapSize) {
+          val bObj = currentBuffer.getBaseObject
+          val bOff = currentBuffer.getBaseOffset
+          val addrOffset = bOff + bitSetWidthInBytes + slotAddrOrdinal(nextSlot) * 8L
+          val address = Platform.getLong(bObj, addrOffset)
+          nextSlot += 1
+          uncommittedOutputRows += 1
+          if (uncommittedOutputRows == 1024) {
+            numOutputRows += 1024
+            uncommittedOutputRows = 0
           }
+          rowArena.getRow(address, resultRow)
+          return true
+        } else if (kvIter != null && kvIter.next()) {
+          currentBuffer = kvIter.getValue
+          val bObj = currentBuffer.getBaseObject
+          val bOff = currentBuffer.getBaseOffset
+          currentHeapSize = Platform.getLong(bObj, bOff + heapSizeByteOffset).toInt
+          nextSlot = 0
+        } else {
+          if (uncommittedOutputRows > 0) {
+            numOutputRows += uncommittedOutputRows
+            uncommittedOutputRows = 0
+          }
+          return false
         }
       }
+      false
+    }
+  }
 
-      private var uncommittedOutputRows = 0
-
+  override def finish(): Iterator[InternalRow] = {
+    finishAccumulator()
+    val row = new UnsafeRow(childOutput.length)
+    new Iterator[InternalRow] {
+      private var hasPending = false
       override def hasNext: Boolean = {
-        advanceToValidEntry()
-        val hasMore = nextSlot < currentHeapSize
-        if (!hasMore && uncommittedOutputRows > 0) {
-          numOutputRows += uncommittedOutputRows
-          uncommittedOutputRows = 0
+        if (hasPending) true
+        else {
+          hasPending = nextResultRow(row)
+          hasPending
         }
-        hasMore
       }
-
       override def next(): InternalRow = {
         if (!hasNext) throw new NoSuchElementException
-        val address = currentBuffer.getLong(slotAddrOrdinal(nextSlot))
-        nextSlot += 1
-        uncommittedOutputRows += 1
-        if (uncommittedOutputRows == 1024) {
-          numOutputRows += 1024
-          uncommittedOutputRows = 0
-        }
-        rowArena.getRow(address, resultRow)
+        hasPending = false
+        row
       }
     }
   }
