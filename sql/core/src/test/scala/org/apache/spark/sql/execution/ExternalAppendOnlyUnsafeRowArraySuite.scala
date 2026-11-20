@@ -125,6 +125,56 @@ class ExternalAppendOnlyUnsafeRowArraySuite extends SparkFunSuite with LocalSpar
       java.lang.Long.TYPE)
   }
 
+  test("in-memory rows are defensively copied, independent of the caller's row object") {
+    // A consumer of the in-memory (non-spill-backed) iterator - e.g. a future optimization that
+    // skips its own extra UnsafeRow.copy() because it trusts this array to have already handed
+    // it an independent row - depends on add() never aliasing the caller's own row object. If
+    // add() ever stopped defensively copying, such a consumer would silently retain whatever
+    // mutable row the caller happens to still be writing into afterward.
+    withExternalArray(inMemoryThreshold = 10, spillThreshold = 100) { array =>
+      val row = new UnsafeRow(1)
+      row.pointTo(new Array[Byte](64), 16)
+      row.setLong(0, 111L)
+      array.add(row)
+
+      // Mutate the caller's row object after add() returns.
+      row.setLong(0, 999L)
+
+      val iterator = array.generateIterator()
+      assert(iterator.hasNext)
+      assert(iterator.next().getLong(0) == 111L,
+        "a row added to the in-memory buffer must be an independent copy, unaffected by later " +
+          "mutation of the caller's original row object")
+    }
+  }
+
+  test("in-memory rows are distinct objects, never a single buffer reused across next() calls") {
+    // Same motivation as above: a consumer that wants to hold onto every row from a fully-
+    // drained in-memory iterator - instead of defensively re-copying each one, which is only
+    // required under the spill-backed contract (see `isSpillBacked`'s scaladoc) - depends on
+    // each row being independently owned, not an alias of one shared, mutated-in-place buffer.
+    withExternalArray(inMemoryThreshold = 10, spillThreshold = 100) { array =>
+      val expectedValues = populateRows(array, 5)
+      assert(!array.isSpillBacked, "test setup must keep this array in-memory")
+
+      // Materialize every row before inspecting any of them: if the iterator ever re-pointed a
+      // single shared UnsafeRow on each next() call, every entry below would alias the same
+      // object and all read back as the last row's value.
+      val rows = array.generateIterator().toList
+      assert(rows.length == expectedValues.length)
+      rows.zip(expectedValues).foreach { case (row, expected) =>
+        assert(row.getLong(0) == expected,
+          "each row read from a fully-drained in-memory iterator must still report the value " +
+            "it had when added, not a later row's value from a shared buffer")
+      }
+      for (i <- rows.indices; j <- rows.indices if i != j) {
+        assert(rows(i) ne rows(j),
+          "every row from the in-memory iterator must be a distinct object, not the same " +
+            "buffer re-pointed across next() calls")
+      }
+    }
+  }
+
   test("insert rows less than the inMemoryThreshold") {
     val (inMemoryThreshold, spillThreshold) = (100, 50)
     withExternalArray(inMemoryThreshold, spillThreshold) { array =>

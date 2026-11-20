@@ -25,11 +25,11 @@ import org.apache.spark.sql.catalyst.dsl.expressions._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, RowOrdering, UnsafeProjection}
 import org.apache.spark.sql.catalyst.optimizer.BuildRight
 import org.apache.spark.sql.catalyst.plans.Inner
-import org.apache.spark.sql.catalyst.plans.logical.statsEstimation.EstimationUtils
 import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, RowIterator}
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, LongType, StringType}
+import org.apache.spark.unsafe.types.UTF8String
 
 class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
 
@@ -40,10 +40,6 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   private val bufferP = AttributeReference("s_p", LongType)()
   private val bufferLo = AttributeReference("b_lo", LongType)()
   private val bufferHi = AttributeReference("b_hi", LongType)()
-
-  /** Extra buffered-side columns a narrow fixture doesn't have, to simulate a wide schema. */
-  private val wideExtraCols: Seq[Attribute] =
-    (1 to 20).map(i => AttributeReference(s"w$i", StringType)())
 
   private def pointInRangeSpecWithBufferOutput(
       threshold: Int,
@@ -69,12 +65,12 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       maxBytes: Option[Long] = None): RangeGroupProbe.Spec =
     pointInRangeSpecWithBufferOutput(threshold, Seq(bufferId, bufferP), maxBytes)
 
-  /** Probes `array` `PROBE_THRESHOLD` times, leaving `session` with an indexed group. */
+  /** Probes `array` `MIN_PROBES_BEFORE_BUILD` times, leaving `session` with an indexed group. */
   private def probeThroughGate(
       session: RangeGroupProbe.Session,
       array: ExternalAppendOnlyUnsafeRowArray): Unit = {
     var i = 0
-    while (i < RangeGroupProbe.PROBE_THRESHOLD) {
+    while (i < RangeGroupProbe.MIN_PROBES_BEFORE_BUILD) {
       session.onProbe(array)
       i += 1
     }
@@ -229,8 +225,10 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       val handle = RangeGroupProbe.build(array, pointInRangeSpec(threshold = 2), consumer)
       assert(handle != null)
       assert(handle.relation.estimatedSize > 0)
-      assert(handle.allocatedBytes >= handle.relation.estimatedSize,
-        "the TaskMemoryManager allocation must cover the relation's real footprint")
+      assert(handle.allocatedBytes == handle.relation.estimatedSize,
+        "the TaskMemoryManager allocation must be trued up to exactly the relation's real " +
+          "footprint, releasing peakBuildBytes's transient-staging margin back once build() " +
+          "measures it")
 
       // Probe [25, 55]: should match points 30, 40, 50 (3 matches)
       val candidates = handle.candidates(InternalRow(1L, 25L, 55L)).toSeq
@@ -296,55 +294,130 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     }
   }
 
-  test("estimateMemoryBytes scales with the buffered side's schema width") {
-    val narrowOutput = Seq(bufferId, bufferP)
-    val wideOutput = narrowOutput ++ wideExtraCols
-    val narrowSpec = pointInRangeSpecWithBufferOutput(threshold = 2, narrowOutput)
-    val wideSpec = pointInRangeSpecWithBufferOutput(threshold = 2, wideOutput)
+  test("estimatedRetainedBytes/isEligible scale with row count and overhead, immune to row " +
+    "payload size under zero-copy for a long range key") {
+    withRowArray(inMemoryRows = 1000, totalRows = 100) { (array, _) =>
+      val probeSpec = pointInRangeSpec(threshold = 2)
+      assert(probeSpec.usesLongKeys, "bufferP is a LongType range key")
+      val retainedBytes = probeSpec.estimatedRetainedBytes(array)
+      assert(retainedBytes == array.length * (32L + 8L),
+        "retained bytes for a long range key must only account for index structural arrays " +
+          "and row pointers, independent of the group's real row bytes")
 
-    assert(narrowSpec.bufferRowSize == EstimationUtils.getSizePerRow(narrowOutput).toLong)
-    assert(wideSpec.bufferRowSize == EstimationUtils.getSizePerRow(wideOutput).toLong)
-    assert(wideSpec.bufferRowSize > narrowSpec.bufferRowSize,
-      "test setup must actually widen the buffered schema")
-
-    val n = 100L
-    assert(wideSpec.estimateMemoryBytes(n) > narrowSpec.estimateMemoryBytes(n),
-      "a wider buffered schema must raise the pre-admission memory estimate, since each index " +
-        "entry retains a full copy of the buffered row rather than a fixed per-row constant")
-  }
-
-  test("build rejects a wide buffered schema whose estimate exceeds maxBytes, without " +
-    "ever reaching the point a flat per-row estimate would have wrongly admitted") {
-    withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
-      val wideOutput = Seq(bufferId, bufferP) ++ wideExtraCols
-      // What the old, schema-oblivious 64-bytes/row (IntervalIndexKind) estimate would have
-      // reported as the admission cost for this row count - a flat heuristic would have
-      // admitted this group as long as maxBytes covers that number, regardless of how wide
-      // the buffered side's actual schema is.
-      val oldFlatEstimate = array.length * 64L
-      val maxBytes = oldFlatEstimate + 1L
-      val spec = pointInRangeSpecWithBufferOutput(
-        threshold = 2, wideOutput, maxBytes = Some(maxBytes))
-
-      assert(spec.estimateMemoryBytes(array.length) > maxBytes,
-        "test setup must pick a schema wide enough that the schema-aware estimate exceeds " +
-          "what the old flat per-row estimate would have reported")
-
-      val consumer = neverSpillConsumer(tc.taskMemoryManager())
-      val handle = RangeGroupProbe.build(array, spec, consumer)
-      assert(handle == null,
-        "a wide buffered schema must be rejected by the pre-admission check, even though the " +
-          "old flat per-row estimate would have wrongly admitted it into a build attempt")
+      val maxBytes = retainedBytes + 1
+      val spec = pointInRangeSpec(threshold = 2, maxBytes = Some(maxBytes))
+      assert(spec.isEligible(array),
+        "a group whose structural bytes fit within maxBytes must be eligible")
+      val tooSmallSpec = pointInRangeSpec(threshold = 2, maxBytes = Some(retainedBytes - 1))
+      assert(!tooSmallSpec.isEligible(array),
+        "a group whose structural bytes exceed maxBytes must not be eligible")
     }
   }
 
-  test("build skips the index when the nominal estimate exceeds maxBytes") {
+  test("isEligible rejects a boxed-key group once its real per-row key bytes exceed maxBytes, " +
+    "even though the fixed structural estimate alone would not predict it") {
+    sc = new SparkContext("local", "test", new SparkConf(false))
+    val taskContext = MemoryTestingUtils.fakeTaskContext(SparkEnv.get)
+    TaskContext.setTaskContext(taskContext)
+    try {
+      val strStreamLo = AttributeReference("s_lo", StringType)()
+      val strStreamHi = AttributeReference("s_hi", StringType)()
+      val strBufferP = AttributeReference("s_p", StringType)()
+      val conf = new SQLConf
+      conf.setConf(SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD, 2)
+      conf.setConf(SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_MAX_BYTES, 1024L * 1024L)
+      val condition = Some(strBufferP >= strStreamLo && strBufferP <= strStreamHi)
+      val spec = RangeGroupProbe.createSpec(
+        condition,
+        Inner,
+        Seq(streamId),
+        Seq(bufferId),
+        Seq(streamId, strStreamLo, strStreamHi),
+        Seq(bufferId, strBufferP),
+        BuildRight,
+        conf).getOrElse(fail("expected a recognized point-in-range spec with a string key"))
+      assert(!spec.usesLongKeys, "a StringType range key must not be treated as a long key")
+
+      val array = new ExternalAppendOnlyUnsafeRowArray(
+        taskContext.taskMemoryManager(),
+        SparkEnv.get.blockManager,
+        SparkEnv.get.serializerManager,
+        taskContext,
+        1024,
+        SparkEnv.get.memoryManager.pageSizeBytes,
+        Int.MaxValue,
+        Long.MaxValue,
+        1,
+        Long.MaxValue)
+      val proj = UnsafeProjection.create(Array[DataType](LongType, StringType))
+      // 1,000 rows with a 4KB string range key: the flat 16-bytes/row nominal estimate alone
+      // would predict ~24KB (well under the 1MB cap), but the real deep-copied key cost is
+      // several MB - exactly the gap that let boxed-key groups slip past admission and spike
+      // memory inside transform() before this fix.
+      val wideValue = UTF8String.fromString("x" * 4000)
+      (0 until 1000).foreach { _ => array.add(proj(InternalRow(1L, wideValue))) }
+      assert(!array.isSpillBacked, "test setup must keep this array in-memory")
+
+      assert(!spec.isEligible(array),
+        "a boxed-key group whose real per-row key bytes exceed maxBytes must be declined, " +
+          "even though the flat per-row constant alone would have wrongly predicted it fits")
+    } finally {
+      TaskContext.unset()
+    }
+  }
+
+  test("build succeeds for wide tables with huge strings under zero-copy, without exceeding " +
+    "structural maxBytes") {
+    sc = new SparkContext("local", "test", new SparkConf(false))
+    val taskContext = MemoryTestingUtils.fakeTaskContext(SparkEnv.get)
+    TaskContext.setTaskContext(taskContext)
+    try {
+      val bufferWide = AttributeReference("s_wide", StringType)()
+      val wideOutput = Seq(bufferId, bufferP, bufferWide)
+      val array = new ExternalAppendOnlyUnsafeRowArray(
+        taskContext.taskMemoryManager(),
+        SparkEnv.get.blockManager,
+        SparkEnv.get.serializerManager,
+        taskContext,
+        1024,
+        SparkEnv.get.memoryManager.pageSizeBytes,
+        1000,
+        Long.MaxValue,
+        1000,
+        Long.MaxValue)
+      val proj = UnsafeProjection.create(Array[DataType](LongType, LongType, StringType))
+      val hugeValue = UTF8String.fromString("x" * 100000)
+      (0 until 10).foreach { i =>
+        array.add(proj(InternalRow(1L, i.toLong * 10L, hugeValue)))
+      }
+
+      // Total buffered row bytes are ~1MB, but the structural index for 10 rows is only ~400B.
+      // Under zero-copy, a maxBytes of 10KB easily accommodates the structural index, whereas
+      // a policy that counted row payloads would have wrongly rejected it.
+      val maxBytes = 10 * 1024L
+      val spec = pointInRangeSpecWithBufferOutput(
+        threshold = 2, wideOutput, maxBytes = Some(maxBytes))
+      val consumer = neverSpillConsumer(taskContext.taskMemoryManager())
+      val handle = RangeGroupProbe.build(array, spec, consumer)
+      assert(handle != null,
+        "wide rows with huge string payloads must be indexed successfully under zero-copy " +
+          "without duplicating their payloads or failing maxBytes")
+      assert(handle.allocatedBytes < maxBytes,
+        "allocated structural bytes must remain well below maxBytes")
+      RangeGroupProbe.release(handle, consumer)
+      array.clear()
+    } finally {
+      TaskContext.unset()
+    }
+  }
+
+  test("build skips the index when the structural estimate exceeds maxBytes") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>
       val consumer = neverSpillConsumer(tc.taskMemoryManager())
       val spec = pointInRangeSpec(threshold = 2, maxBytes = Some(1L))
       val handle = RangeGroupProbe.build(array, spec, consumer)
       assert(handle == null,
-        "a group whose nominal per-row estimate exceeds maxBytes must fall back to a linear scan")
+        "a group whose structural estimate exceeds maxBytes must fall back to a linear scan")
     }
   }
 
@@ -370,18 +443,19 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     }
   }
 
-  test("build releases and falls back when TaskMemoryManager cannot grant the true-up") {
+  test("build releases and falls back when TaskMemoryManager cannot grant the peak build " +
+    "budget") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
       assert(!array.isSpillBacked, "test setup must keep this array in-memory")
       val spec = pointInRangeSpec(threshold = 2)
-      val nominalBytes = spec.estimateMemoryBytes(array.length)
-      // Budget exactly covers the nominal estimate, so the first acquireMemory succeeds, but
-      // leaves nothing available for the true-up once the real footprint is measured.
-      val consumer = constrainedConsumer(budget = nominalBytes)
+      val peakBytes = spec.peakBuildBytes(array)
+      // Budget falls one byte short of the pre-transform() peak request, so the admission
+      // acquireMemory call itself must decline rather than reaching transform() at all.
+      val consumer = constrainedConsumer(budget = peakBytes - 1)
       val handle = RangeGroupProbe.build(array, spec, consumer)
       assert(handle == null,
-        "when the real relation footprint exceeds the nominal estimate and the consumer has " +
-          "no more memory to grant, the index must be released and the group must fall back")
+        "when the consumer cannot grant the full pre-transform() peak budget, the build must " +
+          "be declined up front and the group must fall back to a linear scan")
     }
   }
 
@@ -409,7 +483,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     // A group reused below that point stays at parity with range indexing disabled.
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, _) =>
       val session = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
-      val gate = RangeGroupProbe.PROBE_THRESHOLD
+      val gate = RangeGroupProbe.MIN_PROBES_BEFORE_BUILD
 
       var probes = 0
       while (probes < gate - 1) {
@@ -433,7 +507,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       // Every probe below the threshold: candidates must come straight from the array, not
       // an index.
       var probes = 0
-      while (probes < RangeGroupProbe.PROBE_THRESHOLD - 1) {
+      while (probes < RangeGroupProbe.MIN_PROBES_BEFORE_BUILD - 1) {
         val linear = session.candidates(array, InternalRow(1L, 25L, 55L)).toSeq
         assert(linear.length == array.length,
           "a probe below the gate must linearly scan every row")
@@ -451,7 +525,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
   }
 
   test("a spill-backed group's fallback is recorded on its first probe, not after " +
-    "PROBE_THRESHOLD probes") {
+    "MIN_PROBES_BEFORE_BUILD probes") {
     withRowArray(inMemoryRows = 4, totalRows = 10) { (array, _) =>
       assert(array.isSpillBacked, "test setup must force a real spill")
       val indexedMetric = SQLMetrics.createMetric(sc, "indexed")
@@ -464,7 +538,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       assert(fallbackMetric.value == 1,
         "row count and spill state are fixed once buffering completes, so a group already " +
         "ineligible on its first probe must be declined immediately instead of waiting for " +
-        "PROBE_THRESHOLD probes to reach the same, already-known outcome")
+        "MIN_PROBES_BEFORE_BUILD probes to reach the same, already-known outcome")
 
       // Later probes of the same group must stay no-ops: no repeated build attempt, no
       // repeated metric increment.
@@ -613,7 +687,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       val probeSession = RangeGroupProbe.Session(pointInRangeSpec(threshold = 2))
 
       val streamProj = UnsafeProjection.create(Array[DataType](LongType, LongType, LongType))
-      val streamRows = (0 until RangeGroupProbe.PROBE_THRESHOLD).map { _ =>
+      val streamRows = (0 until RangeGroupProbe.MIN_PROBES_BEFORE_BUILD).map { _ =>
         streamProj(InternalRow(1L, 25L, 55L)).copy()
       }
       val bufferProj = UnsafeProjection.create(Array[DataType](LongType, LongType))
@@ -635,10 +709,10 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
         eagerCleanupResources = () => (),
         probeSession = probeSession)
 
-      // Drive the scanner through PROBE_THRESHOLD probes of the same equi-key group, draining
+      // Drive the scanner through MIN_PROBES_BEFORE_BUILD probes of the same equi-key group, draining
       // each candidate iterator fully, to cross the deferred-build gate.
       var i = 0
-      while (i < RangeGroupProbe.PROBE_THRESHOLD - 1) {
+      while (i < RangeGroupProbe.MIN_PROBES_BEFORE_BUILD - 1) {
         assert(scanner.findNextInnerJoinRows())
         val it = scanner.candidatesFor(scanner.getStreamedRow)
         while (it.hasNext) it.next()

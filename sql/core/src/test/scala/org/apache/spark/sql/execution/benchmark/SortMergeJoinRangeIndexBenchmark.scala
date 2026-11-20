@@ -21,10 +21,14 @@ import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.internal.config.MAX_RESULT_SIZE
 import org.apache.spark.internal.config.UI.UI_ENABLED
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
+import org.apache.spark.sql.types.{DataType, IntegerType, LongType, StringType, StructField,
+  StructType}
+import org.apache.spark.unsafe.types.UTF8String
 
 /**
  * Benchmark sort-merge join's per-equi-key-group range index against the plain linear
@@ -40,7 +44,7 @@ import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
  *
  * Two admission gates decide whether a group is indexed at all: the row threshold
  * (`spark.sql.join.sortMergeJoin.rangeIndex.threshold`, 16 by default) and the probe
- * gate (`RangeGroupProbe.PROBE_THRESHOLD`, a fixed amortization constant of 128, set
+ * gate (`RangeGroupProbe.MIN_PROBES_BEFORE_BUILD`, a fixed amortization constant of 128, set
  * above the measured point where a group's accumulated linear rescans approach the
  * index's one-time build cost). The group-size sweep holds reuse at 50 probes per
  * group -- below the probe gate -- so its rows measure that groups the policy never
@@ -61,6 +65,21 @@ import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
  * the default policy does admit it and the win shows; one runs with whole-stage codegen
  * on and the other with it off, since that PR's non-indexed implementation only sped
  * things up with codegen on.
+ *
+ * The `maxBytes` sweep answers a different question than every case above: not whether a
+ * group should be indexed, but how large `spark.sql.join.sortMergeJoin.rangeIndex.maxBytes`
+ * needs to be to actually admit realistic groups. `RangeGroupProbe.build()` trues its
+ * admission decision up against `RangeRelation.estimatedSize`'s real, `SizeEstimator`-based
+ * measurement, which recurses into every retained row regardless of whether `transform()`
+ * copied it or (as of the `copyRows = false` optimization) merely referenced the row
+ * `ExternalAppendOnlyUnsafeRowArray` already owns -- so `maxBytes` scales with the buffered
+ * side's actual row *width*, not just its row count, independent of that optimization. Two
+ * schemas at the large-group steady-state size/reuse above isolate that effect: "narrow"
+ * (the same 3-long-column shape as every other case here) stays far under the current 8MB
+ * default at this size; "wide" adds one 500-byte STRING column unrelated to the join
+ * condition, pushing the same group's real footprint past the default and into the next
+ * few candidate ceilings, so the sweep shows where (if anywhere) the default actually costs
+ * realistic, wide-schema workloads the win every narrow-row case above already gets.
  *
  * To run this benchmark:
  * {{{
@@ -98,7 +117,7 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
   private val baseReuse = 50
   // Straddles the default threshold (16) on both sides.
   private val groupSizes = Seq(8, 16, 64, 256, 1024, 4096)
-  // Spans the probe gate (`RangeGroupProbe.PROBE_THRESHOLD`, 128) on both sides: below it
+  // Spans the probe gate (`RangeGroupProbe.MIN_PROBES_BEFORE_BUILD`, 128) on both sides: below it
   // the deferred build keeps a group on the linear scan at parity with the feature
   // disabled, above it the index engages and amortizes. 10000 pushes well past the gate,
   // so the one-time build cost is amortized over enough probes to approach the steady-
@@ -135,7 +154,7 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
   private lazy val pointStreamedByReuse: Map[Int, DataFrame] =
     reuseCounts.map(r => r -> pointStreamed(repGroupSize, r)).toMap
 
-  // A group 16X larger than repGroupSize, reused enough (5000, well past PROBE_THRESHOLD)
+  // A group 16X larger than repGroupSize, reused enough (5000, well past MIN_PROBES_BEFORE_BUILD)
   // to amortize the one-time build: the steady-state regime the reuse sweep above only
   // approaches. Sized to keep the "disabled" baseline (a full O(groupSize) rescan per
   // probe) within roughly a minute rather than letting the win grow without bound.
@@ -143,6 +162,34 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
   private val largeGroupReuse = 5000
   private lazy val largeGroupBuffered: DataFrame = pointBuffered(largeGroupSize)
   private lazy val largeGroupStreamed: DataFrame = pointStreamed(largeGroupSize, largeGroupReuse)
+
+  // A buffered-side column unrelated to the join condition, wide enough that a single
+  // largeGroupSize-row group's real footprint (per-row UnsafeRow content, not row count
+  // alone) crosses the default maxBytes -- see `maxBytesSweepCases` below.
+  private val wideColumnBytes = 500
+  private def pointBufferedWide(g: Int): DataFrame = cached(
+    spark.range(numGroups.toLong * g).selectExpr(
+      s"id % $numGroups as s_k",
+      s"(id div $numGroups) * $width as lo",
+      s"(id div $numGroups) * $width + ${width - 1} as hi",
+      s"repeat('x', $wideColumnBytes) as s_wide"))
+  private lazy val largeGroupBufferedWide: DataFrame = pointBufferedWide(largeGroupSize)
+
+  // A genuinely wide *schema* instead of one huge column: dozens to a hundred moderate-width
+  // STRING columns, approximating a real fact table's buffered side (name/code/category-style
+  // columns, not one giant blob). manyFieldsWidthBytes is a typical such column's length.
+  private val manyFieldsWidthBytes = 20
+  private val manyFieldsCounts = Seq(30, 50, 100)
+  private def pointBufferedManyFields(g: Int, numFields: Int): DataFrame = {
+    val extraCols = (0 until numFields).map(i => s"repeat('x', $manyFieldsWidthBytes) as f$i")
+    val selectCols = Seq(
+      s"id % $numGroups as s_k",
+      s"(id div $numGroups) * $width as lo",
+      s"(id div $numGroups) * $width + ${width - 1} as hi") ++ extraCols
+    cached(spark.range(numGroups.toLong * g).selectExpr(selectCols: _*))
+  }
+  private lazy val largeGroupBufferedManyFields: Map[Int, DataFrame] =
+    manyFieldsCounts.map(n => n -> pointBufferedManyFields(largeGroupSize, n)).toMap
 
   // Above every sub-range of the representative group, so a point-in-range probe matches
   // nothing in its equi-key group.
@@ -233,6 +280,8 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     pointStreamedByReuse
     largeGroupBuffered
     largeGroupStreamed
+    largeGroupBufferedWide
+    largeGroupBufferedManyFields
     pointMisses
     overlapBuffered
     overlapStreamed
@@ -256,6 +305,23 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
         SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         rangeIndexThresholdConf(indexEnabled)) {
+      val planned = df
+      val plan = planned.queryExecution.executedPlan
+      assert(plan.exists(_.isInstanceOf[SortMergeJoinExec]), plan)
+      planned.noop()
+    }
+  }
+
+  private def rangeIndexMaxBytesConf(maxBytes: String): (String, String) =
+    SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_MAX_BYTES.key -> maxBytes
+
+  private def runWithMaxBytes(df: => DataFrame, maxBytes: String): Unit = {
+    withSQLConf(
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        rangeIndexThresholdConf(indexEnabled = true),
+        rangeIndexMaxBytesConf(maxBytes)) {
       val planned = df
       val plan = planned.queryExecution.executedPlan
       assert(plan.exists(_.isInstanceOf[SortMergeJoinExec]), plan)
@@ -343,6 +409,86 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     }
   }
 
+  // Candidate ceilings for spark.sql.join.sortMergeJoin.rangeIndex.maxBytes: 8m is the
+  // config's own default, the rest double it until the wide-row case below is comfortably
+  // admitted, bracketing where (if anywhere) the default stops being the binding constraint.
+  private val maxBytesCandidates = Seq("8m", "16m", "32m", "64m")
+  // A real fact-table-style wide schema (dozens to a hundred moderate string columns) needs
+  // a much larger ceiling than one single wide column of similar total width -- see
+  // `logMaxBytesCalibration`'s per-schema byte estimates -- so this sweep starts where the
+  // single-wide-column sweep above left off and climbs further.
+  private val manyFieldsMaxBytesCandidates = Seq("16m", "32m", "64m", "128m", "256m")
+
+  // scalastyle:off println
+  private def logLine(msg: String): Unit = {
+    println(msg)
+    output.foreach(o => o.write((msg + "\n").getBytes))
+  }
+  // scalastyle:on println
+
+  private def logMaxBytesCalibration(): Unit = {
+    val narrowRowBytes = UnsafeProjection.create(Array[DataType](LongType, LongType, LongType))(
+      InternalRow(0L, 0L, 0L)).getSizeInBytes
+    val wideRowBytes = UnsafeProjection.create(
+      Array[DataType](LongType, LongType, LongType, StringType))(
+      InternalRow(0L, 0L, 0L, UTF8String.fromString("x" * wideColumnBytes))).getSizeInBytes
+    def groupMb(rowBytes: Int): Double = rowBytes.toLong * largeGroupSize / 1024.0 / 1024.0
+    logLine(s"[maxBytes calibration] narrow row (3 longs): $narrowRowBytes raw " +
+      f"UnsafeRow bytes/row; a $largeGroupSize-row group's raw content alone is about " +
+      f"${groupMb(narrowRowBytes)}%.1f MB.")
+    logLine(s"[maxBytes calibration] wide row (3 longs + $wideColumnBytes-char " +
+      s"string): $wideRowBytes raw UnsafeRow bytes/row; a $largeGroupSize-row group's raw " +
+      f"content alone is about ${groupMb(wideRowBytes)}%.1f MB -- RangeRelation." +
+      "estimatedSize (what maxBytes is actually checked against) adds JVM object/array " +
+      "overhead and the index's own per-row bookkeeping on top of this.")
+    manyFieldsCounts.foreach { n =>
+      val types = Array[DataType](LongType, LongType, LongType) ++
+        Array.fill[DataType](n)(StringType)
+      val values = Seq(0L, 0L, 0L) ++
+        Seq.fill(n)(UTF8String.fromString("x" * manyFieldsWidthBytes))
+      val manyFieldsRowBytes =
+        UnsafeProjection.create(types)(InternalRow.fromSeq(values)).getSizeInBytes
+      logLine(s"[maxBytes calibration] wide schema ($n x $manyFieldsWidthBytes-char string " +
+        s"columns): $manyFieldsRowBytes raw UnsafeRow bytes/row; a $largeGroupSize-row " +
+        f"group's raw content alone is about ${groupMb(manyFieldsRowBytes)}%.1f MB.")
+    }
+  }
+
+  private def maxBytesSweepCase(name: String, rows: Long, candidates: Seq[String])
+      (df: => DataFrame): Unit = {
+    if (!shouldRun(name)) return
+    val benchmark = new Benchmark(name, rows, output = output)
+    benchmark.addCase("Range index disabled") { _ =>
+      run(df, indexEnabled = false)
+    }
+    candidates.foreach { mb =>
+      benchmark.addCase(s"Range index enabled, maxBytes=$mb") { _ =>
+        runWithMaxBytes(df, mb)
+      }
+    }
+    benchmark.run()
+  }
+
+  private def maxBytesSweepCases(): Unit = {
+    logMaxBytesCalibration()
+    val n = s"probe=${numGroups * largeGroupReuse}, groups=$numGroups, groupSize=$largeGroupSize"
+    maxBytesSweepCase(s"point-in-range inner, narrow row, maxBytes sweep ($n)",
+        (numGroups * largeGroupReuse).toLong, maxBytesCandidates) {
+      largeGroupStreamed.join(largeGroupBuffered, pointCond, "inner")
+    }
+    maxBytesSweepCase(s"point-in-range inner, wide row ($wideColumnBytes-char string), " +
+        s"maxBytes sweep ($n)", (numGroups * largeGroupReuse).toLong, maxBytesCandidates) {
+      largeGroupStreamed.join(largeGroupBufferedWide, pointCond, "inner")
+    }
+    manyFieldsCounts.foreach { numFields =>
+      maxBytesSweepCase(s"point-in-range inner, wide schema ($numFields x " +
+          s"$manyFieldsWidthBytes-char string columns), maxBytes sweep ($n)",
+          (numGroups * largeGroupReuse).toLong, manyFieldsMaxBytesCandidates) {
+        largeGroupStreamed.join(largeGroupBufferedManyFields(numFields), pointCond, "inner")
+      }
+    }
+  }
+
   private def fullOverlapCase(): Unit = {
     val n = s"probe=${fullGroups * fullReuse}, groups=$fullGroups, groupSize=$fullGroupSize"
     val rows = fullGroups.toLong * fullReuse * fullGroupSize
@@ -388,6 +534,7 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
       groupSizeSweepCases()
       reuseSweepCases()
       largeGroupSteadyStateCase()
+      maxBytesSweepCases()
       fullOverlapCase()
       otherShapeCases()
       joinTypeCases()

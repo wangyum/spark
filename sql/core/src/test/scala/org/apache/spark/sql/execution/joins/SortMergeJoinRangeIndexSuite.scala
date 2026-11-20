@@ -29,7 +29,7 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
   // group of this size actually builds and probes a range index instead of falling back to
   // the n <= threshold linear-scan path exercised by the first (small) test below.
   private val largeGroupSize = 20
-  // Streamed rows per equi key in the engaged tests: above RangeGroupProbe.PROBE_THRESHOLD
+  // Streamed rows per equi key in the engaged tests: above RangeGroupProbe.MIN_PROBES_BEFORE_BUILD
   // (128), so every group they probe crosses the shipped amortization gate and the tests
   // exercise the real admission policy rather than a lowered one.
   private val probesPerGroup = 134
@@ -297,8 +297,7 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
           s"a range key overlapping an equi key must never be recognized " +
             s"(RangeGroupProbe.createSpec returns None for it):\n$plan")
         assert(smj.forall(j => !j.metrics.contains("numRangeIndexedGroups") &&
-          !j.metrics.contains("numRangeIndexFallbackGroups") &&
-          !j.metrics.contains("numRangeIndexBuildErrors")),
+          !j.metrics.contains("numRangeIndexFallbackGroups")),
           s"an overlapping range/equi key must never register range-index metrics:\n$plan")
       }
     }
@@ -492,8 +491,7 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
           s"FullOuter must never recognize a range condition " +
             s"(RangeGroupProbe.createSpec returns None for it):\n$plan")
         assert(smj.forall(j => !j.metrics.contains("numRangeIndexedGroups") &&
-          !j.metrics.contains("numRangeIndexFallbackGroups") &&
-          !j.metrics.contains("numRangeIndexBuildErrors")),
+          !j.metrics.contains("numRangeIndexFallbackGroups")),
           s"FullOuter must never register range-index metrics:\n$plan")
       }
     }
@@ -673,8 +671,7 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
       assert(!smj.nodeName.contains("(rangeIndex=true)"),
         s"expected no rangeIndex suffix when the feature is disabled: ${smj.nodeName}")
       assert(!smj.metrics.contains("numRangeIndexedGroups") &&
-        !smj.metrics.contains("numRangeIndexFallbackGroups") &&
-        !smj.metrics.contains("numRangeIndexBuildErrors"),
+        !smj.metrics.contains("numRangeIndexFallbackGroups"),
         s"expected no rangeIndex metrics when the feature is disabled: ${smj.metrics.keys}")
     }
   }
@@ -686,7 +683,6 @@ class SortMergeJoinRangeIndexSuite extends QueryTest with SharedSparkSession {
       assert(smj.nonEmpty)
       assert(smj.forall(!_.metrics.contains("numRangeIndexedGroups")))
       assert(smj.forall(!_.metrics.contains("numRangeIndexFallbackGroups")))
-      assert(smj.forall(!_.metrics.contains("numRangeIndexBuildErrors")))
     }
   }
 }

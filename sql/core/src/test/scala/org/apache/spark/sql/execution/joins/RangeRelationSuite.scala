@@ -1333,4 +1333,24 @@ class RangeRelationSuite extends SparkFunSuite {
     }
   }
 
+  test("transform with copyRows = false directly references existing row instances") {
+    val r1 = InternalRow(10L, 20L, 1)
+    val r2 = InternalRow(30L, 40L, 2)
+    val buildKeys = Seq(
+      BoundReference(0, LongType, nullable = false),
+      BoundReference(1, LongType, nullable = false))
+
+    val mode = RangeRelationBroadcastMode(buildKeys, IntervalIndexKind)
+    val indexWithCopy = mode.transform(Seq(r1, r2).iterator, Some(2), copyRows = true)
+      .asInstanceOf[LongIntervalIndex]
+    val resCopy = indexWithCopy.overlapping(15L, 15L).next()
+    assert(resCopy == r1)
+    assert(!(resCopy eq r1), "copyRows = true must produce a new row copy")
+
+    val indexZeroCopy = mode.transform(Seq(r1, r2).iterator, Some(2), copyRows = false)
+      .asInstanceOf[LongIntervalIndex]
+    val resZeroCopy = indexZeroCopy.overlapping(15L, 15L).next()
+    assert(resZeroCopy eq r1, "copyRows = false must retain the exact row instance without copy")
+  }
+
 }

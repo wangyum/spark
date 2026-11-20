@@ -1337,13 +1337,20 @@ object SQLConf {
   val SORT_MERGE_JOIN_RANGE_INDEX_MAX_BYTES =
     buildConf("spark.sql.join.sortMergeJoin.rangeIndex.maxBytes")
       .internal()
-      .doc("Maximum memory in bytes that an equi-key group range index may allocate from " +
-        "TaskMemoryManager before falling back to linear scan.")
+      .doc("Maximum memory in bytes that an equi-key group range index's structural arrays " +
+        "(keys and row pointers) may allocate from TaskMemoryManager before falling back to " +
+        "linear scan. Under zero-copy indexing, row payloads already buffered by sort-merge " +
+        "join are referenced directly without duplication, so when the range key maps to a " +
+        "long (e.g. integral types) each entry consumes only ~32-48 bytes regardless of the " +
+        "width of other columns; a 32MB limit then accommodates skewed groups with up to " +
+        "~700,000 rows. A range key that does not map to a long (e.g. string, binary, or a " +
+        "wide decimal) is deep-copied into the index instead, so its per-row cost scales with " +
+        "the key's own width.")
       .version("4.5.0")
       .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
       .bytesConf(ByteUnit.BYTE)
       .checkValue(_ > 0, "value should be positive")
-      .createWithDefaultString("8MB")
+      .createWithDefaultString("32MB")
 
   val SHUFFLE_HASH_JOIN_FACTOR =
     buildConfFromConfigFile[Int]("spark.sql.shuffledHashJoinFactor")

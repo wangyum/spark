@@ -274,11 +274,12 @@ private[joins] class IntervalIndex private (
     private[this] var lows: Array[Any],
     private[this] var highs: Array[Any],
     private[this] var maxHighIdx: Array[Int],
-    private[this] var rows: Array[InternalRow])
+    private[this] var rows: Array[InternalRow],
+    private[this] var copyRows: Boolean = true)
   extends BoxedKeyOrdering with Externalizable with KryoSerializable {
 
   // Needed for Java/Kryo deserialization; see readExternal/read below.
-  def this() = this(null, null, null, null, null)
+  def this() = this(null, null, null, null, null, true)
 
   def keyType: DataType = _keyType
 
@@ -296,9 +297,18 @@ private[joins] class IntervalIndex private (
    * would consult `estimatedSize` for a KnownSizeEstimation and recurse.
    * Its identity tracking charges a key shared by `lows` and `highs`, or
    * aliased across indexes, exactly once.
+   *
+   * When `copyRows = false` (zero-copy indexing), row payloads are referenced
+   * directly from the caller without duplication; only the structural arrays
+   * and the row reference array container are counted.
    */
-  override def estimatedSize: Long =
-    SizeEstimator.estimate(Array[AnyRef](lows, highs, maxHighIdx, rows))
+  override def estimatedSize: Long = {
+    if (copyRows) {
+      SizeEstimator.estimate(Array[AnyRef](lows, highs, maxHighIdx, rows))
+    } else {
+      SizeEstimator.estimate(Array[AnyRef](lows, highs, maxHighIdx)) + (16L + 8L * rows.length)
+    }
+  }
 
   def overlapping(low: Any, high: Any): Iterator[InternalRow] = {
     if (lows.isEmpty || low == null || high == null) return Iterator.empty
@@ -451,7 +461,8 @@ private[joins] object IntervalIndex {
       rows: Iterator[InternalRow],
       buildKeys: Seq[Expression],
       keyType: DataType,
-      sizeHint: Option[Long]): IntervalIndex = {
+      sizeHint: Option[Long],
+      copyRows: Boolean = true): IntervalIndex = {
     val buffer = new ArrayBuffer[(Any, Any, InternalRow)](RangeIndex.initialCapacity(sizeHint))
     val ordering = PhysicalDataType.ordering(keyType)
 
@@ -464,7 +475,8 @@ private[joins] object IntervalIndex {
         val rawLo = lowExpr.eval(r)
         if (rawLo != null) {
           val key = InternalRow.copyValue(rawLo)
-          buffer += ((key, key, r.copy()))
+          val rowToStore = if (copyRows) r.copy() else r
+          buffer += ((key, key, rowToStore))
         }
       }
     } else {
@@ -478,18 +490,20 @@ private[joins] object IntervalIndex {
           val lo = InternalRow.copyValue(rawLo)
           val hi = InternalRow.copyValue(rawHi)
           val (normLo, normHi) = if (ordering.lteq(lo, hi)) (lo, hi) else (hi, lo)
-          buffer += ((normLo, normHi, r.copy()))
+          val rowToStore = if (copyRows) r.copy() else r
+          buffer += ((normLo, normHi, rowToStore))
         }
       }
     }
 
-    sortAndBuild(keyType, ordering, buffer.toArray)
+    sortAndBuild(keyType, ordering, buffer.toArray, copyRows)
   }
 
   private def sortAndBuild(
       keyType: DataType,
       ordering: Ordering[Any],
-      valid: Array[(Any, Any, InternalRow)]): IntervalIndex = {
+      valid: Array[(Any, Any, InternalRow)],
+      copyRows: Boolean): IntervalIndex = {
     java.util.Arrays.sort(valid, Ordering.by[(Any, Any, InternalRow), Any](_._1)(ordering))
     val length = valid.length
     val lows = new Array[Any](length)
@@ -521,7 +535,7 @@ private[joins] object IntervalIndex {
     }
 
     fillMaxHigh(0, length)
-    new IntervalIndex(keyType, lows, highs, maxHighIdx, rows)
+    new IntervalIndex(keyType, lows, highs, maxHighIdx, rows, copyRows)
   }
 }
 
@@ -602,17 +616,24 @@ private[joins] class OverlapIterator(
 private[joins] class PointIndex private (
     private[this] var _keyType: DataType,
     private[this] var keys: Array[Any],
-    private[this] var rows: Array[InternalRow])
+    private[this] var rows: Array[InternalRow],
+    private[this] var copyRows: Boolean = true)
   extends BoxedKeyOrdering with Externalizable with KryoSerializable {
 
   // Needed for Java/Kryo deserialization; see readExternal/read below.
-  def this() = this(null, null, null)
+  def this() = this(null, null, null, true)
 
   def keyType: DataType = _keyType
 
   private[this] def length: Int = keys.length
 
-  override def estimatedSize: Long = SizeEstimator.estimate(Array[AnyRef](keys, rows))
+  override def estimatedSize: Long = {
+    if (copyRows) {
+      SizeEstimator.estimate(Array[AnyRef](keys, rows))
+    } else {
+      SizeEstimator.estimate(keys) + (16L + 8L * rows.length)
+    }
+  }
 
   /**
    * Points whose key is below `value`, or at it when `strict` is false. For a
@@ -704,7 +725,8 @@ private[joins] object PointIndex {
       rows: Iterator[InternalRow],
       buildKeys: Seq[Expression],
       keyType: DataType,
-      sizeHint: Option[Long]): PointIndex = {
+      sizeHint: Option[Long],
+      copyRows: Boolean = true): PointIndex = {
     val buffer = new ArrayBuffer[(Any, InternalRow)](RangeIndex.initialCapacity(sizeHint))
     val keyExpr = buildKeys.head
     val ordering = PhysicalDataType.ordering(keyType)
@@ -714,17 +736,19 @@ private[joins] object PointIndex {
       val rawKey = keyExpr.eval(r)
       if (rawKey != null) {
         val key = InternalRow.copyValue(rawKey)
-        buffer += ((key, r.copy()))
+        val rowToStore = if (copyRows) r.copy() else r
+        buffer += ((key, rowToStore))
       }
     }
 
-    sortAndBuild(keyType, ordering, buffer.toArray)
+    sortAndBuild(keyType, ordering, buffer.toArray, copyRows)
   }
 
   private def sortAndBuild(
       keyType: DataType,
       ordering: Ordering[Any],
-      valid: Array[(Any, InternalRow)]): PointIndex = {
+      valid: Array[(Any, InternalRow)],
+      copyRows: Boolean): PointIndex = {
     java.util.Arrays.sort(valid, Ordering.by[(Any, InternalRow), Any](_._1)(ordering))
     val length = valid.length
     val keys = new Array[Any](length)
@@ -735,7 +759,7 @@ private[joins] object PointIndex {
       rows(i) = valid(i)._2
       i += 1
     }
-    new PointIndex(keyType, keys, rows)
+    new PointIndex(keyType, keys, rows, copyRows)
   }
 }
 
@@ -769,11 +793,12 @@ private[joins] class LongIntervalIndex private (
     private[this] var lows: Array[Long],
     private[this] var highs: Array[Long],
     private[this] var maxHighs: Array[Long],
-    private[this] var rows: Array[InternalRow])
+    private[this] var rows: Array[InternalRow],
+    private[this] var copyRows: Boolean = true)
   extends LongKeyConversion with Externalizable with KryoSerializable {
 
   // Needed for Java/Kryo deserialization; see readExternal/read below.
-  def this() = this(null, null, null, null, null)
+  def this() = this(null, null, null, null, null, true)
 
   def keyType: DataType = _keyType
 
@@ -786,8 +811,14 @@ private[joins] class LongIntervalIndex private (
   private[this] var coreLow: Long = LongIntervalIndex.coreLow(lows)
   private[this] var coreHigh: Long = LongIntervalIndex.coreHigh(highs)
 
-  override def estimatedSize: Long =
-    SizeEstimator.estimate(Array[AnyRef](lows, highs, maxHighs, rows))
+  override def estimatedSize: Long = {
+    if (copyRows) {
+      SizeEstimator.estimate(Array[AnyRef](lows, highs, maxHighs, rows))
+    } else {
+      SizeEstimator.estimate(lows) + SizeEstimator.estimate(highs) +
+        SizeEstimator.estimate(maxHighs) + (16L + 8L * rows.length)
+    }
+  }
 
   def overlapping(low: Long, high: Long): Iterator[InternalRow] = {
     if (lows.isEmpty) return Iterator.empty
@@ -950,7 +981,8 @@ private[joins] object LongIntervalIndex {
       rows: Iterator[InternalRow],
       buildKeys: Seq[Expression],
       keyType: DataType,
-      sizeHint: Option[Long]): LongIntervalIndex = {
+      sizeHint: Option[Long],
+      copyRows: Boolean = true): LongIntervalIndex = {
     val toLongs: Seq[Any => Long] = buildKeys.map(k => RangeIndex.requiredLongKey(k.dataType).value)
     val valid = new ArrayBuffer[LongIntervalIndex.Staged](RangeIndex.initialCapacity(sizeHint))
     val lowExpr = buildKeys.head
@@ -969,7 +1001,8 @@ private[joins] object LongIntervalIndex {
           lo = hi
           hi = t
         }
-        valid += new LongIntervalIndex.Staged(lo, hi, r.copy())
+        val rowToStore = if (copyRows) r.copy() else r
+        valid += new LongIntervalIndex.Staged(lo, hi, rowToStore)
       }
     }
 
@@ -1002,7 +1035,7 @@ private[joins] object LongIntervalIndex {
     }
 
     fillMaxHigh(0, length)
-    new LongIntervalIndex(keyType, lows, highs, maxHighs, rowArr)
+    new LongIntervalIndex(keyType, lows, highs, maxHighs, rowArr, copyRows)
   }
 }
 
@@ -1078,17 +1111,24 @@ private[joins] class LongOverlapIterator(
 private[joins] class LongPointIndex private (
     private[this] var _keyType: DataType,
     private[this] var keys: Array[Long],
-    private[this] var rows: Array[InternalRow])
+    private[this] var rows: Array[InternalRow],
+    private[this] var copyRows: Boolean = true)
   extends LongKeyConversion with Externalizable with KryoSerializable {
 
   // Needed for Java/Kryo deserialization; see readExternal/read below.
-  def this() = this(null, null, null)
+  def this() = this(null, null, null, true)
 
   def keyType: DataType = _keyType
 
   private[this] def length: Int = keys.length
 
-  override def estimatedSize: Long = SizeEstimator.estimate(Array[AnyRef](keys, rows))
+  override def estimatedSize: Long = {
+    if (copyRows) {
+      SizeEstimator.estimate(Array[AnyRef](keys, rows))
+    } else {
+      SizeEstimator.estimate(keys) + (16L + 8L * rows.length)
+    }
+  }
 
   /**
    * Points whose key is below `value`, or at it when `strict` is false. For a
@@ -1192,7 +1232,8 @@ private[joins] object LongPointIndex {
       rows: Iterator[InternalRow],
       buildKeys: Seq[Expression],
       keyType: DataType,
-      sizeHint: Option[Long]): LongPointIndex = {
+      sizeHint: Option[Long],
+      copyRows: Boolean = true): LongPointIndex = {
     require(buildKeys.length == 1, "A long point index expects one build key.")
     val toLong = RangeIndex.requiredLongKey(buildKeys.head.dataType).value
     val valid = new ArrayBuffer[LongPointIndex.Staged](RangeIndex.initialCapacity(sizeHint))
@@ -1202,7 +1243,8 @@ private[joins] object LongPointIndex {
       val r = rows.next()
       val rawKey = keyExpr.eval(r)
       if (rawKey != null) {
-        valid += new LongPointIndex.Staged(toLong(rawKey), r.copy())
+        val rowToStore = if (copyRows) r.copy() else r
+        valid += new LongPointIndex.Staged(toLong(rawKey), rowToStore)
       }
     }
 
@@ -1217,7 +1259,7 @@ private[joins] object LongPointIndex {
       rowArr(i) = staged(i).row
       i += 1
     }
-    new LongPointIndex(keyType, keys, rowArr)
+    new LongPointIndex(keyType, keys, rowArr, copyRows)
   }
 }
 
@@ -1287,28 +1329,33 @@ private[execution] case class RangeRelationBroadcastMode private (
   extends BroadcastMode with Serializable {
 
   override def transform(rows: Array[InternalRow]): RangeRelation =
-    transform(rows.iterator, Some(rows.length))
+    transform(rows.iterator, Some(rows.length), copyRows = true)
 
   override def transform(
       rows: Iterator[InternalRow],
-      sizeHint: Option[Long]): RangeRelation = {
+      sizeHint: Option[Long]): RangeRelation = transform(rows, sizeHint, copyRows = true)
+
+  def transform(
+      rows: Iterator[InternalRow],
+      sizeHint: Option[Long],
+      copyRows: Boolean): RangeRelation = {
     val longKeys = RangeIndex.canMapKeysToLong(buildKeys)
     indexKind match {
       case IntervalIndexKind =>
         require(buildKeys.nonEmpty && buildKeys.length <= 2,
           "An interval index expects (low, high), or one point used as both ends.")
         if (longKeys) {
-          LongIntervalIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint)
+          LongIntervalIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint, copyRows)
         } else {
-          IntervalIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint)
+          IntervalIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint, copyRows)
         }
 
       case PointIndexKind =>
         require(buildKeys.length == 1, "A point index expects one build key.")
         if (longKeys) {
-          LongPointIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint)
+          LongPointIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint, copyRows)
         } else {
-          PointIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint)
+          PointIndex(rows, buildKeys, buildKeys.head.dataType, sizeHint, copyRows)
         }
     }
   }

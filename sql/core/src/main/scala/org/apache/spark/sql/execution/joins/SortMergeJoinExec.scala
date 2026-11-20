@@ -643,7 +643,7 @@ case class SortMergeJoinExec(
     // evaluated directly into generated locals (primitive `long` or boxed `Object`, matching
     // the index's key family) and a direct call to the concrete index class, decided statically
     // here since `rangeProbeSpec`'s index kind and key family are fixed for the life of the
-    // plan. `onProbe` builds the index lazily, deferred until `RangeGroupProbe.PROBE_THRESHOLD`
+    // plan. `onProbe` builds the index lazily, deferred until `RangeGroupProbe.MIN_PROBES_BEFORE_BUILD`
     // probes of the same group confirm it is reused; `currentRelationOrNull` is null until then,
     // or when a group fell back to a linear scan (below threshold, over budget, spilled, or
     // evicted under memory pressure); that case keeps today's behavior unchanged.

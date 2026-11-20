@@ -30,7 +30,6 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, BindR
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.planning.ExtractRangeJoinKeys
 import org.apache.spark.sql.catalyst.plans._
-import org.apache.spark.sql.catalyst.plans.logical.statsEstimation.EstimationUtils
 import org.apache.spark.sql.execution.ExternalAppendOnlyUnsafeRowArray
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
@@ -47,15 +46,14 @@ private[joins] object RangeGroupProbe extends Logging {
    * reuses and a 2.9X win at 1000, so 128 sits just above that break-even point. A cost-model
    * constant, not a user-facing config; revisit with new benchmark evidence if it's wrong.
    */
-  private[joins] val PROBE_THRESHOLD = 128
+  private[joins] val MIN_PROBES_BEFORE_BUILD = 128
 
   final class Spec(
       val mode: RangeRelationBroadcastMode,
       val boundStreamKeys: Seq[Expression],
       val probeKind: RangeProbeKind,
       val threshold: Int,
-      val maxBytes: Long,
-      val bufferRowSize: Long) extends Serializable {
+      val maxBytes: Long) extends Serializable {
 
     /**
      * Whether the build keys map to one order-preserving long (`RangeIndex.longKey`), fixed
@@ -66,21 +64,75 @@ private[joins] object RangeGroupProbe extends Logging {
     val usesLongKeys: Boolean = RangeIndex.canMapKeysToLong(mode.buildKeys)
 
     /**
-     * Pre-admission memory estimate, trued up against the real footprint once `build()`
-     * constructs the relation. `bufferRowSize` (a schema-based per-row estimate) dominates,
-     * since each index entry retains a full copy of its buffered row; `keyOverhead` only
-     * accounts for the key value(s) stored alongside it.
+     * Fixed per-row overhead of the index's own bookkeeping arrays once built - `lows`/`highs`/
+     * `maxHighIdx` for an interval index, or just the key array for a point index - separate
+     * from the row data itself, which `estimatedRetainedBytes`/`peakBuildBytes` account for via
+     * the group's real, already-measured buffered-row byte count rather than a schema guess.
+     * Accurate on its own only for `usesLongKeys`, where every bound is a primitive long; see
+     * `perRowKeyBytes` for the boxed-key case.
      */
-    def estimateMemoryBytes(numRows: Long): Long = {
-      val keyOverhead = mode.indexKind match {
-        case IntervalIndexKind => 32L // two boundary values plus the maxHighIdx array slot
-        case PointIndexKind => 16L // one key value
-      }
-      numRows * (bufferRowSize + keyOverhead)
+    private val keyOverhead: Long = mode.indexKind match {
+      case IntervalIndexKind => 32L // two boundary values plus the maxHighIdx array slot
+      case PointIndexKind => 16L // one key value
     }
 
-    def isEligible(numRows: Long, isSpillBacked: Boolean): Boolean = {
-      numRows >= threshold && !isSpillBacked && estimateMemoryBytes(numRows) <= maxBytes
+    /** Boxed key values the index owns per row: two bounds for an interval index, one key for
+     * a point index - used to project a boxed key's per-row cost from the group's average
+     * buffered-row width below. */
+    private val boxedKeysPerRow: Int = mode.indexKind match {
+      case IntervalIndexKind => 2
+      case PointIndexKind => 1
+    }
+
+    /**
+     * Per-row key storage cost. For `usesLongKeys`, every bound the index stores is a primitive
+     * long (`RangeIndex.longKey`) regardless of the original column's declared type, so the
+     * fixed `keyOverhead` constant is exact. Otherwise `IntervalIndex`/`PointIndex` deep-copy
+     * the raw key value via `InternalRow.copyValue` - a cost that scales with the key's width
+     * (e.g. a `StringType` range bound) - which `keyOverhead` alone does not capture. Since the
+     * key is a subset of the row, the group's own already-measured average buffered-row size
+     * (`inMemoryBufferByteSize / length`) is a conservative, pre-`transform()` proxy for it that
+     * never under-counts.
+     */
+    private def perRowKeyBytes(matches: ExternalAppendOnlyUnsafeRowArray): Long = {
+      if (usesLongKeys) {
+        keyOverhead
+      } else {
+        val avgRowBytes = matches.inMemoryBufferByteSize / math.max(1L, matches.length)
+        math.max(keyOverhead, boxedKeysPerRow * avgRowBytes)
+      }
+    }
+
+    /**
+     * Estimated final, persisted structural footprint of the built index: per-row index
+     * bookkeeping (`perRowKeyBytes` for the key array(s), plus 8 bytes for the
+     * `Array[InternalRow]` reference slot). Under zero-copy indexing (`copyRows = false`), the
+     * index directly references the immutable rows already buffered in
+     * `ExternalAppendOnlyUnsafeRowArray`, so row payload data (which can be huge for wide tables
+     * with 100+ columns) is not duplicated and does not count toward the index's memory
+     * footprint.
+     */
+    def estimatedRetainedBytes(matches: ExternalAppendOnlyUnsafeRowArray): Long =
+      matches.length * (perRowKeyBytes(matches) + 8L)
+
+    /**
+     * Budget to request from `TaskMemoryManager` before calling `transform()`, covering the
+     * final retained index footprint plus the transient staging `transform()` allocates and
+     * discards while sorting and building: 48 bytes/row approximates that transient staging cost.
+     * None of it is retained in the final relation; `build()` releases the unused portion back
+     * once it measures the real footprint.
+     */
+    def peakBuildBytes(matches: ExternalAppendOnlyUnsafeRowArray): Long =
+      matches.length * (perRowKeyBytes(matches) + 48L)
+
+    /**
+     * `matches.inMemoryBufferByteSize`, consulted by `estimatedRetainedBytes` for boxed keys, is
+     * only valid while `!isSpillBacked`; short-circuiting on that check first, before it is
+     * reached, keeps this safe for a spill-backed group.
+     */
+    def isEligible(matches: ExternalAppendOnlyUnsafeRowArray): Boolean = {
+      matches.length >= threshold && !matches.isSpillBacked &&
+        estimatedRetainedBytes(matches) <= maxBytes
     }
   }
 
@@ -148,7 +200,7 @@ private[joins] object RangeGroupProbe extends Logging {
 
     /**
      * Called once per streamed row probing the buffered group, before `candidates`/
-     * `currentRelationOrNull` are consulted. Builds the index once `PROBE_THRESHOLD` probes
+     * `currentRelationOrNull` are consulted. Builds the index once `MIN_PROBES_BEFORE_BUILD` probes
      * confirm the group is reused enough to amortize the one-time build cost; `buildAttempted`
      * latches the decision - including an outright-ineligible verdict from the first probe,
      * since `isEligible` only depends on fixed, per-group state - so later probes never
@@ -167,12 +219,12 @@ private[joins] object RangeGroupProbe extends Logging {
       if (buildAttempted) {
         return
       }
-      if (probeCount == 0 && !spec.isEligible(matches.length, matches.isSpillBacked)) {
+      if (probeCount == 0 && !spec.isEligible(matches)) {
         declineBuild(matches)
         return
       }
       probeCount += 1
-      if (probeCount >= PROBE_THRESHOLD) {
+      if (probeCount >= MIN_PROBES_BEFORE_BUILD) {
         currentHandle = build(matches, spec, this)
         if (currentHandle != null) {
           buildAttempted = true
@@ -375,17 +427,12 @@ private[joins] object RangeGroupProbe extends Logging {
                 val boundStreamKeys = BindReferences.bindReferences(streamRange, streamOutput)
                 val probeKind = RangeProbeKind.forJoin(kind, buildSide)
                 val mode = RangeRelationBroadcastMode(boundBufferKeys, probeKind.indexKind)
-                // The index retains a full copy of every buffered row (see `PointIndex`/
-                // `IntervalIndex`), so the memory estimate must scale with the buffered side's
-                // actual schema rather than a fixed per-row constant.
-                val bufferRowSize = EstimationUtils.getSizePerRow(bufferOutput).toLong
                 Some(new Spec(
                   mode,
                   boundStreamKeys,
                   probeKind,
                   threshold,
-                  conf.sortMergeJoinRangeIndexMaxBytes,
-                  bufferRowSize))
+                  conf.sortMergeJoinRangeIndexMaxBytes))
               }
           }
         }
@@ -395,16 +442,18 @@ private[joins] object RangeGroupProbe extends Logging {
   def build(
       matches: ExternalAppendOnlyUnsafeRowArray,
       spec: Spec,
-      consumer: MemoryConsumer,
-      buildErrorMetric: SQLMetric = null): Handle = {
+      consumer: MemoryConsumer): Handle = {
     val n = matches.length
-    if (!spec.isEligible(n, matches.isSpillBacked)) {
+    if (!spec.isEligible(matches)) {
       return null
     }
 
-    val nominalBytes = spec.estimateMemoryBytes(n)
-    val acquired = if (consumer != null) consumer.acquireMemory(nominalBytes) else nominalBytes
-    if (acquired < nominalBytes) {
+    // Reserved ahead of transform() to cover the structural index arrays and transient staging
+    // allocated during sorting (see `Spec.peakBuildBytes`). Row payloads already buffered in
+    // `matches` are referenced zero-copy, so wide rows with 100+ columns add no extra allocation.
+    val peakBytes = spec.peakBuildBytes(matches)
+    val acquired = if (consumer != null) consumer.acquireMemory(peakBytes) else peakBytes
+    if (acquired < peakBytes) {
       if (consumer != null && acquired > 0) consumer.freeMemory(acquired)
       return null
     }
@@ -416,17 +465,16 @@ private[joins] object RangeGroupProbe extends Logging {
     // below releases exactly what this attempt is holding at the point it failed.
     var heldBytes = acquired
     try {
-      val relation = spec.mode.transform(matches.generateIterator(), Some(n))
-      // The nominal estimate above is schema-based (DataType.defaultSize) and can under-shoot
-      // a group with wide variable-length values; check it against the real, SizeEstimator-
-      // based footprint so TaskMemoryManager's accounting never under-counts this consumer's
-      // usage, which the rest of the task's memory safety depends on.
+      val relation = spec.mode.transform(matches.generateIterator(), Some(n), copyRows = false)
+      // peakBuildBytes above is based on the group's real row bytes, not a schema guess, but
+      // remains an approximation of transform()'s actual staging cost; check it against the
+      // real, SizeEstimator-based footprint so TaskMemoryManager's accounting never under- (or
+      // permanently over-) counts this consumer's usage.
       val actualBytes = relation.estimatedSize
 
       if (actualBytes > spec.maxBytes) {
         // The real footprint exceeds the configured cap even though the pre-admission estimate
-        // didn't predict it (e.g. unusually large variable-length values); release and fall
-        // back instead of silently exceeding maxBytes.
+        // didn't predict it; release and fall back instead of silently exceeding maxBytes.
         if (consumer != null) consumer.freeMemory(heldBytes)
         return null
       }
@@ -443,10 +491,14 @@ private[joins] object RangeGroupProbe extends Logging {
         }
         heldBytes += extraAcquired
         heldBytes
+      } else if (actualBytes < heldBytes) {
+        // peakBuildBytes's transient-staging margin (boxed key/row tuples, sort scratch space)
+        // is garbage now that transform() has returned; release it instead of permanently
+        // over-counting this consumer's usage for the rest of the group's lifetime.
+        if (consumer != null) consumer.freeMemory(heldBytes - actualBytes)
+        heldBytes = actualBytes
+        heldBytes
       } else {
-        // The nominal estimate already covers the real footprint. Keeping the (bounded, single-
-        // group) excess reserved until this group resets is simpler than releasing it now, and
-        // only ever over-counts this consumer's usage, never under-counts it.
         heldBytes
       }
 
@@ -456,20 +508,8 @@ private[joins] object RangeGroupProbe extends Logging {
     } catch {
       case NonFatal(e) =>
         if (consumer != null && heldBytes > 0) consumer.freeMemory(heldBytes)
-        if (buildErrorMetric != null) buildErrorMetric += 1
         logWarning(log"range index build failed for a buffered group of " +
           log"${MDC(NUM_ROWS, n)} rows; falling back to a linear scan", e)
-        null
-      case oom: OutOfMemoryError =>
-        // The schema-driven estimate can't predict every row's real size, so a wide enough
-        // group can still exhaust the heap during transform()'s untracked row copies.
-        // Last-resort safety net: fall back to a linear scan, counted via `buildErrorMetric`
-        // (distinct from the routine, by-policy fallback `onProbe` counts) so an operator can
-        // tell the two apart.
-        if (consumer != null && heldBytes > 0) consumer.freeMemory(heldBytes)
-        if (buildErrorMetric != null) buildErrorMetric += 1
-        logWarning(log"range index build ran out of memory for a buffered group of " +
-          log"${MDC(NUM_ROWS, n)} rows; falling back to a linear scan", oom)
         null
     }
   }
