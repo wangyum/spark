@@ -26,11 +26,13 @@ import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCo
   GenerateOrdering, GenerateUnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.physical.{AllTuples, ClusteredDistribution,
   Distribution, Partitioning}
+import org.apache.spark.sql.catalyst.util.SQLOrderingUtil
 import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport,
   ExternalAppendOnlyUnsafeRowArray, SparkPlan, UnaryExecNode, UnsafeExternalRowSorter}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{BooleanType, ByteType, DateType, DoubleType, FloatType,
-  IntegerType, LongType, ShortType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, DoubleType,
+  FloatType, IntegerType, LongType, ShortType, TimestampNTZType, TimestampType}
+import org.apache.spark.unsafe.Platform
 
 sealed trait WindowGroupLimitMode
 
@@ -123,6 +125,59 @@ trait HashGroupLimitAccumulator {
    * million, remaining rows.
    */
   def fallbackDestinationOrNull: FallbackDestination
+
+  // --- Shared single-order-column fast path -------------------------------------------------
+  // The following members back both concrete accumulators' single-column comparison logic (see
+  // HashGroupLimitAccumulator.singleColTypeTag for the type-eligibility table these rely on).
+  // Homed here, as one definition both classes inherit, rather than duplicated verbatim in each:
+  // a prior duplicate of compareSlotSingle independently shipped the same signed-zero/Double-
+  // Float comparison bug in both files, which a single shared definition makes structurally
+  // impossible to re-diverge.
+  protected def singleColTypeTag: Int
+  protected def isSingleColAscending: Boolean
+  protected def isSingleColNullsFirst: Boolean
+  protected def isSingleColNullable: Boolean
+  protected def bitSetWidthInBytes: Int
+  protected def slotOrderOrdinal(slot: Int, col: Int): Int
+
+  /**
+   * Compares a single-column order-key value (`kVal`/`kNull`) against slot `slot`'s stored value,
+   * reading directly from `buffer`'s raw memory rather than unpacking either side into an
+   * [[UnsafeRow]]. Double/Float cases go through [[SQLOrderingUtil]] to match Spark's actual SQL
+   * float ordering (`-0.0 == 0.0`, `NaN` greatest) -- unlike raw `java.lang.Double`/
+   * `Float.compare`, which ranks `0.0` strictly above `-0.0`, that mismatch previously let two
+   * "equal" order-key rows of `0.0`/`-0.0` occupy two distinct slots instead of one, which is
+   * silently wrong for `DENSE_RANK()` (whose slot weight counts distinct slots, not rows).
+   */
+  protected def compareSlotSingle(
+      kVal: Long, kNull: Boolean, baseObj: AnyRef, baseOffset: Long, slot: Int): Int = {
+    val ord = slotOrderOrdinal(slot, 0)
+    if (isSingleColNullable) {
+      val sNull = (Platform.getByte(baseObj, baseOffset + (ord >>> 3)) & (1 << (ord & 7))) != 0
+      if (kNull && sNull) return 0
+      if (kNull) return if (isSingleColNullsFirst) -1 else 1
+      if (sNull) return if (isSingleColNullsFirst) 1 else -1
+    }
+    val sVal = Platform.getLong(baseObj, baseOffset + bitSetWidthInBytes + ord * 8L)
+    val cmp = singleColTypeTag match {
+      case 1 => java.lang.Long.compare(kVal, sVal)
+      case 2 => java.lang.Integer.compare(kVal.toInt, sVal.toInt)
+      case 3 =>
+        SQLOrderingUtil.compareDoubles(
+          java.lang.Double.longBitsToDouble(kVal), java.lang.Double.longBitsToDouble(sVal))
+      case 4 =>
+        SQLOrderingUtil.compareFloats(
+          java.lang.Float.intBitsToFloat(kVal.toInt), java.lang.Float.intBitsToFloat(sVal.toInt))
+      case 5 => java.lang.Short.compare(kVal.toShort, sVal.toShort)
+      case 6 => java.lang.Byte.compare(kVal.toByte, sVal.toByte)
+      case 7 => java.lang.Boolean.compare(kVal != 0, sVal != 0)
+      case _ => 0
+    }
+    if (isSingleColAscending) cmp else -cmp
+  }
+
+  protected def compareSlotSingle(kVal: Long, kNull: Boolean, buffer: UnsafeRow, slot: Int): Int =
+    compareSlotSingle(kVal, kNull, buffer.getBaseObject, buffer.getBaseOffset, slot)
 }
 
 /**
@@ -140,6 +195,25 @@ object HashGroupLimitAccumulator {
   // SQLMetric (a LongAccumulator), so a task emitting many rows pays one accumulator update per
   // batch instead of one per row.
   private[window] val OUTPUT_ROWS_METRIC_BATCH_SIZE: Int = 1024
+
+  /**
+   * Maps a single order-key column's data type to a nonzero tag if the single-column fast path
+   * (see [[HashGroupLimitAccumulator.compareSlotSingle]]) supports it, 0 otherwise. The sole
+   * source of truth for this eligibility: both concrete accumulators' own `singleColTypeTag`
+   * field and [[WindowGroupLimitExec]]'s `isSingleOrderCol` codegen check all defer to this one
+   * function, so a type added here is automatically in lock-step everywhere it matters, instead
+   * of three independently-maintained copies of the same type list risking silent drift.
+   */
+  private[window] def singleColTypeTag(dataType: DataType): Int = dataType match {
+    case LongType | TimestampType | TimestampNTZType => 1
+    case IntegerType | DateType => 2
+    case DoubleType => 3
+    case FloatType => 4
+    case ShortType => 5
+    case ByteType => 6
+    case BooleanType => 7
+    case _ => 0
+  }
 }
 
 /**
@@ -215,6 +289,13 @@ case class WindowGroupLimitExec(
     if (isHashEligible) Nil else child.outputOrdering
 
   override def outputPartitioning: Partitioning = child.outputPartitioning
+
+  // isHashEligible is a derived lazy val, not a constructor field, so it would otherwise never
+  // appear in EXPLAIN output -- leaving no static way to tell which path a given instance takes
+  // without running the query and inspecting its SQLMetrics. Mirrors ShuffledJoin's identical
+  // "(skew=true)" nodeName suffix for the same kind of derived boolean plan characteristic.
+  override def nodeName: String =
+    if (isHashEligible) super.nodeName + "(hash)" else super.nodeName
 
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows")
@@ -389,12 +470,7 @@ case class WindowGroupLimitExec(
     val keyHashTerm = ctx.freshName("keyHash")
 
     val isSingleOrderCol = boundOrderKeyExprs.length == 1 &&
-      (boundOrderKeyExprs.head.dataType match {
-        case LongType | TimestampType | TimestampNTZType |
-             IntegerType | DateType | ShortType | ByteType |
-             BooleanType | FloatType | DoubleType => true
-        case _ => false
-      })
+      HashGroupLimitAccumulator.singleColTypeTag(boundOrderKeyExprs.head.dataType) != 0
 
     val (orderKeySetup, orderKeyArgs) = if (isSingleOrderCol) {
       val orderExpr = boundOrderKeyExprs.head

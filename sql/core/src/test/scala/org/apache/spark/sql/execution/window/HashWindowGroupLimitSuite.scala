@@ -78,6 +78,25 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
     }
   }
 
+  // Regression test for a deep-review finding: the single-order-column fast path's comparator used
+  // raw java.lang.Double.compare on bit-reconstructed values, which (unlike Spark's actual SQL
+  // float ordering) ranks 0.0 strictly above -0.0. For ROW_NUMBER()'s bounded top-K heap this
+  // cannot change how many rows survive (the heap's size is structurally capped at `limit`
+  // regardless of comparator correctness) -- only, potentially, which of several value-equal rows
+  // is the arbitrary one kept -- so this checks the row count and value set, not a specific row's
+  // identity, which ROW_NUMBER does not guarantee among genuine value ties.
+  test("SPARK-61804: row_number() <= 2 treats -0.0 and 0.0 as equal for a Double order key") {
+    val df = Seq((1, 5.0), (1, 0.0), (1, -0.0)).toDF("k", "ts")
+    withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+      val result = df.selectExpr("*", "row_number() over (partition by k order by ts desc) as rn")
+        .where("rn <= 2").drop("rn").collect()
+      assert(result.length == 2, s"expected exactly 2 rows, got ${result.toSeq}")
+      assert(result.exists(_.getDouble(1) == 5.0), s"5.0 must survive, got ${result.toSeq}")
+      assert(result.exists(r => r.getDouble(1) == 0.0 || r.getDouble(1) == -0.0),
+        s"exactly one of the tied 0.0/-0.0 rows must survive, got ${result.toSeq}")
+    }
+  }
+
   test("SPARK-61804: global top-1 (empty partition spec) uses hash path") {
     val df = Seq((1L, "a"), (5L, "b"), (3L, "c")).toDF("ts", "v")
     withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
@@ -124,6 +143,31 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       // "Note that WindowExec itself ... still force a sort" section).
       assert(limits.forall(!_.child.isInstanceOf[SortExec]),
         "hash-eligible WindowGroupLimitExec must not have a SortExec as its immediate child")
+    }
+  }
+
+  // Regression test for a deep-review finding: isHashEligible is a derived lazy val (not a
+  // constructor field), so it never showed up in EXPLAIN/plan-string output -- a user had to run
+  // the query and inspect SQLMetrics after the fact to tell which path was actually taken.
+  test("SPARK-61804: EXPLAIN distinguishes the hash path from the sort-based path via nodeName") {
+    val eligibleDf = Seq((1, 1L), (1, 2L)).toDF("k", "ts")
+    withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+      assert(dedupLatest(eligibleDf).queryExecution.executedPlan.toString.contains(
+        "WindowGroupLimit(hash)"), "a hash-eligible instance must show the (hash) nodeName suffix")
+    }
+    withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "false") {
+      val planString = dedupLatest(eligibleDf).queryExecution.executedPlan.toString
+      assert(!planString.contains("WindowGroupLimit(hash)"),
+        "disabled hash pushdown must not show the (hash) nodeName suffix")
+    }
+    val ineligibleDf = Seq((1, "b"), (1, "a")).toDF("k", "v")
+    withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+      val planString = ineligibleDf.selectExpr(
+        "*", "row_number() over (partition by k order by v desc) as rn")
+        .where("rn = 1").drop("rn").queryExecution.executedPlan.toString
+      assert(!planString.contains("WindowGroupLimit(hash)"),
+        "a string order key (not hash-eligible) must not show the (hash) nodeName suffix" +
+          " even with hash pushdown enabled")
     }
   }
 

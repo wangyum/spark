@@ -40,6 +40,7 @@ import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, SortAggregat
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, BroadcastRangeJoinExec, ShuffledHashJoinExec, SortMergeAsOfJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.SQLMetrics
+import org.apache.spark.sql.execution.window.WindowGroupLimitExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -66,6 +67,8 @@ trait CodegenSupport extends SparkPlan {
     case _: DataSourceScanExec => "scan"
     case _: InMemoryTableScanExec => "memoryScan"
     case _: WholeStageCodegenExec => "wholestagecodegen"
+    // A hash-eligible instance is named "WindowGroupLimit(hash)", which is not a valid Java name.
+    case _: WindowGroupLimitExec => "windowGroupLimit"
     case _ => nodeName.toLowerCase(Locale.ROOT)
   }
 

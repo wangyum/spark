@@ -300,6 +300,83 @@ rows over many distinct ones, that reducer can receive a large share of all rows
   </tr>
 </table>
 
+## Optimizing Window Functions
+
+### Window Group Limit Hash Pushdown
+
+A `ROW_NUMBER()`, `RANK()`, or `DENSE_RANK()` window function combined with a `LIMIT` (or an
+equivalent filter such as `WHERE rn <= k`) only needs, per partition key, the best `k` rows by the
+window's order key -- it does not need every row in sorted order. By default Spark still computes
+this by fully sorting each partition before applying the limit. When hash pushdown is enabled,
+eligible queries instead use an in-memory, hash-based accumulator that keeps only the rows that can
+possibly be part of the final answer for each partition key, without requiring the input to be
+sorted first.
+
+A plan is eligible when the window function is `ROW_NUMBER()`, `RANK()`, or `DENSE_RANK()`, the
+limit is at or below `maxLimit`, and every order-key column has a fixed-width type that `UnsafeRow`
+can mutate in place (so, for example, a `STRING` order key is never eligible and keeps using the
+sort-based path). `EXPLAIN` marks an eligible operator with a `(hash)` suffix on its node name
+(`WindowGroupLimit(hash)`) so the chosen path is visible without having to run the query.
+
+Like adaptive partial aggregation, the hash accumulator is only worthwhile when it actually prunes
+rows: for `ROW_NUMBER()`/`RANK()`/`DENSE_RANK() <= k` over mostly-unique partition keys, it ends up
+keeping nearly every row it sees, paying the hash map's per-row overhead for no benefit over
+sorting. To guard against this, the accumulator periodically measures its compaction ratio -- the
+number of rows processed divided by the number of distinct partition keys seen -- against
+`minCompactionRatio`, checking every `minRows` rows. If hash accumulation is not pruning enough to
+be worthwhile, or if the underlying hash map or row storage runs out of memory, the accumulator
+falls back to the same sort-based computation used when hash pushdown is disabled, so results are
+identical either way. The SQL UI's `number of sort fallback tasks` metric on the operator reports
+how often this happened.
+
+<table class="spark-config">
+  <thead><tr><th>Property Name</th><th>Default</th><th>Meaning</th><th>Since Version</th></tr></thead>
+  <tr>
+    <td><code>spark.sql.windowExec.groupLimit.hashPushdown.enabled</code></td>
+    <td>false</td>
+    <td>
+      When true, WindowGroupLimitExec uses an in-memory hash-based accumulator instead of full
+      sorting for ROW_NUMBER()/RANK()/DENSE_RANK() window group limits up to
+      <code>spark.sql.windowExec.groupLimit.hashPushdown.maxLimit</code>, when the order key's type
+      supports it.
+    </td>
+    <td>4.5.0</td>
+  </tr>
+  <tr>
+    <td><code>spark.sql.windowExec.groupLimit.hashPushdown.minRows</code></td>
+    <td>100000</td>
+    <td>
+      The number of rows between periodic compaction-ratio evaluations by the hash-based
+      accumulator. When the ratio of rows processed to distinct partition keys seen falls below
+      <code>minCompactionRatio</code>, the accumulator falls back to the sort-based path for the
+      rest of the input. Setting this to <code>0</code> disables the periodic check (the hash map
+      running out of memory remains a fallback trigger regardless).
+    </td>
+    <td>4.5.0</td>
+  </tr>
+  <tr>
+    <td><code>spark.sql.windowExec.groupLimit.hashPushdown.minCompactionRatio</code></td>
+    <td>1.05</td>
+    <td>
+      The minimum compaction ratio required to keep using the hash-based accumulator. The
+      compaction ratio is the number of processed rows divided by the number of distinct partition
+      keys seen, so a ratio of 1.0 means every row has its own key (no duplicates to prune) and the
+      hash map's per-row overhead has no offsetting benefit over sorting.
+    </td>
+    <td>4.5.0</td>
+  </tr>
+  <tr>
+    <td><code>spark.sql.windowExec.groupLimit.hashPushdown.maxLimit</code></td>
+    <td>100</td>
+    <td>
+      The maximum window group limit value eligible for the hash-based accumulator. Each key's
+      fixed-width slot array grows linearly with the limit, so a query with a very large limit is
+      routed to the sort-based path instead, regardless of whether hash pushdown is enabled.
+    </td>
+    <td>4.5.0</td>
+  </tr>
+</table>
+
 ## Optimizing the Join Strategy
 
 ### Automatically Broadcasting Joins

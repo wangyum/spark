@@ -31,7 +31,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.types.{IntegerType, LongType, StringType}
+import org.apache.spark.sql.types.{DoubleType, FloatType, IntegerType, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 /**
@@ -364,6 +364,107 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
     assert(withHash == withoutHash)
     // dense_rank(10)=1, dense_rank(5)=2 (both <= 2); dense_rank(1)=3 excluded.
     assert(withHash == Set(Row(1, 10L), Row(1, 10L), Row(1, 10L), Row(1, 5L), Row(2, 7L)))
+  }
+
+  // Regression tests for a deep-review finding: the single-order-column fast path used to compare
+  // Double/Float order keys with raw java.lang.Double/Float.compare on their bit-reconstructed
+  // values instead of Spark's actual SQL float ordering (SQLOrderingUtil.compareDoubles/
+  // compareFloats, which treats -0.0 == 0.0). DENSE_RANK()'s slot weight counts *distinct* slots,
+  // so splitting one logical -0.0/0.0 tied group into two slots inflated the distinct-group count
+  // ahead of any later value, silently dropping rows that must survive. RANK()'s weight is a pure
+  // row-count sum, which happens to be invariant to this split, so it is covered here purely as a
+  // sanity guard, not because it was ever broken.
+  // Driven directly against the accumulator (not via SQL) so the arrival order -- 5.0, then 0.0,
+  // then -0.0, into a single accumulator instance -- is exact and not at the mercy of shuffle/
+  // partition-dependent reordering, which a SQL-level test over a 3-row DataFrame cannot guarantee
+  // (confirmed: an earlier SQL-level version of this test passed even against the unfixed
+  // comparator, because this tiny input happened not to get redistributed in an order that
+  // triggers the bug). With this exact order: 5.0 is admitted into slot0; 0.0 is admitted into
+  // slot1 (preceding weight 1 < limit 2); -0.0 must then be recognized as a tie for slot1 (since
+  // -0.0 == 0.0 under SQL semantics) -- under the pre-fix raw Double.compare, -0.0 instead sorted
+  // as a brand-new 3rd distinct value with preceding weight 2, which is not < limit (2), so it was
+  // discarded outright before ever being appended as a candidate.
+  test("SPARK-61804 (rank hash pushdown): DENSE_RANK() <= 2 treats -0.0 and 0.0 as equal for a" +
+      " Double order key (regression test for a signed-zero comparator bug)") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val tsDoubleAttr = AttributeReference("ts", DoubleType)()
+      val doubleOrderSpec = Seq(SortOrder(tsDoubleAttr, Descending))
+      val doubleChildOutput = Seq(kAttr, tsDoubleAttr)
+      val accumulator = {
+        val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+        val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+        val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+        val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
+        new HashRankGroupLimitAccumulator(
+          partitionSpec, doubleOrderSpec, new DenseRank(), doubleChildOutput, numOutputRows,
+          peakMemory, spillSize, numTasksFallBacked, minCompactionRatio = 0.0,
+          minRowsBetweenCompactionChecks = 0L, enableRadixSort = true, limit = 2)
+      }
+      val rowProjection = UnsafeProjection.create(doubleChildOutput.map(_.dataType).toArray)
+      Seq((1, 5.0), (1, 0.0), (1, -0.0)).foreach { case (k, ts) =>
+        accumulator.consumeRow(rowProjection(InternalRow(k, ts)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      val tsValues = result.map(_.getDouble(1)).sorted
+      assert(tsValues.length == 3,
+        s"all 3 rows (5.0, and the tied 0.0/-0.0 pair at dense_rank 2) must survive, got $tsValues")
+    }
+  }
+
+  test("SPARK-61804 (rank hash pushdown): DENSE_RANK() <= 2 treats -0.0f and 0.0f as equal for a" +
+      " Float order key (regression test for a signed-zero comparator bug)") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val tsFloatAttr = AttributeReference("ts", FloatType)()
+      val floatOrderSpec = Seq(SortOrder(tsFloatAttr, Descending))
+      val floatChildOutput = Seq(kAttr, tsFloatAttr)
+      val accumulator = {
+        val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+        val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+        val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+        val numTasksFallBacked = SQLMetrics.createMetric(spark.sparkContext, "fallback")
+        new HashRankGroupLimitAccumulator(
+          partitionSpec, floatOrderSpec, new DenseRank(), floatChildOutput, numOutputRows,
+          peakMemory, spillSize, numTasksFallBacked, minCompactionRatio = 0.0,
+          minRowsBetweenCompactionChecks = 0L, enableRadixSort = true, limit = 2)
+      }
+      val rowProjection = UnsafeProjection.create(floatChildOutput.map(_.dataType).toArray)
+      Seq((1, 5.0f), (1, 0.0f), (1, -0.0f)).foreach { case (k, ts) =>
+        accumulator.consumeRow(rowProjection(InternalRow(k, ts)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      val tsValues = result.map(_.getFloat(1)).sorted
+      assert(tsValues.length == 3,
+        s"all 3 rows (5.0f, and the tied 0.0f/-0.0f pair at dense_rank 2) must survive, got" +
+          s" $tsValues")
+    }
+  }
+
+  test("SPARK-61804 (rank hash pushdown): RANK() <= 2 already handles -0.0/0.0 correctly (row-" +
+      " count weight is invariant to the DENSE_RANK-only slot-splitting bug)") {
+    val df = Seq((1, 5.0), (1, 0.0), (1, -0.0)).toDF("key", "ts")
+    val withHash = withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+      topKByRank(df, 2).collect().toSet
+    }
+    val withoutHash = withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "false") {
+      topKByRank(df, 2).collect().toSet
+    }
+    assert(withHash == withoutHash)
+    assert(withHash == Set(Row(1, 5.0), Row(1, 0.0), Row(1, -0.0)))
+  }
+
+  test("SPARK-61804 (rank hash pushdown): DENSE_RANK() <= 2 handles NaN order keys (sorts" +
+      " greatest, unaffected by the -0.0/0.0 fix since doubleToLongBits already canonicalizes" +
+      " NaN's bit pattern)") {
+    val df = Seq((1, Double.NaN), (1, Double.NaN), (1, 5.0)).toDF("key", "ts")
+    val withHash = withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+      topKByDenseRank(df, 2).collect().toSet
+    }
+    val withoutHash = withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "false") {
+      topKByDenseRank(df, 2).collect().toSet
+    }
+    assert(withHash == withoutHash)
+    // Descending order: NaN sorts greatest, so dense_rank(NaN)=1, dense_rank(5.0)=2 -- all 3 rows.
+    assert(withHash == Set(Row(1, Double.NaN), Row(1, Double.NaN), Row(1, 5.0)))
   }
 
   test("SPARK-61804 (rank hash pushdown): RANK()/DENSE_RANK() plans are hash-eligible") {

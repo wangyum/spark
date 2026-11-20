@@ -78,17 +78,16 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
 
   /**
    * Appends `row`'s bytes and returns a stable address usable with [[getRow]] for the remaining
-   * lifetime of this arena. Throws `org.apache.spark.memory.SparkOutOfMemoryError` -- either
-   * because no more execution memory is available, or because growing the current page further
-   * would exceed `TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES` (see [[grow]]) -- or, if `row` itself
-   * is too large for this arena's address packing to represent (see [[UnsafeRowArena.SIZE_BITS]]),
-   * `SparkUnsupportedOperationException` from
-   * [[org.apache.spark.sql.errors.QueryExecutionErrors.rowLargerThan256MUnsupportedError]], the
-   * same error [[org.apache.spark.sql.execution.joins.HashedRelation.LongToUnsafeRowMap.append]]
-   * raises for the identical bound. Callers that want to degrade gracefully (as
-   * [[HashRowNumberGroupLimitAccumulator]] does) must catch both themselves.
+   * lifetime of this arena, or [[UnsafeRowArena.NO_NEXT]] if `row` could not be appended -- either
+   * because no more execution memory is available, because growing the current page further would
+   * exceed `TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES` (see [[grow]]), or because `row` itself is
+   * too large for this arena's address packing to represent (see [[UnsafeRowArena.SIZE_BITS]]).
+   * Callers that want to degrade gracefully (as [[HashRowNumberGroupLimitAccumulator]] does) check
+   * for this sentinel return rather than catching an exception, avoiding exception-handling
+   * overhead on this per-row path. Requires `linked = false` (`require`, see the class doc).
    */
   def append(row: UnsafeRow): Long = {
+    require(!linked, "append() is not supported on an arena constructed for linked mode.")
     val sizeInBytes = row.getSizeInBytes
     if (sizeInBytes >= (1 << UnsafeRowArena.SIZE_BITS)) {
       return UnsafeRowArena.NO_NEXT
@@ -109,11 +108,13 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
   }
 
   /**
-   * Like [[append]], but also stores `next` as a trailing 8-byte link readable via [[getNext]] or
-   * [[getRowAndNext]], threading this entry into a singly-linked list of rows tied at the same
-   * order-key value (see the class doc). Only valid on an arena constructed with `linked = true`.
+   * Like [[append]] (including its [[UnsafeRowArena.NO_NEXT]] failure-sentinel contract), but also
+   * stores `next` as a trailing 8-byte link readable via [[getNext]] or [[getRowAndNext]],
+   * threading this entry into a singly-linked list of rows tied at the same order-key value (see
+   * the class doc). Requires `linked = true` (`require`, see the class doc).
    */
   def appendLinked(row: UnsafeRow, next: Long): Long = {
+    require(linked, "appendLinked() is not supported on an arena constructed for non-linked mode.")
     val sizeInBytes = row.getSizeInBytes
     if (sizeInBytes >= (1 << UnsafeRowArena.SIZE_BITS)) {
       return UnsafeRowArena.NO_NEXT

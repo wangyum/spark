@@ -27,11 +27,11 @@ import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, BindRefe
   UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.GenerateOrdering
 import org.apache.spark.sql.catalyst.types.DataTypeUtils
+import org.apache.spark.sql.catalyst.util.SQLOrderingUtil
 import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, SortPrefixUtils,
   UnsafeExternalRowSorter, UnsafeFixedWidthAggregationMap}
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.types.{BooleanType, ByteType, DateType, DoubleType, FloatType,
-  IntegerType, LongType, ShortType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.unsafe.{KVIterator, Platform}
 
 /**
@@ -91,7 +91,7 @@ class HashRowNumberGroupLimitAccumulator(
   // Field width of one heap slot: one field per order column, plus a trailing `address` field.
   private val slotWidth = numOrderCols + 1
 
-  private def slotOrderOrdinal(slot: Int, col: Int): Int = slot * slotWidth + col
+  protected def slotOrderOrdinal(slot: Int, col: Int): Int = slot * slotWidth + col
   private def slotAddrOrdinal(slot: Int): Int = slot * slotWidth + numOrderCols
   private val heapSizeOrdinal: Int = limit * slotWidth
 
@@ -151,26 +151,18 @@ class HashRowNumberGroupLimitAccumulator(
     }
   }
 
-  private val singleColTypeTag: Int =
+  protected val singleColTypeTag: Int =
     if (numOrderCols == 1) {
-      orderSpec.head.child.dataType match {
-        case LongType | TimestampType | TimestampNTZType => 1
-        case IntegerType | DateType => 2
-        case DoubleType => 3
-        case FloatType => 4
-        case ShortType => 5
-        case ByteType => 6
-        case BooleanType => 7
-        case _ => 0
-      }
+      HashGroupLimitAccumulator.singleColTypeTag(orderSpec.head.child.dataType)
     } else {
       0
     }
 
-  private val isSingleColAscending = numOrderCols == 1 && orderSpec.head.direction == Ascending
-  private val isSingleColNullsFirst = numOrderCols == 1 && orderSpec.head.nullOrdering == NullsFirst
-  private val isSingleColNullable = numOrderCols == 1 && orderSpec.head.child.nullable
-  private val bitSetWidthInBytes =
+  protected val isSingleColAscending = numOrderCols == 1 && orderSpec.head.direction == Ascending
+  protected val isSingleColNullsFirst =
+    numOrderCols == 1 && orderSpec.head.nullOrdering == NullsFirst
+  protected val isSingleColNullable = numOrderCols == 1 && orderSpec.head.child.nullable
+  protected val bitSetWidthInBytes =
     UnsafeRow.calculateBitSetWidthInBytes(bufferSchema.length)
   private val heapSizeByteOffset = bitSetWidthInBytes + heapSizeOrdinal * 8L
 
@@ -204,11 +196,11 @@ class HashRowNumberGroupLimitAccumulator(
         case 1 => java.lang.Long.compare(aVal, bVal)
         case 2 => java.lang.Integer.compare(aVal.toInt, bVal.toInt)
         case 3 =>
-          java.lang.Double.compare(
+          SQLOrderingUtil.compareDoubles(
             java.lang.Double.longBitsToDouble(aVal),
             java.lang.Double.longBitsToDouble(bVal))
         case 4 =>
-          java.lang.Float.compare(
+          SQLOrderingUtil.compareFloats(
             java.lang.Float.intBitsToFloat(aVal.toInt),
             java.lang.Float.intBitsToFloat(bVal.toInt))
         case 5 => java.lang.Short.compare(aVal.toShort, bVal.toShort)
@@ -222,40 +214,6 @@ class HashRowNumberGroupLimitAccumulator(
       extractSlotInto(buffer, b, scratchB)
       boundOrdering.compare(scratchA, scratchB)
     }
-  }
-
-  private def compareSlotSingle(
-      kVal: Long, kNull: Boolean, baseObj: AnyRef, baseOffset: Long, slot: Int): Int = {
-    val ord = slotOrderOrdinal(slot, 0)
-    if (isSingleColNullable) {
-      val sNull = (Platform.getByte(baseObj, baseOffset + (ord >>> 3)) & (1 << (ord & 7))) != 0
-      if (kNull && sNull) return 0
-      if (kNull) return if (isSingleColNullsFirst) -1 else 1
-      if (sNull) return if (isSingleColNullsFirst) 1 else -1
-    }
-    val sVal = Platform.getLong(baseObj, baseOffset + bitSetWidthInBytes + ord * 8L)
-    val cmp = singleColTypeTag match {
-      case 1 => java.lang.Long.compare(kVal, sVal)
-      case 2 => java.lang.Integer.compare(kVal.toInt, sVal.toInt)
-      case 3 =>
-        java.lang.Double.compare(
-          java.lang.Double.longBitsToDouble(kVal),
-          java.lang.Double.longBitsToDouble(sVal))
-      case 4 =>
-        java.lang.Float.compare(
-          java.lang.Float.intBitsToFloat(kVal.toInt),
-          java.lang.Float.intBitsToFloat(sVal.toInt))
-      case 5 => java.lang.Short.compare(kVal.toShort, sVal.toShort)
-      case 6 => java.lang.Byte.compare(kVal.toByte, sVal.toByte)
-      case 7 => java.lang.Boolean.compare(kVal != 0, sVal != 0)
-      case _ => 0
-    }
-    if (isSingleColAscending) cmp else -cmp
-  }
-
-  private def compareSlotSingle(
-      kVal: Long, kNull: Boolean, buffer: UnsafeRow, slot: Int): Int = {
-    compareSlotSingle(kVal, kNull, buffer.getBaseObject, buffer.getBaseOffset, slot)
   }
 
   private def storeAtSlotSingle(
@@ -470,14 +428,14 @@ class HashRowNumberGroupLimitAccumulator(
    * `buffer`. Appends *before* touching `buffer`: if `rowArena.append` fails, `buffer` must be
    * left exactly as it was (either the untouched state for a not-yet-populated slot, or the
    * previous occupant's valid state for a replacement), since [[switchToFallback]] -- reached
-   * right after this throws -- drains the map's current, still-consistent state as part of its
-   * fallback seed set.
+   * right after this returns [[UnsafeRowArena.NO_NEXT]] -- drains the map's current, still-
+   * consistent state as part of its fallback seed set.
    *
-   * Falls back on either of `rowArena.append`'s two failure modes: genuine OOM
-   * (`SparkOutOfMemoryError`), or `row` itself being too large for the arena's address packing
-   * (`SparkUnsupportedOperationException`, see [[UnsafeRowArena.append]]) -- the sort-based
-   * fallback sorter has no analogous per-row size limit, so a row that defeats the arena can
-   * still be handled by falling back, same as a genuine OOM.
+   * Falls back on either of `rowArena.append`'s two failure modes -- genuine OOM, or `row` itself
+   * being too large for the arena's address packing (see [[UnsafeRowArena.append]]), both surfaced
+   * as the single [[UnsafeRowArena.NO_NEXT]] sentinel -- the sort-based fallback sorter has no
+   * analogous per-row size limit, so a row that defeats the arena can still be handled by falling
+   * back, same as a genuine OOM.
    */
   private def storeAtSlot(
       row: UnsafeRow, orderKey: UnsafeRow, buffer: UnsafeRow, slot: Int): Unit = {
