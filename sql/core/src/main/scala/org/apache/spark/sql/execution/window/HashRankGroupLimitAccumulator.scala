@@ -478,9 +478,6 @@ class HashRankGroupLimitAccumulator(
     consumeRow(row, key, key.hashCode(), orderKeyProjection(row))
   }
 
-  override def consumeRow(row: UnsafeRow, key: UnsafeRow, orderKey: UnsafeRow): Unit =
-    consumeRow(row, key, key.hashCode(), orderKey)
-
   override def consumeRow(
       row: UnsafeRow, key: UnsafeRow, keyHash: Int, orderKey: UnsafeRow): Unit = {
     val buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
@@ -693,8 +690,8 @@ class HashRankGroupLimitAccumulator(
           nextAddress = rowArena.getRowAndNext(addr, resultRow)
           if (!hasEvictions) {
             uncommittedOutputRows += 1
-            if (uncommittedOutputRows == 1024) {
-              numOutputRows += 1024
+            if (uncommittedOutputRows == HashGroupLimitAccumulator.OUTPUT_ROWS_METRIC_BATCH_SIZE) {
+              numOutputRows += HashGroupLimitAccumulator.OUTPUT_ROWS_METRIC_BATCH_SIZE
               uncommittedOutputRows = 0
             }
             return true
@@ -702,8 +699,9 @@ class HashRankGroupLimitAccumulator(
             val orderKey = orderKeyProjection(resultRow)
             if (boundOrdering.compare(orderKey, cutoffScratch) <= 0) {
               uncommittedOutputRows += 1
-              if (uncommittedOutputRows == 1024) {
-                numOutputRows += 1024
+              if (uncommittedOutputRows ==
+                  HashGroupLimitAccumulator.OUTPUT_ROWS_METRIC_BATCH_SIZE) {
+                numOutputRows += HashGroupLimitAccumulator.OUTPUT_ROWS_METRIC_BATCH_SIZE
                 uncommittedOutputRows = 0
               }
               return true

@@ -405,9 +405,6 @@ class HashRowNumberGroupLimitAccumulator(
     consumeRow(row, key, key.hashCode(), orderKeyProjection(row))
   }
 
-  override def consumeRow(row: UnsafeRow, key: UnsafeRow, orderKey: UnsafeRow): Unit =
-    consumeRow(row, key, key.hashCode(), orderKey)
-
   override def consumeRow(
       row: UnsafeRow, key: UnsafeRow, keyHash: Int, orderKey: UnsafeRow): Unit = {
     val buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
@@ -542,8 +539,8 @@ class HashRowNumberGroupLimitAccumulator(
           val address = Platform.getLong(bObj, addrOffset)
           nextSlot += 1
           uncommittedOutputRows += 1
-          if (uncommittedOutputRows == 1024) {
-            numOutputRows += 1024
+          if (uncommittedOutputRows == HashGroupLimitAccumulator.OUTPUT_ROWS_METRIC_BATCH_SIZE) {
+            numOutputRows += HashGroupLimitAccumulator.OUTPUT_ROWS_METRIC_BATCH_SIZE
             uncommittedOutputRows = 0
           }
           rowArena.getRow(address, resultRow)

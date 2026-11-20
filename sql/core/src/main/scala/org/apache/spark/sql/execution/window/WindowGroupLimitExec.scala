@@ -91,18 +91,23 @@ trait HashGroupLimitAccumulator {
 
   def consumeRow(row: UnsafeRow, key: UnsafeRow, keyHash: Int, orderKey: UnsafeRow): Unit
 
+  /**
+   * Like the four-argument overload, but for the common case of a single numeric order column:
+   * `doConsume`'s generated code (see `isSingleOrderCol`) extracts that column as a primitive
+   * `Long` to avoid building an [[UnsafeRow]] wrapper just to pass one value. Deliberately left
+   * abstract rather than given a default that re-wraps `orderKeyVal`/`orderKeyIsNull` into an
+   * [[UnsafeRow]] and delegates to the four-argument overload: both concrete implementations
+   * already need their own allocation-free comparison/storage path for this single-column case,
+   * so a "generic" default here would only ever be reached by a future implementation that forgot
+   * to write one -- silently reintroducing the per-row allocation this overload exists to avoid,
+   * with no compiler signal. Forcing an explicit implementation surfaces that at compile time.
+   */
   def consumeRow(
       row: UnsafeRow,
       key: UnsafeRow,
       keyHash: Int,
       orderKeyVal: Long,
-      orderKeyIsNull: Boolean): Unit = {
-    val orderKey = new UnsafeRow(1)
-    val bytes = new Array[Byte](16)
-    orderKey.pointTo(bytes, 16)
-    if (orderKeyIsNull) orderKey.setNullAt(0) else orderKey.setLong(0, orderKeyVal)
-    consumeRow(row, key, keyHash, orderKey)
-  }
+      orderKeyIsNull: Boolean): Unit
 
   def finishAccumulator(): Unit
   def nextResultRow(resultRow: UnsafeRow): Boolean
@@ -130,6 +135,11 @@ object HashGroupLimitAccumulator {
   // Matches UnsafeHashedRelation/LongToUnsafeRowMap's own choice of initial page size for a
   // BytesToBytesMap-backed structure expected to often hold little data (see HashedRelation.scala).
   private[window] val INITIAL_PAGE_SIZE_BYTES: Long = 1L << 20
+
+  // How many output rows `nextResultRow` accumulates locally before flushing to the numOutputRows
+  // SQLMetric (a LongAccumulator), so a task emitting many rows pays one accumulator update per
+  // batch instead of one per row.
+  private[window] val OUTPUT_ROWS_METRIC_BATCH_SIZE: Int = 1024
 }
 
 /**
