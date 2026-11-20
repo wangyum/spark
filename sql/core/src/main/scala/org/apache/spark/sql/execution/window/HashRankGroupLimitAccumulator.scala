@@ -481,24 +481,6 @@ class HashRankGroupLimitAccumulator(
   override def consumeRow(row: UnsafeRow, key: UnsafeRow, orderKey: UnsafeRow): Unit =
     consumeRow(row, key, key.hashCode(), orderKey)
 
-  private def updateLastSlotWord(
-      baseObj: AnyRef, baseOffset: Long, lastSlot: Int, matchSlot: Int, slotCount: Int): Unit = {
-    val isWrapAroundForward = matchSlot == 0 && lastSlot == slotCount - 1
-    val isWrapAroundBackward = matchSlot == slotCount - 1 && lastSlot == 0
-    val stride = if (isWrapAroundForward) 1
-      else if (isWrapAroundBackward) -1
-      else matchSlot - lastSlot
-    val newPred = if (stride == 1) {
-      if (matchSlot + 1 < slotCount) matchSlot + 1 else 0
-    } else if (stride == -1) {
-      if (matchSlot > 0) matchSlot - 1 else math.max(0, slotCount - 1)
-    } else {
-      matchSlot
-    }
-    val newSlotWord = (matchSlot.toLong << 32) | (newPred.toLong & 0xFFFFFFFFL)
-    Platform.putLong(baseObj, baseOffset + lastSlotByteOffset, newSlotWord)
-  }
-
   override def consumeRow(
       row: UnsafeRow, key: UnsafeRow, keyHash: Int, orderKey: UnsafeRow): Unit = {
     val buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
@@ -509,20 +491,14 @@ class HashRankGroupLimitAccumulator(
     val baseObj = buffer.getBaseObject
     val baseOffset = buffer.getBaseOffset
     val slotCount = Platform.getLong(baseObj, baseOffset + slotCountByteOffset).toInt
-    val slotWord = Platform.getLong(baseObj, baseOffset + lastSlotByteOffset)
-    val lastSlot = (slotWord >>> 32).toInt
-    val predSlot = (slotWord & 0xFFFFFFFFL).toInt
+    val lastSlot = Platform.getLong(baseObj, baseOffset + lastSlotByteOffset).toInt
     val matchSlot =
-      if (predSlot < slotCount && compareToSlot(orderKey, buffer, predSlot) == 0) {
-        predSlot
-      } else if (lastSlot != predSlot && lastSlot < slotCount &&
-          compareToSlot(orderKey, buffer, lastSlot) == 0) {
+      if (lastSlot < slotCount && compareToSlot(orderKey, buffer, lastSlot) == 0) {
         lastSlot
       } else {
         -1
       }
     if (matchSlot >= 0) {
-      updateLastSlotWord(baseObj, baseOffset, lastSlot, matchSlot, slotCount)
       appendCandidate(row, buffer)
       if (fallbackDestination != null) return
       // DENSE_RANK never reads rowCount, and revalidateTrailingSlots is already a no-op for it
@@ -536,7 +512,7 @@ class HashRankGroupLimitAccumulator(
       val idx = binarySearchSlot(buffer, orderKey, slotCount)
       if (idx >= 0) {
         val matched = idx
-        updateLastSlotWord(baseObj, baseOffset, lastSlot, matched, slotCount)
+        Platform.putLong(baseObj, baseOffset + lastSlotByteOffset, matched)
         appendCandidate(row, buffer)
         if (fallbackDestination != null) return
         if (!isDenseRank) {
@@ -546,8 +522,7 @@ class HashRankGroupLimitAccumulator(
         }
       } else {
         val pos = -idx - 1
-        val newSlot = math.min(pos, limit - 1)
-        updateLastSlotWord(baseObj, baseOffset, lastSlot, newSlot, slotCount)
+        Platform.putLong(baseObj, baseOffset + lastSlotByteOffset, math.min(pos, limit - 1))
         if (sumWeights(buffer, pos) < limit) {
           appendCandidate(row, buffer)
           if (fallbackDestination != null) return
@@ -567,64 +542,29 @@ class HashRankGroupLimitAccumulator(
     }
   }
 
-  private val keyCacheSize = 16384
-  private val keyCacheMask = keyCacheSize - 1
-  private val cachedKeyVals = new Array[Long](keyCacheSize)
-  private val cachedKeyHashes = new Array[Int](keyCacheSize)
-  private val cachedBaseOffsets = new Array[Long](keyCacheSize)
-  private val cachedBaseObjects = new Array[AnyRef](keyCacheSize)
-  java.util.Arrays.fill(cachedBaseOffsets, -1L)
-
   override def consumeRow(
       row: UnsafeRow,
       key: UnsafeRow,
       keyHash: Int,
-      keyVal: Long,
-      keyIsNull: Boolean,
       orderKeyVal: Long,
       orderKeyIsNull: Boolean): Unit = {
-    val cacheIdx = keyHash & keyCacheMask
-    val cachedOff = cachedBaseOffsets(cacheIdx)
-    var baseObj: AnyRef = null
-    var baseOffset: Long = 0L
-    var buffer: UnsafeRow = null
-    if (cachedOff != -1L && !keyIsNull &&
-        cachedKeyHashes(cacheIdx) == keyHash &&
-        cachedKeyVals(cacheIdx) == keyVal) {
-      baseOffset = cachedOff
-      baseObj = cachedBaseObjects(cacheIdx)
-    } else {
-      buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
-      if (buffer == null) {
-        switchToFallback(row)
-        return
-      }
-      baseObj = buffer.getBaseObject
-      baseOffset = buffer.getBaseOffset
-      if (!keyIsNull) {
-        cachedKeyVals(cacheIdx) = keyVal
-        cachedKeyHashes(cacheIdx) = keyHash
-        cachedBaseOffsets(cacheIdx) = baseOffset
-        cachedBaseObjects(cacheIdx) = baseObj
-      }
+    val buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
+    if (buffer == null) {
+      switchToFallback(row)
+      return
     }
-
+    val baseObj = buffer.getBaseObject
+    val baseOffset = buffer.getBaseOffset
     val slotCount = Platform.getLong(baseObj, baseOffset + slotCountByteOffset).toInt
-    val slotWord = Platform.getLong(baseObj, baseOffset + lastSlotByteOffset)
-    val lastSlot = (slotWord >>> 32).toInt
-    val predSlot = (slotWord & 0xFFFFFFFFL).toInt
+    val lastSlot = Platform.getLong(baseObj, baseOffset + lastSlotByteOffset).toInt
     val matchSlot =
-      if (predSlot < slotCount &&
-          compareSlotSingle(orderKeyVal, orderKeyIsNull, baseObj, baseOffset, predSlot) == 0) {
-        predSlot
-      } else if (lastSlot != predSlot && lastSlot < slotCount &&
+      if (lastSlot < slotCount &&
           compareSlotSingle(orderKeyVal, orderKeyIsNull, baseObj, baseOffset, lastSlot) == 0) {
         lastSlot
       } else {
         -1
       }
     if (matchSlot >= 0) {
-      updateLastSlotWord(baseObj, baseOffset, lastSlot, matchSlot, slotCount)
       val prevHead = Platform.getLong(baseObj, baseOffset + headAddressByteOffset)
       val address = rowArena.appendLinked(row, prevHead)
       if (address == UnsafeRowArena.NO_NEXT) {
@@ -636,14 +576,13 @@ class HashRankGroupLimitAccumulator(
         val cntOrd = slotRowCountOrdinal(matchSlot)
         val cntOffset = baseOffset + bitSetWidthInBytes + cntOrd * 8L
         Platform.putLong(baseObj, cntOffset, Platform.getLong(baseObj, cntOffset) + 1)
-        if (buffer == null) buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
         revalidateTrailingSlots(buffer, matchSlot, slotCount)
       }
     } else {
       val idx = binarySearchSlotSingle(baseObj, baseOffset, orderKeyVal, orderKeyIsNull, slotCount)
       if (idx >= 0) {
         val matched = idx
-        updateLastSlotWord(baseObj, baseOffset, lastSlot, matched, slotCount)
+        Platform.putLong(baseObj, baseOffset + lastSlotByteOffset, matched)
         val prevHead = Platform.getLong(baseObj, baseOffset + headAddressByteOffset)
         val address = rowArena.appendLinked(row, prevHead)
         if (address == UnsafeRowArena.NO_NEXT) {
@@ -655,14 +594,11 @@ class HashRankGroupLimitAccumulator(
           val cntOrd = slotRowCountOrdinal(matched)
           val cntOffset = baseOffset + bitSetWidthInBytes + cntOrd * 8L
           Platform.putLong(baseObj, cntOffset, Platform.getLong(baseObj, cntOffset) + 1)
-          if (buffer == null) buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
           revalidateTrailingSlots(buffer, matched, slotCount)
         }
       } else {
-        if (buffer == null) buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
         val pos = -idx - 1
-        val newSlot = math.min(pos, limit - 1)
-        updateLastSlotWord(baseObj, baseOffset, lastSlot, newSlot, slotCount)
+        Platform.putLong(baseObj, baseOffset + lastSlotByteOffset, math.min(pos, limit - 1))
         if (sumWeights(buffer, pos) < limit) {
           val prevHead = Platform.getLong(baseObj, baseOffset + headAddressByteOffset)
           val address = rowArena.appendLinked(row, prevHead)
@@ -683,15 +619,6 @@ class HashRankGroupLimitAccumulator(
       maybeBailOutForPoorEfficiency()
       nextCompactionCheckAt = rowsConsumed + minRowsBetweenCompactionChecks
     }
-  }
-
-  override def consumeRow(
-      row: UnsafeRow,
-      key: UnsafeRow,
-      keyHash: Int,
-      orderKeyVal: Long,
-      orderKeyIsNull: Boolean): Unit = {
-    consumeRow(row, key, keyHash, 0L, true, orderKeyVal, orderKeyIsNull)
   }
 
   /**

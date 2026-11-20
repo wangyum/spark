@@ -468,67 +468,6 @@ class HashRowNumberGroupLimitAccumulator(
     }
   }
 
-  private val keyCacheSize = 16384
-  private val keyCacheMask = keyCacheSize - 1
-  private val cachedKeyVals = new Array[Long](keyCacheSize)
-  private val cachedKeyHashes = new Array[Int](keyCacheSize)
-  private val cachedBaseOffsets = new Array[Long](keyCacheSize)
-  private val cachedBaseObjects = new Array[AnyRef](keyCacheSize)
-  java.util.Arrays.fill(cachedBaseOffsets, -1L)
-
-  override def consumeRow(
-      row: UnsafeRow,
-      key: UnsafeRow,
-      keyHash: Int,
-      keyVal: Long,
-      keyIsNull: Boolean,
-      orderKeyVal: Long,
-      orderKeyIsNull: Boolean): Unit = {
-    val cacheIdx = keyHash & keyCacheMask
-    val cachedOff = cachedBaseOffsets(cacheIdx)
-    var baseObj: AnyRef = null
-    var baseOffset: Long = 0L
-    var buffer: UnsafeRow = null
-    if (cachedOff != -1L && !keyIsNull &&
-        cachedKeyHashes(cacheIdx) == keyHash &&
-        cachedKeyVals(cacheIdx) == keyVal) {
-      baseOffset = cachedOff
-      baseObj = cachedBaseObjects(cacheIdx)
-    } else {
-      buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
-      if (buffer == null) {
-        switchToFallback(row)
-        return
-      }
-      baseObj = buffer.getBaseObject
-      baseOffset = buffer.getBaseOffset
-      if (!keyIsNull) {
-        cachedKeyVals(cacheIdx) = keyVal
-        cachedKeyHashes(cacheIdx) = keyHash
-        cachedBaseOffsets(cacheIdx) = baseOffset
-        cachedBaseObjects(cacheIdx) = baseObj
-      }
-    }
-    val heapSize = Platform.getLong(baseObj, baseOffset + heapSizeByteOffset).toInt
-    if (heapSize < limit) {
-      if (buffer == null) buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
-      storeAtSlotSingle(row, orderKeyVal, orderKeyIsNull, buffer, heapSize)
-      if (fallbackDestination != null) return
-      Platform.putLong(baseObj, baseOffset + heapSizeByteOffset, heapSize + 1)
-      siftUp(buffer, heapSize)
-    } else if (compareSlotSingle(orderKeyVal, orderKeyIsNull, baseObj, baseOffset, 0) < 0) {
-      if (buffer == null) buffer = map.getAggregationBufferFromUnsafeRow(key, keyHash)
-      storeAtSlotSingle(row, orderKeyVal, orderKeyIsNull, buffer, 0)
-      if (fallbackDestination != null) return
-      siftDown(buffer, 0, limit)
-    }
-    rowsConsumed += 1
-    if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
-      maybeBailOutForPoorEfficiency()
-      nextCompactionCheckAt = rowsConsumed + minRowsBetweenCompactionChecks
-    }
-  }
-
   /**
    * Appends `row` to `rowArena` and writes its order-key fields and address into slot `slot` of
    * `buffer`. Appends *before* touching `buffer`: if `rowArena.append` fails, `buffer` must be
