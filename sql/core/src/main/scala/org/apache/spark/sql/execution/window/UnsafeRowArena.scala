@@ -51,8 +51,8 @@ import org.apache.spark.unsafe.memory.MemoryBlock
  * [[HashRowNumberGroupLimitAccumulator]] has no use for that link (at most one row survives per
  * heap slot), so it uses the plain [[append]]/[[getRow]] pair instead and never pays the extra 8
  * bytes per row. Mixing the two modes on one instance is a programming error, not a data-dependent
- * condition, so [[append]]/[[appendLinked]]/[[getNext]] fail fast (`require`) if called on an
- * instance constructed for the other mode.
+ * condition, so [[append]]/[[appendLinked]]/[[getNext]]/[[getRowAndNext]] fail fast (`require`) if
+ * called on an instance constructed for the other mode.
  */
 private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager, linked: Boolean)
   extends MemoryConsumer(
@@ -159,9 +159,9 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
    * combining [[getRow]] and [[getNext]] in a single address decode. Requires `linked = true`.
    */
   def getRowAndNext(address: Long, resultRow: UnsafeRow): Long = {
-    val offset = address >>> UnsafeRowArena.SIZE_BITS
-    val size = address.toInt & UnsafeRowArena.SIZE_MASK
-    val base = pageBaseOff + offset
+    require(linked, "getRowAndNext() is not supported on an arena constructed for non-linked mode.")
+    val base = pageBaseOff + UnsafeRowArena.toOffset(address)
+    val size = UnsafeRowArena.toSize(address)
     resultRow.pointTo(pageBaseObj, base, size)
     Platform.getLong(pageBaseObj, base + size)
   }

@@ -174,6 +174,57 @@ class UnsafeRowArenaSuite extends SparkFunSuite {
     }
   }
 
+  // Regression test for a deep-review finding: getRowAndNext previously had no direct coverage
+  // at all -- its only exercise was indirectly, via HashRankGroupLimitAccumulator.nextResultRow --
+  // so a decode regression here would have had to be caught by an unrelated suite, if at all.
+  test("getRowAndNext matches walking the same chain via getRow + getNext") {
+    withArena(linked = true) { (arena, _) =>
+      val third = arena.appendLinked(row(3, "c"), UnsafeRowArena.NO_NEXT)
+      val second = arena.appendLinked(row(2, "b"), third)
+      val head = arena.appendLinked(row(1, "a"), second)
+
+      val viaGetRowAndNext = scala.collection.mutable.ArrayBuffer[(Int, String)]()
+      var address = head
+      val resultRow = new UnsafeRow(2)
+      while (address != UnsafeRowArena.NO_NEXT) {
+        address = arena.getRowAndNext(address, resultRow)
+        viaGetRowAndNext += ((resultRow.getInt(0), resultRow.getString(1)))
+      }
+
+      val viaGetRowThenGetNext = scala.collection.mutable.ArrayBuffer[(Int, String)]()
+      address = head
+      while (address != UnsafeRowArena.NO_NEXT) {
+        val r = arena.getRow(address, resultRow)
+        viaGetRowThenGetNext += ((r.getInt(0), r.getString(1)))
+        address = arena.getNext(address)
+      }
+
+      assert(viaGetRowAndNext.toSeq == Seq((1, "a"), (2, "b"), (3, "c")))
+      assert(viaGetRowAndNext.toSeq == viaGetRowThenGetNext.toSeq)
+      arena.free()
+    }
+  }
+
+  test("getRowAndNext throws when the arena was not constructed for linked mode") {
+    withArena(linked = false) { (arena, _) =>
+      val address = arena.append(row(1, "a"))
+      intercept[IllegalArgumentException] {
+        arena.getRowAndNext(address, new UnsafeRow(2))
+      }
+      arena.free()
+    }
+  }
+
+  test("getNext throws when the arena was not constructed for linked mode") {
+    withArena(linked = false) { (arena, _) =>
+      val address = arena.append(row(1, "a"))
+      intercept[IllegalArgumentException] {
+        arena.getNext(address)
+      }
+      arena.free()
+    }
+  }
+
   test("appendLinked throws when the arena was not constructed for linked mode") {
     withArena(linked = false) { (arena, _) =>
       intercept[IllegalArgumentException] {

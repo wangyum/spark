@@ -31,7 +31,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.types.{IntegerType, LongType, StringType}
+import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
@@ -127,6 +127,55 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
         "string order key must still use the sort-based path")
       val limits = collectWithSubqueries(plan) { case w: WindowGroupLimitExec => w }
       assert(limits.nonEmpty && limits.forall(!_.isHashEligible))
+    }
+  }
+
+  // Regression test for a deep-review finding: isHashEligible used to gate on UnsafeRow.isMutable,
+  // which (unlike UnsafeRow.isFixedLength) also accepts a wide DecimalType (precision above
+  // Decimal.MAX_LONG_DIGITS = 18), CalendarIntervalType, or a nanosecond-precision timestamp --
+  // all of which UnsafeRow stores as a (cursor, length) pointer into the row's own variable-length
+  // region, not as a raw 8-byte value. Both accumulators' extractSlotInto/writeSlotFrom copy an
+  // order-key field between rows with raw getLong/setLong, which silently corrupts that pointer
+  // (it's only meaningful relative to the row it was read from) once copied into a buffer/scratch
+  // row with a different (or no) variable-length region -- the eventual GenerateOrdering comparison
+  // then decodes the stale pointer as a real offset with no bounds checking.
+  test("SPARK-61804: a wide (precision > 18) decimal order key is not hash-eligible (plan" +
+      " unchanged, and the query is still correct via the sort-based fallback)") {
+    val df = Seq((1, "123456789012345678.123456789"), (1, "1.0"), (2, "5.5"))
+      .toDF("k", "raw")
+      .selectExpr("k", "cast(raw as decimal(38, 9)) as amt")
+    val withPushdown = df.selectExpr(
+      "*", "row_number() over (partition by k order by amt desc) as rn")
+      .where("rn = 1").drop("rn")
+    withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+      val plan = withPushdown.queryExecution.executedPlan
+      val limits = collectWithSubqueries(plan) { case w: WindowGroupLimitExec => w }
+      assert(limits.nonEmpty && limits.forall(!_.isHashEligible),
+        "a wide decimal order key must not be hash-eligible")
+      assert(!plan.toString.contains("WindowGroupLimit(hash)"),
+        "EXPLAIN must not show the (hash) suffix for an ineligible plan")
+      checkAnswer(withPushdown,
+        Seq(Row(1, BigDecimal("123456789012345678.123456789")), Row(2, BigDecimal("5.5"))))
+    }
+  }
+
+  test("SPARK-61804: decimal order key eligibility is drawn at precision 18" +
+      " (UnsafeRow.isFixedLength's Decimal.MAX_LONG_DIGITS boundary, not UnsafeRow.isMutable's" +
+      " unlimited precision)") {
+    val child = spark.range(1).queryExecution.sparkPlan
+    val k = AttributeReference("k", IntegerType)()
+    def planWithOrderType(dt: DecimalType): WindowGroupLimitExec = WindowGroupLimitExec(
+      partitionSpec = Seq(k),
+      orderSpec = Seq(SortOrder(AttributeReference("amt", dt)(), Descending)),
+      rankLikeFunction = org.apache.spark.sql.catalyst.expressions.RowNumber(),
+      limit = 1,
+      mode = Partial,
+      child = child)
+    withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+      assert(planWithOrderType(DecimalType(18, 2)).isHashEligible,
+        "DecimalType(18, 2) must remain hash-eligible")
+      assert(!planWithOrderType(DecimalType(19, 2)).isHashEligible,
+        "DecimalType(19, 2) must not be hash-eligible")
     }
   }
 
@@ -772,8 +821,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
   }
 
   // Direct, low-level tests of HashRowNumberGroupLimitAccumulator's K-slot bounded max-heap
-  // (limit > 1), independent of isHashEligible/SQL-level routing (which still gates on limit == 1
-  // until WindowGroupLimitExec's eligibility is widened separately) -- constructs the accumulator
+  // (limit > 1), independent of isHashEligible/SQL-level routing -- constructs the accumulator
   // directly, the same way the OOM fallback tests above do.
 
   test("SPARK-61804: limit > 1 keeps exactly the best `limit` rows per key, any arrival order") {

@@ -202,7 +202,10 @@ object HashGroupLimitAccumulator {
    * source of truth for this eligibility: both concrete accumulators' own `singleColTypeTag`
    * field and [[WindowGroupLimitExec]]'s `isSingleOrderCol` codegen check all defer to this one
    * function, so a type added here is automatically in lock-step everywhere it matters, instead
-   * of three independently-maintained copies of the same type list risking silent drift.
+   * of three independently-maintained copies of the same type list risking silent drift. Every
+   * case here is read back with raw `getLong`/`Platform.getLong` in [[compareSlotSingle]], so any
+   * type added must also satisfy `UnsafeRow.isFixedLength` -- see [[WindowGroupLimitExec
+   * .isHashEligible]]'s doc for why the broader `UnsafeRow.isMutable` is not sufficient.
    */
   private[window] def singleColTypeTag(dataType: DataType): Int = dataType match {
     case LongType | TimestampType | TimestampNTZType => 1
@@ -265,9 +268,14 @@ case class WindowGroupLimitExec(
    * for `Rank`/`DenseRank`, which must keep every row tied at a qualifying order-key value, not
    * just `limit` rows). This is a static, plan-time decision, not a runtime fallback: it requires
    * `limit` to be within `windowGroupLimitHashPushdownMaxLimit` (each key's fixed-width per-key
-   * state grows with `limit`), and every order-key expression's type to be one `UnsafeRow` can
-   * mutate in place (the hash map's per-key state is fixed-width; see
-   * [[HashRowNumberGroupLimitAccumulator]] for why).
+   * state grows with `limit`), and every order-key expression's type to be one `UnsafeRow` stores
+   * directly in a fixed-width 8-byte word (`UnsafeRow.isFixedLength`, not the broader
+   * `UnsafeRow.isMutable`: both accumulators' `extractSlotInto`/`writeSlotFrom` copy an order-key
+   * field between rows with raw `getLong`/`setLong`, which is only safe for a type whose on-the-
+   * wire representation *is* that 8-byte value -- a wide `DecimalType` (precision above
+   * `Decimal.MAX_LONG_DIGITS`), `CalendarIntervalType`, or a nanosecond-precision timestamp is
+   * `isMutable` but stores a `(cursor, length)` pointer into the row's own variable-length region
+   * instead, which `isFixedLength` correctly excludes).
    */
   lazy val isHashEligible: Boolean =
     conf.windowGroupLimitHashPushdownEnabled &&
@@ -276,7 +284,7 @@ case class WindowGroupLimitExec(
         rankLikeFunction.isInstanceOf[DenseRank]) &&
       limit >= 1 &&
       limit <= conf.windowGroupLimitHashPushdownMaxLimit &&
-      orderSpec.forall(order => UnsafeRow.isMutable(order.child.dataType))
+      orderSpec.forall(order => UnsafeRow.isFixedLength(order.child.dataType))
 
   override def requiredChildOrdering: Seq[Seq[SortOrder]] =
     if (isHashEligible) {

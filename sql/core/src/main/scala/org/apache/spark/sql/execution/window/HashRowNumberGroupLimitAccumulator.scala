@@ -27,7 +27,6 @@ import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, BindRefe
   UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.GenerateOrdering
 import org.apache.spark.sql.catalyst.types.DataTypeUtils
-import org.apache.spark.sql.catalyst.util.SQLOrderingUtil
 import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, SortPrefixUtils,
   UnsafeExternalRowSorter, UnsafeFixedWidthAggregationMap}
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -181,34 +180,19 @@ class HashRowNumberGroupLimitAccumulator(
     }
   }
 
+  /**
+   * Compares two heap slots' order-key values against each other for `siftUp`/`siftDown`.
+   * Delegates to the inherited [[compareSlotSingle]] for the single-column case -- reading slot
+   * `a`'s own value/null as the "given" side -- rather than duplicating its type-keyed switch:
+   * see [[HashGroupLimitAccumulator.singleColTypeTag]]'s doc for why that duplication is itself a
+   * latent-bug risk this delegation closes.
+   */
   private def compareSlots(buffer: UnsafeRow, a: Int, b: Int): Int = {
     if (singleColTypeTag != 0) {
       val ordA = slotOrderOrdinal(a, 0)
-      val ordB = slotOrderOrdinal(b, 0)
       val aNull = buffer.isNullAt(ordA)
-      val bNull = buffer.isNullAt(ordB)
-      if (aNull && bNull) return 0
-      if (aNull) return if (isSingleColNullsFirst) -1 else 1
-      if (bNull) return if (isSingleColNullsFirst) 1 else -1
-      val aVal = buffer.getLong(ordA)
-      val bVal = buffer.getLong(ordB)
-      val cmp = singleColTypeTag match {
-        case 1 => java.lang.Long.compare(aVal, bVal)
-        case 2 => java.lang.Integer.compare(aVal.toInt, bVal.toInt)
-        case 3 =>
-          SQLOrderingUtil.compareDoubles(
-            java.lang.Double.longBitsToDouble(aVal),
-            java.lang.Double.longBitsToDouble(bVal))
-        case 4 =>
-          SQLOrderingUtil.compareFloats(
-            java.lang.Float.intBitsToFloat(aVal.toInt),
-            java.lang.Float.intBitsToFloat(bVal.toInt))
-        case 5 => java.lang.Short.compare(aVal.toShort, bVal.toShort)
-        case 6 => java.lang.Byte.compare(aVal.toByte, bVal.toByte)
-        case 7 => java.lang.Boolean.compare(aVal != 0, bVal != 0)
-        case _ => 0
-      }
-      if (isSingleColAscending) cmp else -cmp
+      val aVal = if (aNull) 0L else buffer.getLong(ordA)
+      compareSlotSingle(aVal, aNull, buffer, b)
     } else {
       extractSlotInto(buffer, a, scratchA)
       extractSlotInto(buffer, b, scratchB)
