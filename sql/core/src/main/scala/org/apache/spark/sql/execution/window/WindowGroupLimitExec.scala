@@ -17,7 +17,7 @@
 
 package org.apache.spark.sql.execution.window
 
-import org.apache.spark.PartitionEvaluatorFactory
+import org.apache.spark.{PartitionEvaluator, PartitionEvaluatorFactory}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet,
@@ -77,20 +77,29 @@ case class ArrayFallbackDestination(array: ExternalAppendOnlyUnsafeRowArray)
  */
 trait HashGroupLimitAccumulator {
   /**
-   * Consumes one row, given `key`/`orderKey` already projected by the caller. `doConsume`'s
-   * generated code computes these directly from the row's already-materialized column registers
-   * (via `partitionSpec`/`orderSpec`'s expressions bound to `child.output` and run through
-   * `GenerateUnsafeProjection`), rather than via this accumulator's own
+   * Consumes one row, computing `key`/`orderKey` itself via the concrete accumulator's own
+   * groupingProjection/orderKeyProjection. Used by the interpreted path
+   * ([[HashGroupLimitEvaluatorFactory]]'s shared `createEvaluator()`), which has only a full
+   * `row` to work with, no already-materialized column registers to project from -- unlike
+   * `doConsume`'s generated code, which calls the four-argument overload below directly (see its
+   * doc). Checks [[fallbackDestinationOrNull]] itself, since that check is otherwise the caller's
+   * responsibility (the four-argument overload skips it, relying on `doConsume`'s generated code
+   * to have already special-cased it).
+   */
+  def consumeRow(row: UnsafeRow): Unit
+
+  /**
+   * Consumes one row, given `key`/`orderKey`/`keyHash` already computed by the caller.
+   * `doConsume`'s generated code computes these directly from the row's already-materialized
+   * column registers (via `partitionSpec`/`orderSpec`'s expressions bound to `child.output` and
+   * run through `GenerateUnsafeProjection`), rather than via this accumulator's own
    * groupingProjection/orderKeyProjection, which would otherwise redundantly re-extract those
    * same columns from `row` after `row` itself was just built from those very registers.
-   * Each concrete accumulator's single-argument `consumeRow(row)` (used by the interpreted path,
-   * which has no such registers, only a full `row`) computes `key`/`orderKey` itself and delegates
-   * here. Callers must have already checked [[fallbackDestinationOrNull]] themselves; this skips
-   * that check (both `consumeRow(row)` and `doConsume`'s generated code already special-case it).
+   * The single-argument `consumeRow(row)` above delegates here after computing
+   * `key`/`orderKey`/`keyHash` itself. Callers must have already checked
+   * [[fallbackDestinationOrNull]] themselves; this skips that check (both `consumeRow(row)` and
+   * `doConsume`'s generated code already special-case it).
    */
-  def consumeRow(row: UnsafeRow, key: UnsafeRow, orderKey: UnsafeRow): Unit =
-    consumeRow(row, key, key.hashCode(), orderKey)
-
   def consumeRow(row: UnsafeRow, key: UnsafeRow, keyHash: Int, orderKey: UnsafeRow): Unit
 
   /**
@@ -228,7 +237,37 @@ object HashGroupLimitAccumulator {
  * call in `doProduce`.
  */
 trait HashGroupLimitEvaluatorFactory extends PartitionEvaluatorFactory[InternalRow, InternalRow] {
+  /**
+   * Builds a fresh, per-task accumulator. Used both by [[createEvaluator]] below (the interpreted
+   * `doExecute()` path) and directly by [[WindowGroupLimitExec]]'s whole-stage codegen, which
+   * drives the accumulator with generated code instead of going through [[createEvaluator]]'s
+   * pull-based [[PartitionEvaluator]].
+   */
   def createAccumulator(): HashGroupLimitAccumulator
+
+  /**
+   * Pulls rows from the single child input, feeding each to a fresh [[createAccumulator]] via its
+   * single-argument `consumeRow(row)`, then drains the accumulator's result. Shared by both
+   * concrete factories -- the loop only ever touches [[HashGroupLimitAccumulator]]'s common
+   * interface, so there is nothing for a `RowNumber`- vs `Rank`/`DenseRank`-specific override to
+   * add.
+   */
+  override def createEvaluator(): PartitionEvaluator[InternalRow, InternalRow] =
+    new HashGroupLimitPartitionEvaluator
+
+  private class HashGroupLimitPartitionEvaluator
+    extends PartitionEvaluator[InternalRow, InternalRow] {
+    override def eval(
+        partitionIndex: Int,
+        inputs: Iterator[InternalRow]*): Iterator[InternalRow] = {
+      val input = inputs.head
+      val accumulator = createAccumulator()
+      while (input.hasNext) {
+        accumulator.consumeRow(input.next().asInstanceOf[UnsafeRow])
+      }
+      accumulator.finish()
+    }
+  }
 }
 
 /**

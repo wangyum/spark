@@ -422,11 +422,11 @@ class HashRankGroupLimitAccumulator(
 
   /**
    * Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input.
-   * Used by the interpreted path (see [[HashRankGroupLimitEvaluatorFactory]]), which has only a
-   * full `row` to work with -- computes `key`/`orderKey` itself via this accumulator's own
-   * projections, then delegates to the shared three-argument overload below.
+   * Used by the interpreted path (see [[HashGroupLimitEvaluatorFactory.createEvaluator]]), which
+   * has only a full `row` to work with -- computes `key`/`orderKey` itself via this accumulator's
+   * own projections, then delegates to the four-argument overload below.
    */
-  def consumeRow(row: UnsafeRow): Unit = {
+  override def consumeRow(row: UnsafeRow): Unit = {
     if (fallbackDestination != null) {
       fallbackDestination.insertRow(row)
       return

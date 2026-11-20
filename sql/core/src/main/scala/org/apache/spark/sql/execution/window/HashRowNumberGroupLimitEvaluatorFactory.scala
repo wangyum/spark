@@ -17,9 +17,7 @@
 
 package org.apache.spark.sql.execution.window
 
-import org.apache.spark.PartitionEvaluator
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.execution.metric.SQLMetric
 
 /**
@@ -43,32 +41,15 @@ class HashRowNumberGroupLimitEvaluatorFactory(
     mode: WindowGroupLimitMode = Partial)
   extends HashGroupLimitEvaluatorFactory {
 
-  override def createEvaluator(): PartitionEvaluator[InternalRow, InternalRow] =
-    new HashRowNumberGroupLimitPartitionEvaluator
-
   /**
-   * Builds a fresh, per-task [[HashRowNumberGroupLimitAccumulator]]. Used directly by
-   * [[WindowGroupLimitExec]]'s whole-stage codegen, which drives the accumulator with generated
-   * code instead of going through [[createEvaluator]]'s pull-based [[PartitionEvaluator]].
+   * Builds a fresh, per-task [[HashRowNumberGroupLimitAccumulator]]. Used both by
+   * [[HashGroupLimitEvaluatorFactory.createEvaluator]] (the interpreted `doExecute()` path) and
+   * directly by [[WindowGroupLimitExec]]'s whole-stage codegen, which drives the accumulator with
+   * generated code instead.
    */
   override def createAccumulator(): HashRowNumberGroupLimitAccumulator =
     new HashRowNumberGroupLimitAccumulator(
       partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
       numTasksFallBacked, minCompactionRatio, minRowsBetweenCompactionChecks, enableRadixSort,
       limit = limit, mode = mode)
-
-  class HashRowNumberGroupLimitPartitionEvaluator
-    extends PartitionEvaluator[InternalRow, InternalRow] {
-
-    override def eval(
-        partitionIndex: Int,
-        inputs: Iterator[InternalRow]*): Iterator[InternalRow] = {
-      val input = inputs.head
-      val accumulator = createAccumulator()
-      while (input.hasNext) {
-        accumulator.consumeRow(input.next().asInstanceOf[UnsafeRow])
-      }
-      accumulator.finish()
-    }
-  }
 }

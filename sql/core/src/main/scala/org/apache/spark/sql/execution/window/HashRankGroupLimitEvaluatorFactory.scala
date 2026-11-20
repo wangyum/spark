@@ -17,9 +17,7 @@
 
 package org.apache.spark.sql.execution.window
 
-import org.apache.spark.PartitionEvaluator
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.execution.metric.SQLMetric
 
 /**
@@ -43,32 +41,15 @@ class HashRankGroupLimitEvaluatorFactory(
     mode: WindowGroupLimitMode = Partial)
   extends HashGroupLimitEvaluatorFactory {
 
-  override def createEvaluator(): PartitionEvaluator[InternalRow, InternalRow] =
-    new HashRankGroupLimitPartitionEvaluator
-
   /**
-   * Builds a fresh, per-task [[HashRankGroupLimitAccumulator]]. Used directly by
-   * [[WindowGroupLimitExec]]'s whole-stage codegen, which drives the accumulator with generated
-   * code instead of going through [[createEvaluator]]'s pull-based [[PartitionEvaluator]].
+   * Builds a fresh, per-task [[HashRankGroupLimitAccumulator]]. Used both by
+   * [[HashGroupLimitEvaluatorFactory.createEvaluator]] (the interpreted `doExecute()` path) and
+   * directly by [[WindowGroupLimitExec]]'s whole-stage codegen, which drives the accumulator with
+   * generated code instead.
    */
   override def createAccumulator(): HashRankGroupLimitAccumulator =
     new HashRankGroupLimitAccumulator(
       partitionSpec, orderSpec, rankLikeFunction, childOutput, numOutputRows, peakMemory,
       spillSize, numTasksFallBacked, minCompactionRatio, minRowsBetweenCompactionChecks,
       enableRadixSort, limit, mode)
-
-  class HashRankGroupLimitPartitionEvaluator
-    extends PartitionEvaluator[InternalRow, InternalRow] {
-
-    override def eval(
-        partitionIndex: Int,
-        inputs: Iterator[InternalRow]*): Iterator[InternalRow] = {
-      val input = inputs.head
-      val accumulator = createAccumulator()
-      while (input.hasNext) {
-        accumulator.consumeRow(input.next().asInstanceOf[UnsafeRow])
-      }
-      accumulator.finish()
-    }
-  }
 }
