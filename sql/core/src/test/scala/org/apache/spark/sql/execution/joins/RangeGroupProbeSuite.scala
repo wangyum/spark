@@ -644,11 +644,13 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
         assert(session.currentRelationOrNull != null, "the group must be indexed by now")
         assert(indexedMetric.value == 1)
 
-        // 10 rows * (24-byte interval-key overhead + 8-byte row pointer) = 320 bytes, pinned by
-        // the "estimatedRetainedBytes/isEligible scale with row count" test above. Request
-        // comfortably more than the 1728 bytes free with that 320 still held, but no more than
-        // the 2048-byte cap, so TaskMemoryManager itself must spill the Session's index to
-        // satisfy it -- and, once spilled, the request is fully satisfiable.
+        // The Session holds only a small fraction of the 2048-byte cap: build() trues its
+        // acquisition up to handle.allocatedBytes == relation.estimatedSize (see "build indexes
+        // an in-memory group above the row threshold" above), a real SizeEstimator measurement
+        // of this 10-row group's structural footprint, not the pre-admission estimate. Request
+        // comfortably more than what's free with that held, but no more than the 2048-byte cap,
+        // so TaskMemoryManager itself must spill the Session's index to satisfy it -- and, once
+        // spilled, the request is fully satisfiable.
         val requestBytes = budget - 200
         val requester = neverSpillConsumer(taskMemoryManager)
         val granted = requester.acquireMemory(requestBytes)

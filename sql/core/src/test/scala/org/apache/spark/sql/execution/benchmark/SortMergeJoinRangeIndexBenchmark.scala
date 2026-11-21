@@ -75,11 +75,11 @@ import org.apache.spark.unsafe.types.UTF8String
  * `ExternalAppendOnlyUnsafeRowArray` already owns -- so `maxBytes` scales with the buffered
  * side's actual row *width*, not just its row count, independent of that optimization. Two
  * schemas at the large-group steady-state size/reuse above isolate that effect: "narrow"
- * (the same 3-long-column shape as every other case here) stays far under the current 8MB
- * default at this size; "wide" adds one 500-byte STRING column unrelated to the join
- * condition, pushing the same group's real footprint past the default and into the next
- * few candidate ceilings, so the sweep shows where (if anywhere) the default actually costs
- * realistic, wide-schema workloads the win every narrow-row case above already gets.
+ * (the same 3-long-column shape as every other case here) stays far under every maxBytes
+ * candidate swept below, including the config's own 32MB default; "wide" adds one 500-byte
+ * STRING column unrelated to the join condition, pushing the same group's real footprint
+ * past some of those candidates, so the sweep shows where (if anywhere) the default actually
+ * costs realistic, wide-schema workloads the win every narrow-row case above already gets.
  *
  * To run this benchmark:
  * {{{
@@ -315,17 +315,20 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
 
   // Builds a benchmark with a "disabled" baseline case plus one case per (label, extraConf)
   // variant -- the shape shared by every comparison below, whether it's a plain on/off
-  // `compare`, a maxBytes sweep, or the original-PR wholestage-codegen split.
+  // `compare`, a maxBytes sweep, or the original-PR wholestage-codegen split. `commonConf`
+  // applies to the disabled baseline as well as every variant, for config (like wholestage
+  // codegen) that must hold constant across a whole comparison, not just distinguish variants.
   private def variantCase(name: String, rows: Long, disabledLabel: String,
-      variants: Seq[(String, Seq[(String, String)])])(df: => DataFrame): Unit = {
+      variants: Seq[(String, Seq[(String, String)])], commonConf: Seq[(String, String)] = Nil)
+      (df: => DataFrame): Unit = {
     if (!shouldRun(name)) return
     val benchmark = new Benchmark(name, rows, output = output)
     benchmark.addCase(disabledLabel) { _ =>
-      run(df, indexEnabled = false)
+      run(df, indexEnabled = false, commonConf: _*)
     }
     variants.foreach { case (label, extraConf) =>
       benchmark.addCase(label) { _ =>
-        run(df, indexEnabled = true, extraConf: _*)
+        run(df, indexEnabled = true, (commonConf ++ extraConf): _*)
       }
     }
     benchmark.run()
@@ -341,8 +344,8 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
       val name = s"sort merge inner range join $codegen, (n=$originalPrN, m=$originalPrM)"
       variantCase(name, originalPrN.toLong * originalPrM,
           s"Range index disabled, wholestage $onOff",
-          Seq(s"Range index enabled, wholestage $onOff" ->
-            Seq(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStageEnabled.toString))) {
+          Seq(s"Range index enabled, wholestage $onOff" -> Nil),
+          commonConf = Seq(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStageEnabled.toString)) {
         originalPrDf1.join(originalPrDf2, originalPrCond)
       }
     }
@@ -374,9 +377,10 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     }
   }
 
-  // Candidate ceilings for spark.sql.join.sortMergeJoin.rangeIndex.maxBytes: 8m is the
-  // config's own default, the rest double it until the wide-row case below is comfortably
-  // admitted, bracketing where (if anywhere) the default stops being the binding constraint.
+  // Candidate ceilings for spark.sql.join.sortMergeJoin.rangeIndex.maxBytes: 8m and 16m sit
+  // below the config's own 32m default (to show a tighter cap would reject this group), 32m
+  // is the default itself, and 64m shows headroom above it, bracketing where (if anywhere)
+  // the default is the binding constraint.
   private val maxBytesCandidates = Seq("8m", "16m", "32m", "64m")
   // A real fact-table-style wide schema (dozens to a hundred moderate string columns) needs
   // a much larger ceiling than one single wide column of similar total width -- see

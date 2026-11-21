@@ -169,7 +169,10 @@ private[joins] object RangeGroupProbe extends Logging {
     }
   }
 
-  // --- Private implementation ------------------------------------------------------------------
+  // --- Public API: supporting types ------------------------------------------------------------
+  // Spec/SessionFactory/Handle/Session below are consumed across files (SortMergeJoinExec's
+  // rangeProbeSpec field, SortMergeJoinEvaluatorFactory's SessionFactory param, and Session's
+  // methods spliced directly into SortMergeJoinExec's generated codegen) -- not file-private.
 
   /**
    * Probes a buffered group must receive before its index is built, so the one-time build
