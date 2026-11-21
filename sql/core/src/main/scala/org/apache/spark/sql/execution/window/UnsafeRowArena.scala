@@ -188,7 +188,8 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
     val neededNumWords = (usedBytes + inputRowSize + 7) / 8
     if (neededNumWords > page.size() / 8) {
       val maxNumWords = TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES / 8
-      if (neededNumWords > maxNumWords) {
+      val newNumWords = UnsafeRowArena.computeNewPageWords(
+        neededNumWords, page.size(), pageHeaderBytes, maxNumWords).getOrElse {
         // No bytes were ever requested from/granted by the allocator -- this is a pre-check that
         // fires before allocatePage would even be attempted -- so receivedBytes is 0, matching
         // WindowSegmentTree's use of this same error for its own failed-acquisition case.
@@ -197,11 +198,6 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
           neededNumWords * 8L, 0L, taskMemoryManager.getMemoryConsumptionBreakdown())
         // scalastyle:on throwerror
       }
-      // The doubling target is clamped to the cap before combining with neededNumWords, so a
-      // request that genuinely fits under the cap isn't rejected just because doubling the
-      // current page would overshoot it -- matches LongToUnsafeRowMap.grow's identical clamp.
-      val doubledNumWords = ((page.size() + pageHeaderBytes) * 2 - pageHeaderBytes) / 8
-      val newNumWords = math.max(neededNumWords, math.min(doubledNumWords, maxNumWords))
       val newPageSizeBytes = newNumWords * 8L
       val newPage = allocatePage(newPageSizeBytes)
       Platform.copyMemory(
@@ -246,4 +242,28 @@ private[window] object UnsafeRowArena {
   private def toAddress(offset: Long, size: Int): Long = (offset << SIZE_BITS) | size
   private def toOffset(address: Long): Long = address >>> SIZE_BITS
   private def toSize(address: Long): Int = (address & SIZE_MASK).toInt
+
+  /**
+   * The page-growth arithmetic [[UnsafeRowArena.grow]] uses, pulled out as a pure function (no
+   * page allocation) so it can be unit-tested against the `maxNumWords` boundary directly instead
+   * of needing to actually grow a page to the real ~17.18 GB `TaskMemoryManager
+   * .MAXIMUM_PAGE_SIZE_BYTES` cap. Returns `None` if `neededNumWords` itself exceeds `maxNumWords`
+   * (irrecoverable -- not even a page of exactly the needed size would fit), or `Some(newNumWords)`
+   * otherwise: the doubling target clamped to `maxNumWords` before being combined with
+   * `neededNumWords` via `max`, so a request that genuinely fits under the cap is never rejected
+   * just because doubling the current page would overshoot it (matches `LongToUnsafeRowMap
+   * .grow`'s identical clamp).
+   */
+  private[window] def computeNewPageWords(
+      neededNumWords: Long,
+      currentPageSizeBytes: Long,
+      pageHeaderBytes: Long,
+      maxNumWords: Long): Option[Long] = {
+    if (neededNumWords > maxNumWords) {
+      None
+    } else {
+      val doubledNumWords = ((currentPageSizeBytes + pageHeaderBytes) * 2 - pageHeaderBytes) / 8
+      Some(math.max(neededNumWords, math.min(doubledNumWords, maxNumWords)))
+    }
+  }
 }

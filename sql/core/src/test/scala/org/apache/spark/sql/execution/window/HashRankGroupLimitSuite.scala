@@ -31,7 +31,8 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.types.{DoubleType, FloatType, IntegerType, LongType, StringType}
+import org.apache.spark.sql.types.{Decimal, DecimalType, DoubleType, FloatType, IntegerType,
+  LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 /**
@@ -486,6 +487,66 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
     assert(withHash == Set(Row(1, Double.NaN), Row(1, Double.NaN), Row(1, 5.0)))
   }
 
+  // Regression test for a deep-review finding: DecimalType(<= 18) was added to the single-column
+  // fast path's type-eligibility table (singleColTypeTag case 8, codegen's generated
+  // toUnscaledLong() call), but nothing exercised it end-to-end. Driven directly against the
+  // accumulator (not via SQL) with a precise arrival order, for the same reason as the analogous
+  // ROW_NUMBER() regression test in HashWindowGroupLimitSuite: an earlier SQL-level version of
+  // this test passed even against a deliberately broken case-8 (always reports "equal"), because
+  // -- with every row quick-matching the first-ever slot regardless of its real value -- the
+  // specific data happened to produce the same *content* either way. The arrival order here --
+  // 5.50, then 3.00 (a genuine second distinct value), then a second 5.50 (a genuine tie with the
+  // first slot, not the most-recently-touched one) -- forces both a real non-equality decision
+  // (5.50 vs 3.00 must NOT quick-match) and a real equality decision (the second 5.50 must
+  // correctly match slot 0, not fall through to binarySearchSlot as a bogus new value) through
+  // compareSlotSingle's case-8 branch specifically.
+  test("SPARK-61804 (rank hash pushdown): RANK()/DENSE_RANK() <= 2 over a narrow (precision <=" +
+      " 18) decimal order key (regression test for a decimal comparator bug)") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val amtAttr = AttributeReference("amt", DecimalType(18, 2))()
+      val decimalOrderSpec = Seq(SortOrder(amtAttr, Descending))
+      val decimalChildOutput = Seq(kAttr, amtAttr)
+      def decimal(unscaled: Long): Decimal = Decimal(unscaled, 18, 2)
+
+      def newDecimalAccumulator(rankLikeFunction: Expression): HashRankGroupLimitAccumulator = {
+        val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+        val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+        val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+        val numTasksFallBackedOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
+        val numTasksFallBackedPoorCompaction =
+          SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
+        new HashRankGroupLimitAccumulator(
+          partitionSpec, decimalOrderSpec, rankLikeFunction, decimalChildOutput, numOutputRows,
+          peakMemory, spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction,
+          limit = 2)
+      }
+      val rowProjection = UnsafeProjection.create(decimalChildOutput.map(_.dataType).toArray)
+      def feed(accumulator: HashRankGroupLimitAccumulator): Unit = {
+        Seq(decimal(550), decimal(300), decimal(550)).foreach { amt =>
+          accumulator.consumeRow(rowProjection(InternalRow(1, amt)).copy())
+        }
+      }
+
+      // RANK(): the two genuine 5.50 ties accumulate weight 2 at slot 0, which pushes 3.00's
+      // preceding weight to 2 -- no longer < limit (2) -- evicting it (revalidateTrailingSlots).
+      val rankAccumulator = newDecimalAccumulator(new Rank())
+      feed(rankAccumulator)
+      val rankResult = rankAccumulator.finish().map(_.copy()).toSeq
+        .map(_.getDecimal(1, 18, 2)).sorted
+      assert(rankResult == Seq(decimal(550), decimal(550)),
+        s"RANK() <= 2 must keep only the tied 5.50 pair (3.00's rank is 3), got $rankResult")
+
+      // DENSE_RANK(): weight is flat per distinct value regardless of tie count, so 3.00 (dense
+      // rank 2) survives alongside both 5.50s (dense rank 1).
+      val denseRankAccumulator = newDecimalAccumulator(new DenseRank())
+      feed(denseRankAccumulator)
+      val denseRankResult = denseRankAccumulator.finish().map(_.copy()).toSeq
+        .map(_.getDecimal(1, 18, 2)).sorted
+      assert(denseRankResult == Seq(decimal(300), decimal(550), decimal(550)),
+        s"DENSE_RANK() <= 2 must keep both 5.50s and 3.00, got $denseRankResult")
+    }
+  }
+
   test("SPARK-61804 (rank hash pushdown): RANK()/DENSE_RANK() plans are hash-eligible") {
     val df = Seq((1, 10L), (1, 5L), (2, 7L)).toDF("key", "ts")
     withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
@@ -528,7 +589,7 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
 
   test("SPARK-61804 (rank hash pushdown): RANK()/DENSE_RANK() hash path matches sort-based path" +
       " under heavy slot eviction churn (drain-time cutoff check)") {
-    // Exercises kvIteratorToScala's O(1) cutoff-based admission check (see its doc): many more
+    // Exercises nextResultRow's O(1) cutoff-based admission check (see its doc): many more
     // distinct values than `limit` arrive per key, in random order, forcing repeated tail
     // eviction interleaved with brand-new, never-admitted values -- ties land on still-admitted
     // values, already-evicted values, and values that were never admitted at all, the combination

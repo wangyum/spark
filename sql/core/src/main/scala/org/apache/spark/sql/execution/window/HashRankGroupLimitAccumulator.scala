@@ -173,7 +173,7 @@ class HashRankGroupLimitAccumulator(
   }
   private val scratchA = newOrderKeyScratchRow()
 
-  // Reused by kvIteratorToScala to hold the current key's cutoff slot's order-key fields,
+  // Reused by nextResultRow to hold the current key's cutoff slot's order-key fields,
   // extracted once per key rather than once per candidate row -- see that method's doc.
   private val cutoffScratch = newOrderKeyScratchRow()
 
@@ -340,7 +340,7 @@ class HashRankGroupLimitAccumulator(
    * first seen) never re-checks. By the same weight-monotonicity argument the class doc already
    * relies on, once one slot's preceding weight reaches `limit`, every slot after it does too, so
    * finding the first invalidated position and truncating `slotCount` there is sufficient --
-   * `kvIteratorToScala` already filters candidates purely by the live `slotCount` at drain time,
+   * `nextResultRow` already filters candidates purely by the live `slotCount` at drain time,
    * so no arena bookkeeping is needed: an evicted slot's already-appended rows simply stop
    * matching anything once `finish()` runs. A no-op for `DENSE_RANK`, whose flat per-slot weight
    * of 1 never changes, and for a change at the already-last slot, which has nothing after it to
@@ -673,7 +673,7 @@ class HashRankGroupLimitAccumulator(
 
   /**
    * Drains *every* candidate row ever admitted (not filtered by current slot membership, unlike
-   * [[kvIteratorToScala]]): a row discarded by [[consumeRow]] (never appended at all) is
+   * [[nextResultRow]]): a row discarded by [[consumeRow]] (never appended at all) is
    * permanently, correctly excluded regardless of future data (see the class doc's "preceding
    * weight" argument), but a row that *was* appended and later had its slot evicted is not
    * necessarily excluded from the *true*, whole-stream answer -- re-sorting and re-running it

@@ -254,4 +254,35 @@ class UnsafeRowArenaSuite extends SparkFunSuite {
       arena.free()
     }
   }
+
+  // Regression tests for a deep-review finding: grow()'s growth-cap clamp (commit ad8211403cb)
+  // had no coverage, since every other test's page budget is many orders of magnitude below the
+  // real ~17.18 GB TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES cap the clamp guards against -- the
+  // bug could only be reached by actually growing a page that large. Exercising the extracted
+  // pure computeNewPageWords directly, with a small injected cap, reproduces the exact boundary
+  // (doubling target exceeds the cap, but the needed amount alone does not) without allocating
+  // any real memory.
+  test("computeNewPageWords clamps the doubling target to the cap instead of rejecting a " +
+      "request that fits under it") {
+    // usedBytes=100, inputRowSize=700 -> neededNumWords = (100+700+7)/8 = 100 words, comfortably
+    // under the injected 1000-word cap. Doubling the current 9000-byte page, however, would ask
+    // for 2250 words -- which does exceed that cap. Before the fix, grow() used
+    // math.max(needed, doubled) with no clamp on `doubled`, so this request was wrongly rejected
+    // even though 100 words trivially fits under the 1000-word cap.
+    assert(UnsafeRowArena.computeNewPageWords(
+      neededNumWords = 100L, currentPageSizeBytes = 9000L, pageHeaderBytes = 0L,
+      maxNumWords = 1000L) == Some(1000L))
+  }
+
+  test("computeNewPageWords returns None when the needed size itself exceeds the cap") {
+    assert(UnsafeRowArena.computeNewPageWords(
+      neededNumWords = 2000L, currentPageSizeBytes = 9000L, pageHeaderBytes = 0L,
+      maxNumWords = 1000L).isEmpty)
+  }
+
+  test("computeNewPageWords returns the doubling target unclamped when it's under the cap") {
+    assert(UnsafeRowArena.computeNewPageWords(
+      neededNumWords = 10L, currentPageSizeBytes = 800L, pageHeaderBytes = 0L,
+      maxNumWords = 1000L) == Some(200L))
+  }
 }

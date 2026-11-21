@@ -31,7 +31,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType, StringType}
+import org.apache.spark.sql.types.{Decimal, DecimalType, IntegerType, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
@@ -176,6 +176,52 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
         "DecimalType(18, 2) must remain hash-eligible")
       assert(!planWithOrderType(DecimalType(19, 2)).isHashEligible,
         "DecimalType(19, 2) must not be hash-eligible")
+    }
+  }
+
+  // Regression test for a deep-review finding: the prior two decimal tests only check
+  // isHashEligible (a static plan-time predicate) and never actually run real data through the
+  // generated toUnscaledLong() call / compareSlotSingle's case-8 (Decimal) branch, both added
+  // alongside DecimalType(<= 18) eligibility. Driven directly against the accumulator (not via
+  // SQL) so the arrival order is exact: an earlier SQL-level version of this test passed even
+  // against a deliberately broken case-8 (always reports "equal"), because the true winner
+  // happened to be the first-arriving row for its key -- the heap's single-slot replacement check
+  // (`< 0`, never true against a "tie") then never needs to run, so a comparator that always lies
+  // and says "tie" is never caught. Here the true winner (5.50) arrives *last*, forcing a genuine
+  // replacement decision against whatever wrongly-kept value preceded it.
+  test("SPARK-61804: row_number() <= 1 over a narrow (precision <= 18) decimal order key" +
+      " (regression test for a decimal comparator bug)") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val kAttr = AttributeReference("k", IntegerType)()
+      val amtAttr = AttributeReference("amt", DecimalType(18, 2))()
+      val partitionSpec = Seq(kAttr)
+      val orderSpec = Seq(SortOrder(amtAttr, Descending))
+      val childOutput = Seq(kAttr, amtAttr)
+      val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+      val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+      val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+      val numTasksFallBackedOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
+      val numTasksFallBackedPoorCompaction =
+        SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
+      val accumulator = new HashRowNumberGroupLimitAccumulator(
+        partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
+        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, limit = 1)
+
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      def decimal(unscaled: Long): Decimal = Decimal(unscaled, 18, 2)
+      // key 1: 3.00 arrives first (wins under a broken "always equal" comparator, since no later
+      // row would ever compare as strictly better); -10.25 and a null must not displace it either
+      // way; 5.50 -- the true winner -- arrives last, so only a real `< 0` comparison replaces 3.00
+      // with it. key 2: a single row, trivially correct regardless of the comparator.
+      Seq((1, Some(decimal(300))), (1, Some(decimal(-1025))), (1, None), (1, Some(decimal(550))),
+        (2, Some(decimal(0))))
+        .foreach { case (k, amt) =>
+          accumulator.consumeRow(rowProjection(InternalRow(k, amt.orNull)).copy())
+        }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      val resultSet = result.map(r => (r.getInt(0), r.getDecimal(1, 18, 2))).toSet
+      assert(resultSet == Set((1, decimal(550)), (2, decimal(0))),
+        s"expected the largest decimal per key, got $resultSet")
     }
   }
 
