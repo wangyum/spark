@@ -1220,8 +1220,9 @@ public final class BytesToBytesMap extends MemoryConsumer {
   /**
    * Returns the actual initial page size this map will allocate its first data page with, i.e.
    * the `initialPageSizeBytes` constructor argument clamped to at most {@link #getPageSizeBytes}.
+   * Package-private: only used by this package's own test suite.
    */
-  public long getInitialPageSizeBytes() {
+  long getInitialPageSizeBytes() {
     return initialPageSizeBytes;
   }
 
