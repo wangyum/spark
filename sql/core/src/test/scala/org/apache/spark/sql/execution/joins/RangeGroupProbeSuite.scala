@@ -300,7 +300,7 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       val probeSpec = pointInRangeSpec(threshold = 2)
       assert(probeSpec.usesLongKeys, "bufferP is a LongType range key")
       val retainedBytes = probeSpec.estimatedRetainedBytes(array)
-      assert(retainedBytes == array.length * (32L + 8L),
+      assert(retainedBytes == array.length * (24L + 8L),
         "retained bytes for a long range key must only account for index structural arrays " +
           "and row pointers, independent of the group's real row bytes")
 

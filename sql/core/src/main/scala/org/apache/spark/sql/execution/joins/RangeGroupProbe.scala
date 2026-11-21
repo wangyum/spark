@@ -39,6 +39,138 @@ import org.apache.spark.sql.internal.SQLConf
  */
 private[joins] object RangeGroupProbe extends Logging {
 
+  // --- Public API ----------------------------------------------------------------------------
+
+  /**
+   * `buildSide` names the caller's streamed/buffered split (e.g. `SortMergeJoinExec.buildSide`),
+   * passed in instead of re-derived from `joinType` here so the two can't drift apart.
+   */
+  def createSpec(
+      condition: Option[Expression],
+      joinType: JoinType,
+      equiLeftKeys: Seq[Expression],
+      equiRightKeys: Seq[Expression],
+      leftOutput: Seq[Attribute],
+      rightOutput: Seq[Attribute],
+      buildSide: BuildSide,
+      conf: SQLConf): Option[Spec] = {
+    val threshold = conf.sortMergeJoinRangeIndexThreshold
+    if (threshold < 0) {
+      return None
+    }
+    joinType match {
+      case FullOuter => None
+      case _ =>
+        condition.flatMap { cond =>
+          ExtractRangeJoinKeys.fromJoinCondition(cond, leftOutput, rightOutput).flatMap {
+            case (leftRange, rightRange, kind) =>
+              val equiRefs = AttributeSet(equiLeftKeys ++ equiRightKeys)
+              if (AttributeSet(leftRange ++ rightRange).intersect(equiRefs).nonEmpty) {
+                None
+              } else {
+                val (streamOutput, bufferOutput, streamRange, bufferRange) = buildSide match {
+                  case BuildRight => (leftOutput, rightOutput, leftRange, rightRange)
+                  case BuildLeft => (rightOutput, leftOutput, rightRange, leftRange)
+                }
+                val boundBufferKeys = BindReferences.bindReferences(bufferRange, bufferOutput)
+                val boundStreamKeys = BindReferences.bindReferences(streamRange, streamOutput)
+                val probeKind = RangeProbeKind.forJoin(kind, buildSide)
+                val mode = RangeRelationBroadcastMode(boundBufferKeys, probeKind.indexKind)
+                Some(new Spec(
+                  mode,
+                  boundStreamKeys,
+                  probeKind,
+                  threshold,
+                  conf.sortMergeJoinRangeIndexMaxBytes))
+              }
+          }
+        }
+    }
+  }
+
+  def build(
+      matches: ExternalAppendOnlyUnsafeRowArray,
+      spec: Spec,
+      consumer: MemoryConsumer): Handle = {
+    val n = matches.length
+    if (!spec.isEligible(matches)) {
+      return null
+    }
+
+    // Reserved ahead of transform() to cover the structural index arrays and transient staging
+    // allocated during sorting (see `Spec.peakBuildBytes`). Row payloads already buffered in
+    // `matches` are referenced zero-copy, so wide rows with 100+ columns add no extra allocation.
+    val peakBytes = spec.peakBuildBytes(matches)
+    val acquired = if (consumer != null) consumer.acquireMemory(peakBytes) else peakBytes
+    if (acquired < peakBytes) {
+      if (consumer != null && acquired > 0) consumer.freeMemory(acquired)
+      return null
+    }
+
+    // This code was previously only reachable through the opt-in BroadcastRangeJoinExec path;
+    // it is now unconditionally on sort-merge join's default-on hot path, so an exception here
+    // (e.g. from one of RangeRelation's invariant checks) must not fail the query. Tracks bytes
+    // acquired so far in a var, rather than relying on a fixed quantity, so the catch block
+    // below releases exactly what this attempt is holding at the point it failed.
+    var heldBytes = acquired
+    try {
+      val relation = spec.mode.transform(matches.generateIterator(), Some(n), copyRows = false)
+      // peakBuildBytes above is based on the group's real row bytes, not a schema guess, but
+      // remains an approximation of transform()'s actual staging cost; check it against the
+      // real, SizeEstimator-based footprint so TaskMemoryManager's accounting never under- (or
+      // permanently over-) counts this consumer's usage.
+      val actualBytes = relation.estimatedSize
+
+      if (actualBytes > spec.maxBytes) {
+        // The real footprint exceeds the configured cap even though the pre-admission estimate
+        // didn't predict it; release and fall back instead of silently exceeding maxBytes.
+        if (consumer != null) consumer.freeMemory(heldBytes)
+        return null
+      }
+
+      val allocatedBytes = if (actualBytes > heldBytes) {
+        val extra = actualBytes - heldBytes
+        val extraAcquired = if (consumer != null) consumer.acquireMemory(extra) else extra
+        if (extraAcquired < extra) {
+          if (consumer != null) {
+            if (extraAcquired > 0) consumer.freeMemory(extraAcquired)
+            consumer.freeMemory(heldBytes)
+          }
+          return null
+        }
+        heldBytes += extraAcquired
+        heldBytes
+      } else if (actualBytes < heldBytes) {
+        // peakBuildBytes's transient-staging margin (boxed key/row tuples, sort scratch space)
+        // is garbage now that transform() has returned; release it instead of permanently
+        // over-counting this consumer's usage for the rest of the group's lifetime.
+        if (consumer != null) consumer.freeMemory(heldBytes - actualBytes)
+        heldBytes = actualBytes
+        heldBytes
+      } else {
+        heldBytes
+      }
+
+      val candidateFn = RangeIndexProbe.makeCandidateFn(
+        relation, spec.boundStreamKeys, spec.probeKind)
+      new Handle(relation, allocatedBytes, candidateFn)
+    } catch {
+      case NonFatal(e) =>
+        if (consumer != null && heldBytes > 0) consumer.freeMemory(heldBytes)
+        logWarning(log"range index build failed for a buffered group of " +
+          log"${MDC(NUM_ROWS, n)} rows; falling back to a linear scan", e)
+        null
+    }
+  }
+
+  def release(handle: Handle, consumer: MemoryConsumer): Unit = {
+    if (handle != null && consumer != null && handle.allocatedBytes > 0) {
+      consumer.freeMemory(handle.allocatedBytes)
+    }
+  }
+
+  // --- Private implementation ------------------------------------------------------------------
+
   /**
    * Probes a buffered group must receive before its index is built, so the one-time build
    * cost is paid only once the linear rescans it replaces would have cost about as much.
@@ -65,15 +197,17 @@ private[joins] object RangeGroupProbe extends Logging {
 
     /**
      * Fixed per-row overhead of the index's own bookkeeping arrays once built - `lows`/`highs`/
-     * `maxHighIdx` for an interval index, or just the key array for a point index - separate
+     * `maxHighs` for an interval index, or just the key array for a point index - separate
      * from the row data itself, which `estimatedRetainedBytes`/`peakBuildBytes` account for via
-     * the group's real, already-measured buffered-row byte count rather than a schema guess.
-     * Accurate on its own only for `usesLongKeys`, where every bound is a primitive long; see
+     * the group's real, already-measured buffered-row byte count rather than a schema guess, and
+     * from the `Array[InternalRow]` reference slot, which those two methods add separately. For
+     * `usesLongKeys`, where every bound is a primitive long, this matches
+     * `LongIntervalIndex`/`LongPointIndex`'s zero-copy `estimatedSize` exactly; see
      * `perRowKeyBytes` for the boxed-key case.
      */
     private val keyOverhead: Long = mode.indexKind match {
-      case IntervalIndexKind => 32L // two boundary values plus the maxHighIdx array slot
-      case PointIndexKind => 16L // one key value
+      case IntervalIndexKind => 24L // lows, highs, and maxHighs: one primitive long each
+      case PointIndexKind => 8L // one primitive long key
     }
 
     /** Boxed key values the index owns per row: two bounds for an interval index, one key for
@@ -389,134 +523,6 @@ private[joins] object RangeGroupProbe extends Logging {
       require(taskContext != null,
         "RangeGroupProbe.Session must be constructed within an active Spark task")
       new Session(taskContext, spec, numIndexedMetric, numFallbackMetric)
-    }
-  }
-
-  /**
-   * `buildSide` names the caller's streamed/buffered split (e.g. `SortMergeJoinExec.buildSide`),
-   * passed in instead of re-derived from `joinType` here so the two can't drift apart.
-   */
-  def createSpec(
-      condition: Option[Expression],
-      joinType: JoinType,
-      equiLeftKeys: Seq[Expression],
-      equiRightKeys: Seq[Expression],
-      leftOutput: Seq[Attribute],
-      rightOutput: Seq[Attribute],
-      buildSide: BuildSide,
-      conf: SQLConf): Option[Spec] = {
-    val threshold = conf.sortMergeJoinRangeIndexThreshold
-    if (threshold < 0) {
-      return None
-    }
-    joinType match {
-      case FullOuter => None
-      case _ =>
-        condition.flatMap { cond =>
-          ExtractRangeJoinKeys.fromJoinCondition(cond, leftOutput, rightOutput).flatMap {
-            case (leftRange, rightRange, kind) =>
-              val equiRefs = AttributeSet(equiLeftKeys ++ equiRightKeys)
-              if (AttributeSet(leftRange ++ rightRange).intersect(equiRefs).nonEmpty) {
-                None
-              } else {
-                val (streamOutput, bufferOutput, streamRange, bufferRange) = buildSide match {
-                  case BuildRight => (leftOutput, rightOutput, leftRange, rightRange)
-                  case BuildLeft => (rightOutput, leftOutput, rightRange, leftRange)
-                }
-                val boundBufferKeys = BindReferences.bindReferences(bufferRange, bufferOutput)
-                val boundStreamKeys = BindReferences.bindReferences(streamRange, streamOutput)
-                val probeKind = RangeProbeKind.forJoin(kind, buildSide)
-                val mode = RangeRelationBroadcastMode(boundBufferKeys, probeKind.indexKind)
-                Some(new Spec(
-                  mode,
-                  boundStreamKeys,
-                  probeKind,
-                  threshold,
-                  conf.sortMergeJoinRangeIndexMaxBytes))
-              }
-          }
-        }
-    }
-  }
-
-  def build(
-      matches: ExternalAppendOnlyUnsafeRowArray,
-      spec: Spec,
-      consumer: MemoryConsumer): Handle = {
-    val n = matches.length
-    if (!spec.isEligible(matches)) {
-      return null
-    }
-
-    // Reserved ahead of transform() to cover the structural index arrays and transient staging
-    // allocated during sorting (see `Spec.peakBuildBytes`). Row payloads already buffered in
-    // `matches` are referenced zero-copy, so wide rows with 100+ columns add no extra allocation.
-    val peakBytes = spec.peakBuildBytes(matches)
-    val acquired = if (consumer != null) consumer.acquireMemory(peakBytes) else peakBytes
-    if (acquired < peakBytes) {
-      if (consumer != null && acquired > 0) consumer.freeMemory(acquired)
-      return null
-    }
-
-    // This code was previously only reachable through the opt-in BroadcastRangeJoinExec path;
-    // it is now unconditionally on sort-merge join's default-on hot path, so an exception here
-    // (e.g. from one of RangeRelation's invariant checks) must not fail the query. Tracks bytes
-    // acquired so far in a var, rather than relying on a fixed quantity, so the catch block
-    // below releases exactly what this attempt is holding at the point it failed.
-    var heldBytes = acquired
-    try {
-      val relation = spec.mode.transform(matches.generateIterator(), Some(n), copyRows = false)
-      // peakBuildBytes above is based on the group's real row bytes, not a schema guess, but
-      // remains an approximation of transform()'s actual staging cost; check it against the
-      // real, SizeEstimator-based footprint so TaskMemoryManager's accounting never under- (or
-      // permanently over-) counts this consumer's usage.
-      val actualBytes = relation.estimatedSize
-
-      if (actualBytes > spec.maxBytes) {
-        // The real footprint exceeds the configured cap even though the pre-admission estimate
-        // didn't predict it; release and fall back instead of silently exceeding maxBytes.
-        if (consumer != null) consumer.freeMemory(heldBytes)
-        return null
-      }
-
-      val allocatedBytes = if (actualBytes > heldBytes) {
-        val extra = actualBytes - heldBytes
-        val extraAcquired = if (consumer != null) consumer.acquireMemory(extra) else extra
-        if (extraAcquired < extra) {
-          if (consumer != null) {
-            if (extraAcquired > 0) consumer.freeMemory(extraAcquired)
-            consumer.freeMemory(heldBytes)
-          }
-          return null
-        }
-        heldBytes += extraAcquired
-        heldBytes
-      } else if (actualBytes < heldBytes) {
-        // peakBuildBytes's transient-staging margin (boxed key/row tuples, sort scratch space)
-        // is garbage now that transform() has returned; release it instead of permanently
-        // over-counting this consumer's usage for the rest of the group's lifetime.
-        if (consumer != null) consumer.freeMemory(heldBytes - actualBytes)
-        heldBytes = actualBytes
-        heldBytes
-      } else {
-        heldBytes
-      }
-
-      val candidateFn = RangeIndexProbe.makeCandidateFn(
-        relation, spec.boundStreamKeys, spec.probeKind)
-      new Handle(relation, allocatedBytes, candidateFn)
-    } catch {
-      case NonFatal(e) =>
-        if (consumer != null && heldBytes > 0) consumer.freeMemory(heldBytes)
-        logWarning(log"range index build failed for a buffered group of " +
-          log"${MDC(NUM_ROWS, n)} rows; falling back to a linear scan", e)
-        null
-    }
-  }
-
-  def release(handle: Handle, consumer: MemoryConsumer): Unit = {
-    if (handle != null && consumer != null && handle.allocatedBytes > 0) {
-      consumer.freeMemory(handle.allocatedBytes)
     }
   }
 }
