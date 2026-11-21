@@ -851,6 +851,47 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
     assert(codegenOn == codegenOff)
   }
 
+  // Regression test for a deep-review finding: every other decimal-order-key test in this suite
+  // either uses an ineligible (precision > 18) decimal that never reaches the hash path, only
+  // calls isHashEligible without ever collect()-ing a result, or (the low-level signed-zero-style
+  // regression test above) drives the accumulator's interpreted consumeRow(UnsafeRow) overload
+  // directly -- never WholeStageCodegenExec's generated doConsume. That leaves the actual
+  // generated `${orderEv.value}.toUnscaledLong()` string (see WindowGroupLimitExec.doConsume's
+  // isSingleOrderCol branch) with no test that ever compiles and executes it. This is a coarser,
+  // SQL-level complement to that low-level test -- not a replacement, since (as that test's own
+  // comment notes) an SQL-level query's row arrival order isn't controllable enough to reliably
+  // force every tie/non-tie comparison a hand-crafted low-level test can -- but it does confirm
+  // the generated code compiles and that codegen's output matches both the interpreted hash path
+  // and the independently-implemented sort-based baseline for ordinary narrow-decimal data.
+  test("SPARK-61804: codegen and interpreted hash paths agree for a narrow (precision <= 18)" +
+      " decimal order key, against a real sort-based baseline") {
+    val df = (0 until 500).map(i => (i % 37, i % 11, i.toString))
+      .toDF("k", "raw", "v")
+      .selectExpr("k", "cast(raw as decimal(18, 2)) as ts", "v")
+    val baseline = withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "false") {
+      dedupLatest(df).collect().toSet
+    }
+    val codegenOn = withSQLConf(
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
+      val plan = dedupLatest(df).queryExecution.executedPlan
+      val limits = collectWithSubqueries(plan) { case w: WindowGroupLimitExec => w }
+      assert(limits.nonEmpty && limits.forall(_.isHashEligible),
+        "a precision-18 decimal order key must be hash-eligible")
+      assert(plan.toString.contains("WindowGroupLimit(hash)"),
+        "EXPLAIN must show the (hash) suffix, confirming the generated toUnscaledLong() codegen" +
+          " path (not just eligibility) actually compiled and ran")
+      dedupLatest(df).collect().toSet
+    }
+    val codegenOff = withSQLConf(
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
+      dedupLatest(df).collect().toSet
+    }
+    assert(codegenOn == baseline, "hash path (codegen) must match the sort-based baseline")
+    assert(codegenOff == baseline, "hash path (interpreted) must match the sort-based baseline")
+  }
+
   // Regression test for doConsume's direct-dispatch-to-sorter codegen path (added to avoid every
   // post-fallback row paying consumeRow's extra virtual dispatch through the
   // HashGroupLimitAccumulator trait, on top of its own internal null check, for the rest of the

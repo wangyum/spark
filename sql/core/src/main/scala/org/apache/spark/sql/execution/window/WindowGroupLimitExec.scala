@@ -31,9 +31,8 @@ import org.apache.spark.sql.catalyst.util.SQLOrderingUtil
 import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport,
   ExternalAppendOnlyUnsafeRowArray, SparkPlan, UnaryExecNode, UnsafeExternalRowSorter}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, Decimal,
-  DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, TimestampNTZType,
-  TimestampType}
+import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, DecimalType,
+  DoubleType, FloatType, IntegerType, LongType, ShortType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.Platform
 
 sealed trait WindowGroupLimitMode
@@ -352,7 +351,7 @@ object HashGroupLimitAccumulator {
     case ShortType => 5
     case ByteType => 6
     case BooleanType => 7
-    case d: DecimalType if d.precision <= Decimal.MAX_LONG_DIGITS => 8
+    case d: DecimalType if DecimalType.is64BitDecimalType(d) => 8
     case _ => 0
   }
 }
@@ -668,7 +667,7 @@ case class WindowGroupLimitExec(
           s"(long) java.lang.Float.floatToIntBits(${orderEv.value})"
         case DoubleType =>
           s"java.lang.Double.doubleToLongBits(${orderEv.value})"
-        case d: DecimalType if d.precision <= Decimal.MAX_LONG_DIGITS =>
+        case d: DecimalType if DecimalType.is64BitDecimalType(d) =>
           s"${orderEv.value}.toUnscaledLong()"
         case _ => ""
       }

@@ -494,12 +494,14 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
   // ROW_NUMBER() regression test in HashWindowGroupLimitSuite: an earlier SQL-level version of
   // this test passed even against a deliberately broken case-8 (always reports "equal"), because
   // -- with every row quick-matching the first-ever slot regardless of its real value -- the
-  // specific data happened to produce the same *content* either way. The arrival order here --
-  // 5.50, then 3.00 (a genuine second distinct value), then a second 5.50 (a genuine tie with the
-  // first slot, not the most-recently-touched one) -- forces both a real non-equality decision
-  // (5.50 vs 3.00 must NOT quick-match) and a real equality decision (the second 5.50 must
-  // correctly match slot 0, not fall through to binarySearchSlot as a bogus new value) through
-  // compareSlotSingle's case-8 branch specifically.
+  // specific data happened to produce the same *content* either way. RANK()'s dataset -- 5.50,
+  // then 3.00 (a genuine second distinct value), then a second 5.50 (a genuine tie with the first
+  // slot, not the most-recently-touched one) -- forces both a real non-equality decision (5.50 vs
+  // 3.00 must NOT quick-match) and a real equality decision (the second 5.50 must correctly match
+  // slot 0, not fall through to binarySearchSlot as a bogus new value) through compareSlotSingle's
+  // case-8 branch specifically. DENSE_RANK() uses its own, duplicate-free dataset below (a tie
+  // doesn't exercise its eviction path the same way -- see the comment at that assertion) so that
+  // reusing RANK()'s tied dataset doesn't silently turn into a non-discriminating sanity check.
   test("SPARK-61804 (rank hash pushdown): RANK()/DENSE_RANK() <= 2 over a narrow (precision <=" +
       " 18) decimal order key (regression test for a decimal comparator bug)") {
     withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
@@ -521,8 +523,8 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
           limit = 2)
       }
       val rowProjection = UnsafeProjection.create(decimalChildOutput.map(_.dataType).toArray)
-      def feed(accumulator: HashRankGroupLimitAccumulator): Unit = {
-        Seq(decimal(550), decimal(300), decimal(550)).foreach { amt =>
+      def feedRows(accumulator: HashRankGroupLimitAccumulator, amounts: Seq[Decimal]): Unit = {
+        amounts.foreach { amt =>
           accumulator.consumeRow(rowProjection(InternalRow(1, amt)).copy())
         }
       }
@@ -530,20 +532,33 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
       // RANK(): the two genuine 5.50 ties accumulate weight 2 at slot 0, which pushes 3.00's
       // preceding weight to 2 -- no longer < limit (2) -- evicting it (revalidateTrailingSlots).
       val rankAccumulator = newDecimalAccumulator(new Rank())
-      feed(rankAccumulator)
+      feedRows(rankAccumulator, Seq(decimal(550), decimal(300), decimal(550)))
       val rankResult = rankAccumulator.finish().map(_.copy()).toSeq
         .map(_.getDecimal(1, 18, 2)).sorted
       assert(rankResult == Seq(decimal(550), decimal(550)),
         s"RANK() <= 2 must keep only the tied 5.50 pair (3.00's rank is 3), got $rankResult")
 
-      // DENSE_RANK(): weight is flat per distinct value regardless of tie count, so 3.00 (dense
-      // rank 2) survives alongside both 5.50s (dense rank 1).
+      // DENSE_RANK(): a *different* (duplicate-free) sequence from RANK()'s, since a repeated tie
+      // doesn't actually exercise DENSE_RANK()'s own eviction path -- its flat per-slot weight
+      // (isDenseRank skips the rowCount/revalidateTrailingSlots update entirely, see consumeRow)
+      // means a tie never changes how many *distinct* values are admitted, so reusing RANK()'s
+      // 3-row tied dataset here would pass identically whether case 8 is correct or a broken
+      // "always tie" comparator (every row would spuriously match slot 0, slotCount would never
+      // grow past 1, hasEvictions would never flip, and nextResultRow's `!hasEvictions` branch
+      // would unconditionally emit all 3 candidates regardless of the comparator -- the exact
+      // same {3.00, 5.50, 5.50} result as the correct implementation). Three genuinely distinct
+      // values instead -- 5.50, 3.00, 1.00 -- forces a real admission-boundary decision: a correct
+      // comparator keeps the two best (5.50, 3.00) and discards 1.00 (dense rank 3 > limit 2);
+      // a broken "always tie" comparator instead merges all three into slot 0 (hasEvictions never
+      // flips) and emits all three, including the wrongly-kept 1.00 -- a result that disagrees
+      // with the correct one and so actually fails the assertion below.
       val denseRankAccumulator = newDecimalAccumulator(new DenseRank())
-      feed(denseRankAccumulator)
+      feedRows(denseRankAccumulator, Seq(decimal(550), decimal(300), decimal(100)))
       val denseRankResult = denseRankAccumulator.finish().map(_.copy()).toSeq
         .map(_.getDecimal(1, 18, 2)).sorted
-      assert(denseRankResult == Seq(decimal(300), decimal(550), decimal(550)),
-        s"DENSE_RANK() <= 2 must keep both 5.50s and 3.00, got $denseRankResult")
+      assert(denseRankResult == Seq(decimal(300), decimal(550)),
+        s"DENSE_RANK() <= 2 must keep 5.50 (dense rank 1) and 3.00 (dense rank 2), excluding" +
+          s" 1.00 (dense rank 3), got $denseRankResult")
     }
   }
 
