@@ -81,7 +81,7 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
   private def newAccumulator(
       rankLikeFunction: Expression,
       limit: Int,
-      minCompactionRatio: Double = 0.0,
+      minCompaction: Double = 0.0,
       minRowsBetweenCompactionChecks: Long = 0L): HashRankGroupLimitAccumulator = {
     val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
     val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
@@ -91,7 +91,7 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
       SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
     new HashRankGroupLimitAccumulator(
       partitionSpec, orderSpec, rankLikeFunction, childOutput, numOutputRows, peakMemory,
-      spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompactionRatio,
+      spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction,
       minRowsBetweenCompactionChecks, enableRadixSort = true, limit = limit)
   }
 
@@ -277,7 +277,7 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
         SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
       val accumulator = new HashRankGroupLimitAccumulator(
         partitionSpec, orderSpec, new Rank(), wideChildOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompactionRatio = 0.0,
+        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction = 0.0,
         minRowsBetweenCompactionChecks = 0L, enableRadixSort = true, limit = 1)
 
       val rowProjection = UnsafeProjection.create(wideChildOutput.map(_.dataType).toArray)
@@ -298,7 +298,7 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
           "if it stops triggering, tighten the budget/enlarge the padding above rather than " +
           "deleting this assertion")
       assert(numTasksFallBackedPoorCompaction.value == 0,
-        "this test isolates the genuine-OOM trigger (minCompactionRatio = 0.0 can never trip " +
+        "this test isolates the genuine-OOM trigger (minCompaction = 0.0 can never trip " +
           "the proactive bail-out)")
     }
   }
@@ -317,7 +317,7 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
       val accumulator = new HashRankGroupLimitAccumulator(
         partitionSpec, orderSpec, new Rank(), wideChildOutput, numOutputRows, peakMemory,
         spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction,
-        minCompactionRatio = 0.0, minRowsBetweenCompactionChecks = 0L, enableRadixSort = true,
+        minCompaction = 0.0, minRowsBetweenCompactionChecks = 0L, enableRadixSort = true,
         limit = 1, mode = Final)
 
       val rowProjection = UnsafeProjection.create(wideChildOutput.map(_.dataType).toArray)
@@ -332,7 +332,7 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
       assert(numTasksFallBackedOOM.value > 0,
         "this test is only meaningful if the genuine-OOM fallback actually triggered")
       assert(numTasksFallBackedPoorCompaction.value == 0,
-        "this test isolates the genuine-OOM trigger (minCompactionRatio = 0.0 can never trip " +
+        "this test isolates the genuine-OOM trigger (minCompaction = 0.0 can never trip " +
           "the proactive bail-out)")
     }
   }
@@ -413,7 +413,7 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
         new HashRankGroupLimitAccumulator(
           partitionSpec, doubleOrderSpec, new DenseRank(), doubleChildOutput, numOutputRows,
           peakMemory, spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction,
-          minCompactionRatio = 0.0, minRowsBetweenCompactionChecks = 0L, enableRadixSort = true,
+          minCompaction = 0.0, minRowsBetweenCompactionChecks = 0L, enableRadixSort = true,
           limit = 2)
       }
       val rowProjection = UnsafeProjection.create(doubleChildOutput.map(_.dataType).toArray)
@@ -443,7 +443,7 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
         new HashRankGroupLimitAccumulator(
           partitionSpec, floatOrderSpec, new DenseRank(), floatChildOutput, numOutputRows,
           peakMemory, spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction,
-          minCompactionRatio = 0.0, minRowsBetweenCompactionChecks = 0L, enableRadixSort = true,
+          minCompaction = 0.0, minRowsBetweenCompactionChecks = 0L, enableRadixSort = true,
           limit = 2)
       }
       val rowProjection = UnsafeProjection.create(floatChildOutput.map(_.dataType).toArray)

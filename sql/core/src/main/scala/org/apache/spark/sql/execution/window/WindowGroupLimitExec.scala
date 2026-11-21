@@ -31,8 +31,9 @@ import org.apache.spark.sql.catalyst.util.SQLOrderingUtil
 import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport,
   ExternalAppendOnlyUnsafeRowArray, SparkPlan, UnaryExecNode, UnsafeExternalRowSorter}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, DoubleType,
-  FloatType, IntegerType, LongType, ShortType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, Decimal,
+  DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, TimestampNTZType,
+  TimestampType}
 import org.apache.spark.unsafe.Platform
 
 sealed trait WindowGroupLimitMode
@@ -53,7 +54,7 @@ case object Final extends WindowGroupLimitMode
  * `mode == Final` branch at every one of them. Must stay public (not `private[window]`): generated
  * code lives outside this package and calls `insertRow` directly.
  */
-trait FallbackDestination {
+sealed trait FallbackDestination {
   def insertRow(row: UnsafeRow): Unit
 }
 
@@ -185,11 +186,11 @@ trait HashGroupLimitAccumulator extends Logging {
   // ship unfixed in one of its two copies.
   protected def childOutput: Seq[Attribute]
   protected def mode: WindowGroupLimitMode
-  protected def minCompactionRatio: Double
+  protected def minCompaction: Double
 
   // Two distinct SQLMetrics rather than one combined "fallback happened" counter: the two
   // triggers call for opposite remediation (capacity/skew investigation for a genuine OOM, versus
-  // tuning minCompactionRatio/maxLimit down for a benign, workload-shape-driven proactive
+  // tuning minCompaction/maxLimit down for a benign, workload-shape-driven proactive
   // bailout), so collapsing them into one count would hide which situation actually occurred from
   // anyone reading the SQL UI rather than grepping executor logs for the two already-distinct
   // logInfo messages below.
@@ -246,17 +247,17 @@ trait HashGroupLimitAccumulator extends Logging {
    * Checks whether hash accumulation is still paying off, proactively falling back rather than
    * waiting for the hash map to genuinely run out of memory (which, for high-cardinality keys, may
    * happen far later than it should, if at all): rows-processed-per-distinct-key has fallen below
-   * `minCompactionRatio` -- duplicate keys aren't being pruned enough to offset the hash map's
+   * `minCompaction` -- duplicate keys aren't being pruned enough to offset the hash map's
    * per-row overhead. `rowsConsumed`/`numKeys` are passed in rather than read from an abstract
    * member: both are already locally available at every call site (inside `consumeRow`, right
    * after incrementing `rowsConsumed`), so there is no need to expose the underlying mutable
    * counter or the hash map itself just for this one periodic check.
    */
   protected def maybeBailOutForPoorEfficiency(rowsConsumed: Long, numKeys: Int): Unit = {
-    if (numKeys > 0 && rowsConsumed.toDouble / numKeys < minCompactionRatio) {
+    if (numKeys > 0 && rowsConsumed.toDouble / numKeys < minCompaction) {
       val ratio = rowsConsumed.toDouble / numKeys
       logInfo(s"Hash-based window group limit falling back to sort-based: compaction ratio " +
-        s"$ratio after $rowsConsumed rows is below the minimum $minCompactionRatio.")
+        s"$ratio after $rowsConsumed rows is below the minimum $minCompaction.")
       switchToFallbackProactively()
     }
   }
@@ -306,6 +307,7 @@ trait HashGroupLimitAccumulator extends Logging {
       case 5 => java.lang.Short.compare(kVal.toShort, sVal.toShort)
       case 6 => java.lang.Byte.compare(kVal.toByte, sVal.toByte)
       case 7 => java.lang.Boolean.compare(kVal != 0, sVal != 0)
+      case 8 => java.lang.Long.compare(kVal, sVal)
       case _ => 0
     }
     if (isSingleColAscending) cmp else -cmp
@@ -350,6 +352,7 @@ object HashGroupLimitAccumulator {
     case ShortType => 5
     case ByteType => 6
     case BooleanType => 7
+    case d: DecimalType if d.precision <= Decimal.MAX_LONG_DIGITS => 8
     case _ => 0
   }
 }
@@ -494,7 +497,7 @@ case class WindowGroupLimitExec(
   // truth for how a task's accumulator gets built. Deliberately captures only
   // partitionSpec/orderSpec/rankLikeFunction/child.output/the metrics -- not `this` or `child` --
   // so codegen's addReferenceObj does not drag the child plan into every task's closure.
-  @transient private[sql] lazy val hashEvaluatorFactory: HashGroupLimitEvaluatorFactory =
+  @transient private lazy val hashEvaluatorFactory: HashGroupLimitEvaluatorFactory =
     rankLikeFunction match {
       case _: RowNumber =>
         new HashRowNumberGroupLimitEvaluatorFactory(
@@ -506,7 +509,7 @@ case class WindowGroupLimitExec(
           longMetric("spillSize"),
           longMetric("numTasksFallBackedOOM"),
           longMetric("numTasksFallBackedPoorCompaction"),
-          conf.windowGroupLimitHashPushdownMinCompactionRatio,
+          conf.windowGroupLimitHashPushdownMinCompaction,
           conf.windowGroupLimitHashPushdownMinRows,
           conf.enableRadixSort,
           limit,
@@ -522,7 +525,7 @@ case class WindowGroupLimitExec(
           longMetric("spillSize"),
           longMetric("numTasksFallBackedOOM"),
           longMetric("numTasksFallBackedPoorCompaction"),
-          conf.windowGroupLimitHashPushdownMinCompactionRatio,
+          conf.windowGroupLimitHashPushdownMinCompaction,
           conf.windowGroupLimitHashPushdownMinRows,
           conf.enableRadixSort,
           limit,
@@ -665,6 +668,8 @@ case class WindowGroupLimitExec(
           s"(long) java.lang.Float.floatToIntBits(${orderEv.value})"
         case DoubleType =>
           s"java.lang.Double.doubleToLongBits(${orderEv.value})"
+        case d: DecimalType if d.precision <= Decimal.MAX_LONG_DIGITS =>
+          s"${orderEv.value}.toUnscaledLong()"
         case _ => ""
       }
       val setup =

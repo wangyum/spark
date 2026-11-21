@@ -854,6 +854,20 @@ public abstract class AbstractBytesToBytesMapSuite {
   }
 
   @Test
+  public void initialPageSizeLargerThanPageSizeIsClampedNotRejected() {
+    // Unlike appendUntilNewDataPage's size, which acquireNewPage's own remainingGrowthBytes
+    // arithmetic re-caps to pageSizeBytes for the first page regardless of this clamp, the
+    // constructor-level Math.min clamp is only observable by reading initialPageSizeBytes back
+    // directly.
+    final BytesToBytesMap map = new BytesToBytesMap(taskMemoryManager, 1, 1024, 4096);
+    try {
+      assertEquals(1024, map.getInitialPageSizeBytes());
+    } finally {
+      map.free();
+    }
+  }
+
+  @Test
   public void growingDataPagesLeaveRoomForArrayHeader() {
     // SPARK-61257: Like the default on-heap page size under G1 (SPARK-37593), this page size
     // leaves room for the header of a long[], and so does each growing page. With the header, the

@@ -325,7 +325,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
     withSQLConf(
       SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
       SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key -> "10",
-      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key -> "1.05") {
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION.key -> "1.05") {
       // All-unique keys: compaction ratio is always exactly 1.0, well below the 1.05 threshold,
       // so the periodic check (every 10 rows here) should trigger a bail-out to the sort-based
       // fallback well before all 1000 rows are consumed.
@@ -355,7 +355,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       // duplication has had a chance to accumulate -- not a bug in the production code, just
       // this test needing to give the ratio room to rise first.
       SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key -> "50",
-      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key -> "1.05") {
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION.key -> "1.05") {
       // 10 distinct keys, 100 rows each: compaction ratio is 100, far above the 1.05 threshold,
       // so the periodic check must never trigger a bail-out despite running every 50 rows. ts
       // decreases within each key's own occurrences (n - i, round-robin over k = i % 10), so a
@@ -377,7 +377,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
 
   // End-to-end correctness check for Final-mode fallback's unfiltered output (see the low-level
   // accumulator test "Final-mode fallback emits every consumed row unfiltered" for the mechanism):
-  // an impossible minCompactionRatio forces both Partial and Final to fall back even though this
+  // an impossible minCompaction forces both Partial and Final to fall back even though this
   // data genuinely compacts well, so Final emits every surviving candidate unfiltered -- this only
   // produces the right single winner per key because the real Sort + Window + Filter(rn = 1) above
   // the group-limit chain recomputes the answer from scratch, exactly as it would if the
@@ -395,7 +395,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
     withSQLConf(
       SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
       SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key -> "10",
-      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key -> "1000000.0") {
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION.key -> "1000000.0") {
       val numKeys = 2000
       val n = numKeys * 5
       val df = (0 until n).map(i => (i % numKeys, (n - i).toLong, (n - i).toLong))
@@ -478,7 +478,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       // isolating this test to the genuine-OOM fallback path only.
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompactionRatio = 0.0,
+        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction = 0.0,
         minRowsBetweenCompactionChecks = 0L, limit = 1)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
@@ -535,7 +535,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
         SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompactionRatio = 1000000.0,
+        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction = 1000000.0,
         minRowsBetweenCompactionChecks = 10L, limit = 1, mode = Final)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
@@ -550,7 +550,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
           s"${result.length}")
       assert(numTasksFallBackedPoorCompaction.value > 0,
         "this test is only meaningful if the proactive bail-out actually triggered -- if it " +
-          "stops triggering, retune minRowsBetweenCompactionChecks/minCompactionRatio above " +
+          "stops triggering, retune minRowsBetweenCompactionChecks/minCompaction above " +
           "rather than deleting this assertion")
       assert(numTasksFallBackedOOM.value == 0,
         "this test isolates the proactive compaction-ratio trigger; the genuine-OOM fallback " +
@@ -577,7 +577,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
         SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompactionRatio = 1000000.0,
+        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction = 1000000.0,
         minRowsBetweenCompactionChecks = 10L, limit = 1, mode = Partial)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
@@ -595,7 +595,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
         "each key's winner must be its highest-ts (last-arriving) row")
       assert(numTasksFallBackedPoorCompaction.value > 0,
         "this test is only meaningful if the proactive bail-out actually triggered -- if it " +
-          "stops triggering, retune minRowsBetweenCompactionChecks/minCompactionRatio above " +
+          "stops triggering, retune minRowsBetweenCompactionChecks/minCompaction above " +
           "rather than deleting this assertion")
       assert(numTasksFallBackedOOM.value == 0,
         "this test isolates the proactive compaction-ratio trigger; the genuine-OOM fallback " +
@@ -630,7 +630,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       // isolating this test to the genuine-OOM fallback path only.
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompactionRatio = 0.0,
+        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction = 0.0,
         minRowsBetweenCompactionChecks = 0L, limit = 1)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
@@ -680,7 +680,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
   //    genuine OOM strikes, not on some earlier row -- otherwise a healthy, correct proactive
   //    bail-out consumes the fallback first and the arena never gets a chance to genuinely OOM at
   //    all. Since every key here is distinct (ratio == 1.0 throughout, comfortably below
-  //    minCompactionRatio whenever the check is actually evaluated),
+  //    minCompaction whenever the check is actually evaluated),
   //    minRowsBetweenCompactionChecks is tuned to the exact row count at which rowArena.append
   //    happens to first throw under this budget/padding (empirically found to be 482; see the
   //    comment below), so the check's first
@@ -714,7 +714,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       // live map) on any earlier row.
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompactionRatio = 1.05,
+        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction = 1.05,
         minRowsBetweenCompactionChecks = 482L, limit = 1)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
@@ -758,7 +758,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
         SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompactionRatio = 0.0,
+        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction = 0.0,
         minRowsBetweenCompactionChecks = 0L, limit = 1, mode = Final)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
@@ -773,7 +773,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
       assert(numTasksFallBackedOOM.value > 0,
         "this test is only meaningful if the genuine-OOM fallback actually triggered")
       assert(numTasksFallBackedPoorCompaction.value == 0,
-        "this test isolates the genuine-OOM trigger (minCompactionRatio = 0.0 can never trip " +
+        "this test isolates the genuine-OOM trigger (minCompaction = 0.0 can never trip " +
           "the proactive bail-out)")
     }
   }
@@ -819,7 +819,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
     withSQLConf(
       SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true",
       SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS.key -> "10",
-      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO.key -> "1.05") {
+      SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION.key -> "1.05") {
       // All-unique keys, same shape as the proactive-bail-out test: the periodic check (every 10
       // rows) bails out well before all 1000 rows are consumed, so the bulk of this DataFrame's
       // rows are processed by doConsume's new fallbackSorterOrNull-guarded branch when codegen is
@@ -914,7 +914,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
         SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompactionRatio = 5.0,
+        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction = 5.0,
         minRowsBetweenCompactionChecks = 50L, limit = 3)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
@@ -962,7 +962,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
         SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
       val accumulator = new HashRowNumberGroupLimitAccumulator(
         partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompactionRatio = 0.0,
+        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction = 0.0,
         minRowsBetweenCompactionChecks = 0L, limit = 3)
 
       val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
@@ -984,7 +984,7 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
           "if it stops triggering, tighten the budget/enlarge the padding above rather than " +
           "deleting this assertion")
       assert(numTasksFallBackedPoorCompaction.value == 0,
-        "this test isolates the genuine-OOM trigger (minCompactionRatio = 0.0 can never trip " +
+        "this test isolates the genuine-OOM trigger (minCompaction = 0.0 can never trip " +
           "the proactive bail-out)")
     }
   }

@@ -5408,7 +5408,7 @@ object SQLConf {
         s"'${WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key}'). Mirrors adaptive partial " +
         "aggregation's identically-named config: when the ratio of " +
         "rows processed to distinct partition keys seen falls below " +
-        s"'spark.sql.windowExec.groupLimit.hashPushdown.minCompactionRatio', the hash " +
+        s"'spark.sql.windowExec.groupLimit.hashPushdown.minCompaction', the hash " +
         "accumulation is not reducing row count enough to be worth its per-row overhead, and " +
         "the accumulator falls back to the same sort-based path it already uses when the hash " +
         "map runs out of memory. Setting this to 0 disables the periodic check (the hash map " +
@@ -5419,8 +5419,8 @@ object SQLConf {
       .checkValue(_ >= 0, "The minimum row count must not be negative.")
       .createWithDefault(100000)
 
-  val WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO =
-    buildConf("spark.sql.windowExec.groupLimit.hashPushdown.minCompactionRatio")
+  val WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION =
+    buildConf("spark.sql.windowExec.groupLimit.hashPushdown.minCompaction")
       .doc("The minimum compaction ratio required to keep using the hash-based accumulator in " +
         s"WindowGroupLimitExec (see '${WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key}'). The " +
         "compaction ratio is the number of processed rows divided by the number of distinct " +
@@ -10605,8 +10605,8 @@ class SQLConf extends Serializable with Logging with SqlApiConf {
   def windowGroupLimitHashPushdownMinRows: Long =
     getConf(WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_ROWS)
 
-  def windowGroupLimitHashPushdownMinCompactionRatio: Double =
-    getConf(WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION_RATIO)
+  def windowGroupLimitHashPushdownMinCompaction: Double =
+    getConf(WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MIN_COMPACTION)
 
   def windowGroupLimitHashPushdownMaxLimit: Int =
     getConf(WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_MAX_LIMIT)

@@ -107,7 +107,7 @@ class HashRankGroupLimitAccumulator(
     spillSize: SQLMetric,
     protected val numTasksFallBackedOOM: SQLMetric,
     protected val numTasksFallBackedPoorCompaction: SQLMetric,
-    protected val minCompactionRatio: Double = 1.05,
+    protected val minCompaction: Double = 1.05,
     minRowsBetweenCompactionChecks: Long = 100000L,
     enableRadixSort: Boolean = true,
     limit: Int = 1,

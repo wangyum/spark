@@ -183,10 +183,14 @@ class UnsafeFixedWidthAggregationMapSuite
     map.free()
   }
 
-  testWithMemoryLeakDetection("initialPageSizeBytes larger than pageSizeBytes is clamped, not " +
-      "rejected") {
+  testWithMemoryLeakDetection("initialPageSizeBytes larger than pageSizeBytes is not rejected") {
     // BytesToBytesMap silently clamps an oversized initialPageSizeBytes down to pageSizeBytes
-    // (Math.min) rather than throwing -- pins that behavior rather than a hard precondition.
+    // (Math.min) rather than throwing, so this overload must accept it rather than requiring
+    // callers to pre-clamp. This only pins the absence of a hard precondition: the clamp itself
+    // (not just whether construction succeeds) is pinned directly against BytesToBytesMap in
+    // AbstractBytesToBytesMapSuite.initialPageSizeLargerThanPageSizeIsClampedNotRejected, since
+    // the actual first-page allocation size this map observes converges to pageSizeBytes either
+    // way (acquireNewPage's remainingGrowthBytes arithmetic re-caps it regardless of the clamp).
     val map = new UnsafeFixedWidthAggregationMap(
       emptyAggregationBuffer,
       aggBufferSchema,

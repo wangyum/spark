@@ -187,18 +187,22 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
     val usedBytes = cursor - pageBaseOff
     val neededNumWords = (usedBytes + inputRowSize + 7) / 8
     if (neededNumWords > page.size() / 8) {
-      val doubledNumWords = ((page.size() + pageHeaderBytes) * 2 - pageHeaderBytes) / 8
-      val newNumWords = math.max(neededNumWords, doubledNumWords)
-      val newPageSizeBytes = newNumWords * 8L
-      if (newPageSizeBytes > TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES) {
+      val maxNumWords = TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES / 8
+      if (neededNumWords > maxNumWords) {
         // No bytes were ever requested from/granted by the allocator -- this is a pre-check that
         // fires before allocatePage would even be attempted -- so receivedBytes is 0, matching
         // WindowSegmentTree's use of this same error for its own failed-acquisition case.
         // scalastyle:off throwerror
         throw QueryExecutionErrors.cannotAcquireMemoryForWindowAggregateError(
-          newPageSizeBytes, 0L, taskMemoryManager.getMemoryConsumptionBreakdown())
+          neededNumWords * 8L, 0L, taskMemoryManager.getMemoryConsumptionBreakdown())
         // scalastyle:on throwerror
       }
+      // The doubling target is clamped to the cap before combining with neededNumWords, so a
+      // request that genuinely fits under the cap isn't rejected just because doubling the
+      // current page would overshoot it -- matches LongToUnsafeRowMap.grow's identical clamp.
+      val doubledNumWords = ((page.size() + pageHeaderBytes) * 2 - pageHeaderBytes) / 8
+      val newNumWords = math.max(neededNumWords, math.min(doubledNumWords, maxNumWords))
+      val newPageSizeBytes = newNumWords * 8L
       val newPage = allocatePage(newPageSizeBytes)
       Platform.copyMemory(
         pageBaseObj, pageBaseOff, newPage.getBaseObject, newPage.getBaseOffset,

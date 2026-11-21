@@ -327,11 +327,12 @@ rows: for `ROW_NUMBER()`/`RANK()`/`DENSE_RANK() <= k` over mostly-unique partiti
 keeping nearly every row it sees, paying the hash map's per-row overhead for no benefit over
 sorting. To guard against this, the accumulator periodically measures its compaction ratio -- the
 number of rows processed divided by the number of distinct partition keys seen -- against
-`minCompactionRatio`, checking every `minRows` rows. If hash accumulation is not pruning enough to
+`minCompaction`, checking every `minRows` rows. If hash accumulation is not pruning enough to
 be worthwhile, or if the underlying hash map or row storage runs out of memory, the accumulator
 falls back to the same sort-based computation used when hash pushdown is disabled, so results are
-identical either way. The SQL UI's `number of sort fallback tasks` metric on the operator reports
-how often this happened.
+identical either way. The SQL UI's `number of sort fallback tasks (out of memory)` and
+`number of sort fallback tasks (poor compaction ratio)` metrics on the operator report how often
+each kind of fallback happened.
 
 <table class="spark-config">
   <thead><tr><th>Property Name</th><th>Default</th><th>Meaning</th><th>Since Version</th></tr></thead>
@@ -352,14 +353,14 @@ how often this happened.
     <td>
       The number of rows between periodic compaction-ratio evaluations by the hash-based
       accumulator. When the ratio of rows processed to distinct partition keys seen falls below
-      <code>minCompactionRatio</code>, the accumulator falls back to the sort-based path for the
+      <code>minCompaction</code>, the accumulator falls back to the sort-based path for the
       rest of the input. Setting this to <code>0</code> disables the periodic check (the hash map
       running out of memory remains a fallback trigger regardless).
     </td>
     <td>4.5.0</td>
   </tr>
   <tr>
-    <td><code>spark.sql.windowExec.groupLimit.hashPushdown.minCompactionRatio</code></td>
+    <td><code>spark.sql.windowExec.groupLimit.hashPushdown.minCompaction</code></td>
     <td>1.05</td>
     <td>
       The minimum compaction ratio required to keep using the hash-based accumulator. The

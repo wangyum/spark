@@ -64,7 +64,7 @@ import org.apache.spark.unsafe.{KVIterator, Platform}
  *   - `rowArena` could no longer acquire memory for a row's bytes (also [[switchToFallback]],
  *     same trigger, see [[consumeRow]]); or
  *   - periodically ([[maybeBailOutForPoorEfficiency]], [[switchToFallbackProactively]]), the ratio
- *     of rows processed to distinct keys seen falls below `minCompactionRatio` (hash accumulation
+ *     of rows processed to distinct keys seen falls below `minCompaction` (hash accumulation
  *     isn't pruning enough duplicate rows to be worth its per-row overhead -- mirrors
  *     `HashAggregateExec`'s adaptive partial aggregation, which uses the same compaction-ratio
  *     heuristic, `spark.sql.execution.aggregate.adaptivePartialAggregation.*`, for the same
@@ -79,7 +79,7 @@ class HashRowNumberGroupLimitAccumulator(
     spillSize: SQLMetric,
     protected val numTasksFallBackedOOM: SQLMetric,
     protected val numTasksFallBackedPoorCompaction: SQLMetric,
-    protected val minCompactionRatio: Double = 1.05,
+    protected val minCompaction: Double = 1.05,
     minRowsBetweenCompactionChecks: Long = 100000L,
     enableRadixSort: Boolean = true,
     limit: Int,
