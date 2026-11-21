@@ -17,6 +17,8 @@
 
 package org.apache.spark.sql.execution.joins
 
+import java.util.Properties
+
 import org.apache.spark._
 import org.apache.spark.memory.{MemoryConsumer, MemoryMode, MemoryTestingUtils, TaskMemoryManager,
   TestMemoryManager}
@@ -593,6 +595,78 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
       assert(session.currentRelationOrNull == null, "the group must not rebuild after a spill")
       assert(indexedMetric.value == 1, "a rebuild would have incremented this again")
       assert(fallbackMetric.value == 1, "a rebuild attempt would have incremented this again")
+    }
+  }
+
+  test("Session.spill() is genuinely invoked by TaskMemoryManager under real memory " +
+    "contention from another consumer, not only via direct method injection") {
+    // Every other spill test above calls session.spill(1L, otherConsumer) directly, simulating
+    // what TaskMemoryManager would do. This test instead lets a real TaskMemoryManager, backed
+    // by a tightly capped TestMemoryManager, discover and spill the Session's index on its own,
+    // exercising the genuine acquireExecutionMemory/spill contention path end to end.
+    val budget = 2048L
+    val mm = new TestMemoryManager(new SparkConf(false))
+    mm.limit(budget)
+    val taskMemoryManager = new TaskMemoryManager(mm, 0)
+    sc = new SparkContext("local", "test", new SparkConf(false))
+    val taskContext = new TaskContextImpl(
+      stageId = 0,
+      stageAttemptNumber = 0,
+      partitionId = 0,
+      taskAttemptId = 0,
+      attemptNumber = 0,
+      numPartitions = 1,
+      taskMemoryManager = taskMemoryManager,
+      localProperties = new Properties,
+      metricsSystem = SparkEnv.get.metricsSystem)
+    TaskContext.setTaskContext(taskContext)
+    try {
+      val array = new ExternalAppendOnlyUnsafeRowArray(
+        taskMemoryManager,
+        SparkEnv.get.blockManager,
+        SparkEnv.get.serializerManager,
+        taskContext,
+        1024,
+        SparkEnv.get.memoryManager.pageSizeBytes,
+        1000,
+        Long.MaxValue,
+        1,
+        Long.MaxValue)
+      try {
+        val proj = UnsafeProjection.create(Array[DataType](LongType, LongType))
+        (0 until 10).foreach(i => array.add(proj(InternalRow(1L, i.toLong * 10L))))
+
+        val indexedMetric = SQLMetrics.createMetric(sc, "indexed")
+        val fallbackMetric = SQLMetrics.createMetric(sc, "fallback")
+        val session = RangeGroupProbe.Session(
+          pointInRangeSpec(threshold = 2), indexedMetric, fallbackMetric)
+        probeThroughGate(session, array)
+        assert(session.currentRelationOrNull != null, "the group must be indexed by now")
+        assert(indexedMetric.value == 1)
+
+        // 10 rows * (24-byte interval-key overhead + 8-byte row pointer) = 320 bytes, pinned by
+        // the "estimatedRetainedBytes/isEligible scale with row count" test above. Request
+        // comfortably more than the 1728 bytes free with that 320 still held, but no more than
+        // the 2048-byte cap, so TaskMemoryManager itself must spill the Session's index to
+        // satisfy it -- and, once spilled, the request is fully satisfiable.
+        val requestBytes = budget - 200
+        val requester = neverSpillConsumer(taskMemoryManager)
+        val granted = requester.acquireMemory(requestBytes)
+        try {
+          assert(granted == requestBytes,
+            "the request must be fully satisfiable once the Session's index is reclaimed")
+          assert(session.currentRelationOrNull == null,
+            "TaskMemoryManager's own contention handling must have spilled the Session's index")
+          assert(fallbackMetric.value == 1,
+            "an organically-triggered spill must still be counted as a fallback")
+        } finally {
+          requester.freeMemory(granted)
+        }
+      } finally {
+        array.clear()
+      }
+    } finally {
+      TaskContext.unset()
     }
   }
 
