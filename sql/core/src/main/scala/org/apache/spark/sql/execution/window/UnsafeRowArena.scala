@@ -194,7 +194,7 @@ private[window] final class UnsafeRowArena(taskMemoryManager: TaskMemoryManager,
         // fires before allocatePage would even be attempted -- so receivedBytes is 0, matching
         // WindowSegmentTree's use of this same error for its own failed-acquisition case.
         // scalastyle:off throwerror
-        throw QueryExecutionErrors.cannotAcquireMemoryForWindowAggregateError(
+        throw QueryExecutionErrors.cannotAcquireMemoryForWindowExecutionError(
           neededNumWords * 8L, 0L, taskMemoryManager.getMemoryConsumptionBreakdown())
         // scalastyle:on throwerror
       }

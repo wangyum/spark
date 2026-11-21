@@ -1339,7 +1339,10 @@ private[sql] object QueryExecutionErrors extends QueryErrorsBase with ExecutionE
       new java.util.HashMap[String, String]())
   }
 
-  def cannotAcquireMemoryForWindowAggregateError(
+  // Shared by WindowSegmentTree's block cache and UnsafeRowArena's row storage -- both are window
+  // execution's own memory-managed structures, not strictly "aggregate" state, so this is named
+  // for the broader operator category rather than either specific caller.
+  def cannotAcquireMemoryForWindowExecutionError(
       requestedBytes: Long,
       receivedBytes: Long,
       consumerBreakdown: String): SparkOutOfMemoryError = {

@@ -865,7 +865,14 @@ class HashWindowGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPla
   // and the independently-implemented sort-based baseline for ordinary narrow-decimal data.
   test("SPARK-61804: codegen and interpreted hash paths agree for a narrow (precision <= 18)" +
       " decimal order key, against a real sort-based baseline") {
-    val df = (0 until 500).map(i => (i % 37, i % 11, i.toString))
+    // A globally unique order key (mirroring the adjacent "codegen and interpreted hash paths
+    // agree" test's ts = i.toLong, a few tests above) is also unique within every partition --
+    // deliberately not i % 11, which ties 8 of the 37 partitions' maximum value and would make
+    // this test's full-Row equality assertions depend on an undocumented, incidental agreement
+    // between three independently-executed paths on which tied row wins ROW_NUMBER() = 1 (not a
+    // guaranteed SQL contract), risking a future false-positive CI failure unrelated to any real
+    // regression here if shuffle/AQE read ordering ever changes.
+    val df = (0 until 500).map(i => (i % 37, i, i.toString))
       .toDF("k", "raw", "v")
       .selectExpr("k", "cast(raw as decimal(18, 2)) as ts", "v")
     val baseline = withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "false") {
