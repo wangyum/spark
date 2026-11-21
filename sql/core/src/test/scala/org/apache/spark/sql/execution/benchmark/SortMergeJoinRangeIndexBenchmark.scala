@@ -133,12 +133,14 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
   }
 
   // Buffered side for the point-in-range shape: one equi key with `g` non-overlapping
-  // [lo, hi] sub-ranges, so a selective probe hits exactly one of them.
-  private def pointBuffered(g: Int): DataFrame = cached(
+  // [lo, hi] sub-ranges, so a selective probe hits exactly one of them. `extraCols` appends
+  // columns unrelated to the join condition, for the maxBytes width sweeps below.
+  private def pointBuffered(g: Int, extraCols: Seq[String] = Nil): DataFrame = cached(
     spark.range(numGroups.toLong * g).selectExpr(
-      s"id % $numGroups as s_k",
-      s"(id div $numGroups) * $width as lo",
-      s"(id div $numGroups) * $width + ${width - 1} as hi"))
+      (Seq(
+        s"id % $numGroups as s_k",
+        s"(id div $numGroups) * $width as lo",
+        s"(id div $numGroups) * $width + ${width - 1} as hi") ++ extraCols): _*))
 
   // Streamed side for the point-in-range shape: `r` probes per equi key, cycling through
   // the `g` sub-ranges of the matching buffered group so every probe hits exactly one.
@@ -167,12 +169,8 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
   // largeGroupSize-row group's real footprint (per-row UnsafeRow content, not row count
   // alone) crosses the default maxBytes -- see `maxBytesSweepCases` below.
   private val wideColumnBytes = 500
-  private def pointBufferedWide(g: Int): DataFrame = cached(
-    spark.range(numGroups.toLong * g).selectExpr(
-      s"id % $numGroups as s_k",
-      s"(id div $numGroups) * $width as lo",
-      s"(id div $numGroups) * $width + ${width - 1} as hi",
-      s"repeat('x', $wideColumnBytes) as s_wide"))
+  private def pointBufferedWide(g: Int): DataFrame =
+    pointBuffered(g, Seq(s"repeat('x', $wideColumnBytes) as s_wide"))
   private lazy val largeGroupBufferedWide: DataFrame = pointBufferedWide(largeGroupSize)
 
   // A genuinely wide *schema* instead of one huge column: dozens to a hundred moderate-width
@@ -180,14 +178,8 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
   // columns, not one giant blob). manyFieldsWidthBytes is a typical such column's length.
   private val manyFieldsWidthBytes = 20
   private val manyFieldsCounts = Seq(30, 50, 100)
-  private def pointBufferedManyFields(g: Int, numFields: Int): DataFrame = {
-    val extraCols = (0 until numFields).map(i => s"repeat('x', $manyFieldsWidthBytes) as f$i")
-    val selectCols = Seq(
-      s"id % $numGroups as s_k",
-      s"(id div $numGroups) * $width as lo",
-      s"(id div $numGroups) * $width + ${width - 1} as hi") ++ extraCols
-    cached(spark.range(numGroups.toLong * g).selectExpr(selectCols: _*))
-  }
+  private def pointBufferedManyFields(g: Int, numFields: Int): DataFrame =
+    pointBuffered(g, (0 until numFields).map(i => s"repeat('x', $manyFieldsWidthBytes) as f$i"))
   private lazy val largeGroupBufferedManyFields: Map[Int, DataFrame] =
     manyFieldsCounts.map(n => n -> pointBufferedManyFields(largeGroupSize, n)).toMap
 
@@ -299,29 +291,18 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD.key -> (
       if (indexEnabled) SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_THRESHOLD.defaultValueString else "-1")
 
-  private def run(df: => DataFrame, indexEnabled: Boolean): Unit = {
-    withSQLConf(
-        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-        SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        rangeIndexThresholdConf(indexEnabled)) {
-      val planned = df
-      val plan = planned.queryExecution.executedPlan
-      assert(plan.exists(_.isInstanceOf[SortMergeJoinExec]), plan)
-      planned.noop()
-    }
-  }
-
   private def rangeIndexMaxBytesConf(maxBytes: String): (String, String) =
     SQLConf.SORT_MERGE_JOIN_RANGE_INDEX_MAX_BYTES.key -> maxBytes
 
-  private def runWithMaxBytes(df: => DataFrame, maxBytes: String): Unit = {
-    withSQLConf(
-        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-        SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        rangeIndexThresholdConf(indexEnabled = true),
-        rangeIndexMaxBytesConf(maxBytes)) {
+  // Shared by every case below: force sort-merge join and disable AQE so the measured plan
+  // never drifts to a broadcast or shuffle-cost-dominated alternative.
+  private val baseSortMergeJoinConf: Seq[(String, String)] = Seq(
+    SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+    SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
+    SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false")
+
+  private def runSortMergeJoin(df: => DataFrame, extraConf: (String, String)*): Unit = {
+    withSQLConf(baseSortMergeJoinConf ++ extraConf: _*) {
       val planned = df
       val plan = planned.queryExecution.executedPlan
       assert(plan.exists(_.isInstanceOf[SortMergeJoinExec]), plan)
@@ -329,58 +310,42 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
     }
   }
 
-  private def runOriginalPr(indexEnabled: Boolean, wholeStageEnabled: Boolean): Unit = {
-    withSQLConf(
-        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-        SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStageEnabled.toString,
-        rangeIndexThresholdConf(indexEnabled)) {
-      val joined = originalPrDf1.join(originalPrDf2, originalPrCond)
-      val plan = joined.queryExecution.executedPlan
-      assert(plan.exists(_.isInstanceOf[SortMergeJoinExec]), plan)
-      joined.noop()
-    }
-  }
+  private def run(df: => DataFrame, indexEnabled: Boolean, extraConf: (String, String)*): Unit =
+    runSortMergeJoin(df, (rangeIndexThresholdConf(indexEnabled) +: extraConf): _*)
 
-  private def originalPrCaseCodegen(): Unit = {
-    val name = s"sort merge inner range join with codegen, (n=$originalPrN, m=$originalPrM)"
-    if (!shouldRun(name)) return
-    val rows = originalPrN.toLong * originalPrM
-    val benchmark = new Benchmark(name, rows, output = output)
-    benchmark.addCase("Range index disabled, wholestage on") { _ =>
-      runOriginalPr(indexEnabled = false, wholeStageEnabled = true)
-    }
-    benchmark.addCase("Range index enabled, wholestage on") { _ =>
-      runOriginalPr(indexEnabled = true, wholeStageEnabled = true)
-    }
-    benchmark.run()
-  }
-
-  private def originalPrCaseNoCodegen(): Unit = {
-    val name = s"sort merge inner range join without codegen, (n=$originalPrN, m=$originalPrM)"
-    if (!shouldRun(name)) return
-    val rows = originalPrN.toLong * originalPrM
-    val benchmark = new Benchmark(name, rows, output = output)
-    benchmark.addCase("Range index disabled, wholestage off") { _ =>
-      runOriginalPr(indexEnabled = false, wholeStageEnabled = false)
-    }
-    benchmark.addCase("Range index enabled, wholestage off") { _ =>
-      runOriginalPr(indexEnabled = true, wholeStageEnabled = false)
-    }
-    benchmark.run()
-  }
-
-  private def compare(name: String, rows: Long)(df: => DataFrame): Unit = {
+  // Builds a benchmark with a "disabled" baseline case plus one case per (label, extraConf)
+  // variant -- the shape shared by every comparison below, whether it's a plain on/off
+  // `compare`, a maxBytes sweep, or the original-PR wholestage-codegen split.
+  private def variantCase(name: String, rows: Long, disabledLabel: String,
+      variants: Seq[(String, Seq[(String, String)])])(df: => DataFrame): Unit = {
     if (!shouldRun(name)) return
     val benchmark = new Benchmark(name, rows, output = output)
-    benchmark.addCase("Range index disabled") { _ =>
+    benchmark.addCase(disabledLabel) { _ =>
       run(df, indexEnabled = false)
     }
-    benchmark.addCase("Range index enabled") { _ =>
-      run(df, indexEnabled = true)
+    variants.foreach { case (label, extraConf) =>
+      benchmark.addCase(label) { _ =>
+        run(df, indexEnabled = true, extraConf: _*)
+      }
     }
     benchmark.run()
+  }
+
+  private def compare(name: String, rows: Long)(df: => DataFrame): Unit =
+    variantCase(name, rows, "Range index disabled", Seq("Range index enabled" -> Nil))(df)
+
+  private def originalPrCases(): Unit = {
+    Seq(true, false).foreach { wholeStageEnabled =>
+      val onOff = if (wholeStageEnabled) "on" else "off"
+      val codegen = if (wholeStageEnabled) "with codegen" else "without codegen"
+      val name = s"sort merge inner range join $codegen, (n=$originalPrN, m=$originalPrM)"
+      variantCase(name, originalPrN.toLong * originalPrM,
+          s"Range index disabled, wholestage $onOff",
+          Seq(s"Range index enabled, wholestage $onOff" ->
+            Seq(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStageEnabled.toString))) {
+        originalPrDf1.join(originalPrDf2, originalPrCond)
+      }
+    }
   }
 
   private def groupSizeSweepCases(): Unit = {
@@ -455,19 +420,9 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
   }
 
   private def maxBytesSweepCase(name: String, rows: Long, candidates: Seq[String])
-      (df: => DataFrame): Unit = {
-    if (!shouldRun(name)) return
-    val benchmark = new Benchmark(name, rows, output = output)
-    benchmark.addCase("Range index disabled") { _ =>
-      run(df, indexEnabled = false)
-    }
-    candidates.foreach { mb =>
-      benchmark.addCase(s"Range index enabled, maxBytes=$mb") { _ =>
-        runWithMaxBytes(df, mb)
-      }
-    }
-    benchmark.run()
-  }
+      (df: => DataFrame): Unit =
+    variantCase(name, rows, "Range index disabled", candidates.map(mb =>
+      s"Range index enabled, maxBytes=$mb" -> Seq(rangeIndexMaxBytesConf(mb))))(df)
 
   private def maxBytesSweepCases(): Unit = {
     logMaxBytesCalibration()
@@ -538,8 +493,7 @@ object SortMergeJoinRangeIndexBenchmark extends SqlBasedBenchmark {
       fullOverlapCase()
       otherShapeCases()
       joinTypeCases()
-      originalPrCaseCodegen()
-      originalPrCaseNoCodegen()
+      originalPrCases()
     }
   }
 }

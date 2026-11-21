@@ -1338,14 +1338,18 @@ object SQLConf {
     buildConf("spark.sql.join.sortMergeJoin.rangeIndex.maxBytes")
       .internal()
       .doc("Maximum memory in bytes that an equi-key group range index's structural arrays " +
-        "(keys and row pointers) may allocate from TaskMemoryManager before falling back to " +
-        "linear scan. Under zero-copy indexing, row payloads already buffered by sort-merge " +
-        "join are referenced directly without duplication, so when the range key maps to a " +
-        "long (e.g. integral types) each entry consumes only ~32-48 bytes regardless of the " +
-        "width of other columns; a 32MB limit then accommodates skewed groups with up to " +
-        "~700,000 rows. A range key that does not map to a long (e.g. string, binary, or a " +
-        "wide decimal) is deep-copied into the index instead, so its per-row cost scales with " +
-        "the key's own width.")
+        "(keys and row pointers) may retain before falling back to linear scan. Under " +
+        "zero-copy indexing, row payloads already buffered by sort-merge join are referenced " +
+        "directly without duplication, so when the range key maps to a long (e.g. integral " +
+        "types) each retained entry costs 16 bytes for a point index or 32 bytes for an " +
+        "interval index, regardless of the width of other columns; a 32MB limit then admits " +
+        "skewed groups with up to ~2,097,000 rows for a point index or ~1,048,000 rows for an " +
+        "interval index. (Building the index transiently requests a larger budget from " +
+        "TaskMemoryManager to cover sort/staging overhead on top of that per-row cost, which " +
+        "is released once the real retained footprint -- the one actually checked against " +
+        "this limit -- is measured.) A range key that does not map to a long (e.g. string, " +
+        "binary, or a wide decimal) is deep-copied into the index instead, so its per-row " +
+        "cost scales with the key's own width.")
       .version("4.5.0")
       .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
       .bytesConf(ByteUnit.BYTE)

@@ -709,8 +709,8 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
         eagerCleanupResources = () => (),
         probeSession = probeSession)
 
-      // Drive the scanner through MIN_PROBES_BEFORE_BUILD probes of the same equi-key group, draining
-      // each candidate iterator fully, to cross the deferred-build gate.
+      // Drive the scanner through MIN_PROBES_BEFORE_BUILD probes of the same equi-key group,
+      // draining each candidate iterator fully, to cross the deferred-build gate.
       var i = 0
       while (i < RangeGroupProbe.MIN_PROBES_BEFORE_BUILD - 1) {
         assert(scanner.findNextInnerJoinRows())
