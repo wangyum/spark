@@ -1384,7 +1384,7 @@ private[execution] object RangeRelationBroadcastMode {
 /**
  * Shared range-index probe dispatch for broadcast and per-key-group sort-merge joins.
  */
-private[joins] object RangeRelationProbe {
+private[joins] object RangeIndexProbe {
 
   /**
    * Create candidate probe function for a materialized range relation and bound probe keys.
@@ -1451,7 +1451,7 @@ private[joins] object RangeRelationProbe {
  * ([[RangeIndexKind]] plus whether the build keys map to one order-preserving long, see
  * [[RangeIndex.longKey]]), so generated code can cast directly to it and call its scan method,
  * with probe keys evaluated into primitive `long` locals for the long-keyed families and boxed
- * `Object` locals otherwise - mirroring [[RangeRelationProbe.makeCandidateFn]]'s interpreted
+ * `Object` locals otherwise - mirroring [[RangeIndexProbe.makeCandidateFn]]'s interpreted
  * dispatch, but without a closure or per-row boxing on the long-keyed path.
  */
 private[joins] object RangeIndexProbeCodegen {
@@ -1526,7 +1526,7 @@ private[joins] object RangeIndexProbeCodegen {
    * instance of the concrete class `probeKind.indexKind`/`usesLongKeys` selects - and yields a
    * `scala.collection.Iterator`. Returns only the expression, not a declaration: callers decide
    * whether to declare a new variable or assign into one already declared (e.g. inside an
-   * `if`/`else` branch). Unlike the interpreted `RangeRelationProbe.makeCandidateFn`, this match
+   * `if`/`else` branch). Unlike the interpreted `RangeIndexProbe.makeCandidateFn`, this match
    * is exhaustive with no unreachable case: codegen never inspects `relationTerm`'s actual class,
    * so there is nothing here that could disagree with `probeKind`.
    */

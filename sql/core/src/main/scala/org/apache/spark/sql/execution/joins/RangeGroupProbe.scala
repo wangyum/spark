@@ -502,7 +502,7 @@ private[joins] object RangeGroupProbe extends Logging {
         heldBytes
       }
 
-      val candidateFn = RangeRelationProbe.makeCandidateFn(
+      val candidateFn = RangeIndexProbe.makeCandidateFn(
         relation, spec.boundStreamKeys, spec.probeKind)
       new Handle(relation, allocatedBytes, candidateFn)
     } catch {

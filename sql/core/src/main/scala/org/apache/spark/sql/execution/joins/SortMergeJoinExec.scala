@@ -724,7 +724,7 @@ case class SortMergeJoinExec(
       case None => beforeLoopWithoutGuard
     }
 
-    val scan = JoinScanCodegen(findNextJoinRows, beforeLoop, iterator, bufferedRow, condCheck,
+    val scan = JoinScanCode(findNextJoinRows, beforeLoop, iterator, bufferedRow, condCheck,
       outputRow, eagerCleanup, finishProbeCode(probeSessionTerm))
     val doJoin = joinType match {
       case _: InnerLike =>
@@ -765,7 +765,7 @@ case class SortMergeJoinExec(
    * stitches its own control flow and match-tracking variables around - bundled because the
    * five variants share this same skeleton and scalastyle caps a method's parameter count.
    */
-  private case class JoinScanCodegen(
+  private case class JoinScanCode(
       findNextJoinRows: String,
       beforeLoop: String,
       matchIterator: String,
@@ -787,7 +787,7 @@ case class SortMergeJoinExec(
    * Generates the code for Inner join.
    */
   private def codegenInner(
-      scan: JoinScanCodegen,
+      scan: JoinScanCode,
       cleanedFlag: String): String = {
     import scan._
     s"""
@@ -815,7 +815,7 @@ case class SortMergeJoinExec(
    */
   private def codegenOuter(
       streamedInput: String,
-      scan: JoinScanCodegen,
+      scan: JoinScanCode,
       hasOutputRow: String): String = {
     import scan._
     s"""
@@ -843,7 +843,7 @@ case class SortMergeJoinExec(
    * Generates the code for Left Semi join.
    */
   private def codegenSemi(
-      scan: JoinScanCodegen,
+      scan: JoinScanCode,
       hasOutputRow: String,
       cleanedFlag: String): String = {
     import scan._
@@ -875,7 +875,7 @@ case class SortMergeJoinExec(
    */
   private def codegenAnti(
       streamedInput: String,
-      scan: JoinScanCodegen,
+      scan: JoinScanCode,
       loadStreamed: String,
       hasMatchedRow: String): String = {
     import scan._
@@ -909,7 +909,7 @@ case class SortMergeJoinExec(
    */
   private def codegenExistence(
       streamedInput: String,
-      scan: JoinScanCodegen,
+      scan: JoinScanCode,
       loadStreamed: String,
       exists: String): String = {
     import scan._

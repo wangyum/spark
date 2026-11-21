@@ -117,7 +117,7 @@ case class BroadcastRangeJoinExec(
     val kind = probeKind
     val side = buildSide
     streamed.execute().mapPartitionsInternal { streamedIter =>
-      val candidateFn = RangeRelationProbe.makeCandidateFn(relation.value, boundStreamKeys, kind)
+      val candidateFn = RangeIndexProbe.makeCandidateFn(relation.value, boundStreamKeys, kind)
       f(new BroadcastRangeJoinExec.ProbeContext(
         streamedIter,
         Predicate.create(cond, schema).eval _,

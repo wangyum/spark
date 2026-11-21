@@ -152,7 +152,7 @@ class RangeJoinSQLSuite extends QueryTest with SharedSparkSession with AdaptiveS
     // Wide decimal and string keys stay on the boxed point index (DOUBLE does not -
     // see setupPartialRangeViews), so these queries reach its generated probe code
     // (or, interpreted, the per-index dispatch in
-    // RangeRelationProbe.makeCandidateFn), which int partial ranges never do.
+    // RangeIndexProbe.makeCandidateFn), which int partial ranges never do.
     // The partial-range fixtures include probe values equal to build keys, so an
     // inclusive (<=/>=) scan wired to its exclusive counterpart by mistake would
     // drop those boundary matches.
@@ -231,7 +231,7 @@ class RangeJoinSQLSuite extends QueryTest with SharedSparkSession with AdaptiveS
   /**
    * Two-column STRING ranges, so a two-key interval-overlap query here builds a boxed
    * `IntervalIndex` - the `case intervals: IntervalIndex` branch of
-   * `RangeRelationProbe.makeCandidateFn` that `intervals_a`/`intervals_b` (INT) and
+   * `RangeIndexProbe.makeCandidateFn` that `intervals_a`/`intervals_b` (INT) and
    * `dbl_ranges_a`/`dbl_ranges_b` (DOUBLE) never reach, since both map to one
    * order-preserving long (see `RangeIndex.longKey`) and build `LongIntervalIndex`
    * instead. StringType has no such mapping, so this stays on the boxed index with

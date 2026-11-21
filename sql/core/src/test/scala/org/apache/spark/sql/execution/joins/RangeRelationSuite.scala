@@ -711,7 +711,7 @@ class RangeRelationSuite extends SparkFunSuite {
         ser: org.apache.spark.serializer.SerializerInstance, index: A): A =
       ser.deserialize[A](ser.serialize(index))
 
-    // One reader for the sealed family, mirroring RangeRelationProbe.makeCandidateFn dispatch:
+    // One reader for the sealed family, mirroring RangeIndexProbe.makeCandidateFn dispatch:
     // the interval kinds answer a window, the point kinds answer a
     // lower-bound scan, and every relation this test builds answers at
     // row ordinal 0.
