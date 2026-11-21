@@ -18,6 +18,7 @@
 package org.apache.spark.sql.execution.window
 
 import org.apache.spark.{PartitionEvaluator, PartitionEvaluatorFactory}
+import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet,
@@ -75,7 +76,7 @@ case class ArrayFallbackDestination(array: ExternalAppendOnlyUnsafeRowArray)
  * which `rankLikeFunction` this particular plan node has. Must stay public (not `private[window]`)
  * since generated code lives outside this package.
  */
-trait HashGroupLimitAccumulator {
+trait HashGroupLimitAccumulator extends Logging {
   /**
    * Consumes one row, computing `key`/`orderKey` itself via the concrete accumulator's own
    * groupingProjection/orderKeyProjection. Used by the interpreted path
@@ -122,7 +123,26 @@ trait HashGroupLimitAccumulator {
 
   def finishAccumulator(): Unit
   def nextResultRow(resultRow: UnsafeRow): Boolean
-  def finish(): Iterator[InternalRow]
+
+  def finish(): Iterator[InternalRow] = {
+    finishAccumulator()
+    val row = new UnsafeRow(childOutput.length)
+    new Iterator[InternalRow] {
+      private var hasPending = false
+      override def hasNext: Boolean = {
+        if (hasPending) true
+        else {
+          hasPending = nextResultRow(row)
+          hasPending
+        }
+      }
+      override def next(): InternalRow = {
+        if (!hasNext) throw new NoSuchElementException
+        hasPending = false
+        row
+      }
+    }
+  }
 
   /**
    * Non-null once this accumulator has permanently fallen back to [[FallbackDestination]] output
@@ -133,7 +153,113 @@ trait HashGroupLimitAccumulator {
    * (through this trait) plus its own internal null check on every one of the, possibly many
    * million, remaining rows.
    */
-  def fallbackDestinationOrNull: FallbackDestination
+  def fallbackDestinationOrNull: FallbackDestination = fallbackDestination
+
+  // Backs fallbackDestinationOrNull; mutated only by switchToFallback/switchToFallbackProactively
+  // below. A plain concrete field on the trait (not abstract) -- each mixing-in instance gets its
+  // own copy, same as a private var declared directly in a class.
+  //
+  // Non-null once the map or the row arena could no longer acquire memory, or the compaction
+  // ratio proved too low; from then on every row -- including ones already recorded as kept -- is
+  // routed here instead, and the hash map/row arena are abandoned. A [[SorterFallbackDestination]]
+  // under `mode == Partial`: its fallback output still has to be filtered down to `limit` rows per
+  // key, since it is the only thing standing between its task's rows and the shuffle -- skipping
+  // that filtering would ship every row across the network, losing the whole point of the
+  // pre-filter, and a sort-based filter needs sorted input, hence a real sorter. An
+  // [[ArrayFallbackDestination]] under `mode == Final`, where every row is instead appended
+  // unfiltered and unsorted: safe specifically because a hash-eligible WindowGroupLimitExec always
+  // declares outputOrdering = Nil (see isHashEligible), so EnsureRequirements unconditionally
+  // plants a real Sort directly above a Final node feeding the real WindowExec + its
+  // Filter(rn <= limit) above that -- which recomputes the correct answer from whatever rows
+  // arrive, regardless of how many that is. Skipping Final's own sort-then-filter here avoids
+  // sorting the same rows twice: once internally (for no benefit, since nothing downstream relies
+  // on Final's output being pre-filtered) and again in that unconditional Sort.
+  protected var fallbackDestination: FallbackDestination = null
+
+  // --- Shared fallback control flow -----------------------------------------------------------
+  // The following members back both concrete accumulators' identical fallback bookkeeping (see
+  // switchToFallback/switchToFallbackProactively/maybeBailOutForPoorEfficiency below): homed here
+  // for the same reason as compareSlotSingle above -- two files previously carried byte-for-byte
+  // identical copies (one literally annotated "Mirrors HashRowNumberGroupLimitAccumulator.X" in
+  // its own doc comment), which is exactly the kind of duplication that let the signed-zero bug
+  // ship unfixed in one of its two copies.
+  protected def childOutput: Seq[Attribute]
+  protected def mode: WindowGroupLimitMode
+  protected def minCompactionRatio: Double
+
+  // Two distinct SQLMetrics rather than one combined "fallback happened" counter: the two
+  // triggers call for opposite remediation (capacity/skew investigation for a genuine OOM, versus
+  // tuning minCompactionRatio/maxLimit down for a benign, workload-shape-driven proactive
+  // bailout), so collapsing them into one count would hide which situation actually occurred from
+  // anyone reading the SQL UI rather than grepping executor logs for the two already-distinct
+  // logInfo messages below.
+  protected def numTasksFallBackedOOM: SQLMetric
+  protected def numTasksFallBackedPoorCompaction: SQLMetric
+
+  /**
+   * Builds the `Final`-mode fallback destination: an unsorted, append-only, spill-capable row
+   * array. Builds the `Partial`-mode fallback destination otherwise: the same (spill-capable)
+   * sorter [[org.apache.spark.sql.execution.SortExec]] itself uses. See the concrete
+   * implementations' own `buildFallbackArray`/`buildFallbackSorter` docs for why `Final` never
+   * needs a sorter, and why each is seeded with every row already known to be kept.
+   */
+  protected def buildFallbackArray(): ExternalAppendOnlyUnsafeRowArray
+  protected def buildFallbackSorter(): UnsafeExternalRowSorter
+
+  /**
+   * Reached when the hash map or the row arena could no longer acquire memory. Dumps every row
+   * already known to be kept, plus `pendingRow` (the row that just failed to be
+   * inserted/updated), into the fallback destination (a sorter for `Partial`, an unsorted array
+   * for `Final`; see `fallbackDestination`'s doc). Every row consumed after this point goes
+   * straight there instead of the hash map.
+   */
+  protected def switchToFallback(pendingRow: UnsafeRow): Unit = {
+    logInfo("Hash-based window group limit falling back to sort-based: could not acquire more " +
+      "memory for the hash map or the row arena.")
+    fallbackDestination = if (mode == Final) {
+      val array = buildFallbackArray()
+      array.add(pendingRow)
+      ArrayFallbackDestination(array)
+    } else {
+      val sorter = buildFallbackSorter()
+      sorter.insertRow(pendingRow)
+      SorterFallbackDestination(sorter)
+    }
+    numTasksFallBackedOOM += 1
+  }
+
+  /**
+   * Reached when [[maybeBailOutForPoorEfficiency]] decides hash accumulation isn't paying off.
+   * Unlike [[switchToFallback]], there is no extra pending row to insert: the row that triggered
+   * this check was already fully processed into the concrete accumulator's own row storage.
+   */
+  protected def switchToFallbackProactively(): Unit = {
+    fallbackDestination = if (mode == Final) {
+      ArrayFallbackDestination(buildFallbackArray())
+    } else {
+      SorterFallbackDestination(buildFallbackSorter())
+    }
+    numTasksFallBackedPoorCompaction += 1
+  }
+
+  /**
+   * Checks whether hash accumulation is still paying off, proactively falling back rather than
+   * waiting for the hash map to genuinely run out of memory (which, for high-cardinality keys, may
+   * happen far later than it should, if at all): rows-processed-per-distinct-key has fallen below
+   * `minCompactionRatio` -- duplicate keys aren't being pruned enough to offset the hash map's
+   * per-row overhead. `rowsConsumed`/`numKeys` are passed in rather than read from an abstract
+   * member: both are already locally available at every call site (inside `consumeRow`, right
+   * after incrementing `rowsConsumed`), so there is no need to expose the underlying mutable
+   * counter or the hash map itself just for this one periodic check.
+   */
+  protected def maybeBailOutForPoorEfficiency(rowsConsumed: Long, numKeys: Int): Unit = {
+    if (numKeys > 0 && rowsConsumed.toDouble / numKeys < minCompactionRatio) {
+      val ratio = rowsConsumed.toDouble / numKeys
+      logInfo(s"Hash-based window group limit falling back to sort-based: compaction ratio " +
+        s"$ratio after $rowsConsumed rows is below the minimum $minCompactionRatio.")
+      switchToFallbackProactively()
+    }
+  }
 
   // --- Shared single-order-column fast path -------------------------------------------------
   // The following members back both concrete accumulators' single-column comparison logic (see
@@ -354,8 +480,10 @@ case class WindowGroupLimitExec(
       Map(
         "peakMemory" -> SQLMetrics.createSizeMetric(sparkContext, "peak memory"),
         "spillSize" -> SQLMetrics.createSizeMetric(sparkContext, "spill size"),
-        "numTasksFallBacked" ->
-          SQLMetrics.createMetric(sparkContext, "number of sort fallback tasks"))
+        "numTasksFallBackedOOM" -> SQLMetrics.createMetric(
+          sparkContext, "number of sort fallback tasks (out of memory)"),
+        "numTasksFallBackedPoorCompaction" -> SQLMetrics.createMetric(
+          sparkContext, "number of sort fallback tasks (poor compaction ratio)"))
     } else {
       Map.empty
     }
@@ -376,7 +504,8 @@ case class WindowGroupLimitExec(
           longMetric("numOutputRows"),
           longMetric("peakMemory"),
           longMetric("spillSize"),
-          longMetric("numTasksFallBacked"),
+          longMetric("numTasksFallBackedOOM"),
+          longMetric("numTasksFallBackedPoorCompaction"),
           conf.windowGroupLimitHashPushdownMinCompactionRatio,
           conf.windowGroupLimitHashPushdownMinRows,
           conf.enableRadixSort,
@@ -391,7 +520,8 @@ case class WindowGroupLimitExec(
           longMetric("numOutputRows"),
           longMetric("peakMemory"),
           longMetric("spillSize"),
-          longMetric("numTasksFallBacked"),
+          longMetric("numTasksFallBackedOOM"),
+          longMetric("numTasksFallBackedPoorCompaction"),
           conf.windowGroupLimitHashPushdownMinCompactionRatio,
           conf.windowGroupLimitHashPushdownMinRows,
           conf.enableRadixSort,

@@ -313,10 +313,14 @@ possibly be part of the final answer for each partition key, without requiring t
 sorted first.
 
 A plan is eligible when the window function is `ROW_NUMBER()`, `RANK()`, or `DENSE_RANK()`, the
-limit is at or below `maxLimit`, and every order-key column has a fixed-width type that `UnsafeRow`
-can mutate in place (so, for example, a `STRING` order key is never eligible and keeps using the
-sort-based path). `EXPLAIN` marks an eligible operator with a `(hash)` suffix on its node name
-(`WindowGroupLimit(hash)`) so the chosen path is visible without having to run the query.
+limit is at or below `maxLimit`, and every order-key column is stored directly as a fixed 8-byte
+value inside `UnsafeRow` (so, for example, a `STRING` order key is never eligible and keeps using
+the sort-based path). This excludes not only variable-length types, but also wide `DECIMAL`
+(precision greater than 18), `INTERVAL`, and nanosecond-precision `TIMESTAMP`, which Spark can
+update in place inside `UnsafeRow` but stores as a pointer into the row's variable-length region
+rather than as a raw value. `EXPLAIN` marks an eligible operator with a `(hash)` suffix on its
+node name (`WindowGroupLimit(hash)`) so the chosen path is visible without having to run the
+query.
 
 Like adaptive partial aggregation, the hash accumulator is only worthwhile when it actually prunes
 rows: for `ROW_NUMBER()`/`RANK()`/`DENSE_RANK() <= k` over mostly-unique partition keys, it ends up

@@ -5447,7 +5447,9 @@ object SQLConf {
         "retains every row tied at a kept order-key value in a separate, data-dependent-size " +
         "row list that this limit does NOT bound -- an adversarial input with many rows tied " +
         "at few distinct order-key values is still caught by the hash map/row arena running " +
-        "out of memory, same as any other oversized per-key state.")
+        "out of memory, same as any other oversized per-key state. Independent of, and " +
+        s"generally smaller than, '${WINDOW_GROUP_LIMIT_THRESHOLD.key}', which only controls " +
+        "whether WindowGroupLimitExec is inserted into the plan at all.")
       .version("4.5.0")
       .withBindingPolicy(ConfigBindingPolicy.NOT_APPLICABLE)
       .intConf

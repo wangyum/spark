@@ -20,7 +20,6 @@ package org.apache.spark.sql.execution.window
 import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.TaskContext
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, BindReferences,
   BoundReference, Expression, GenericInternalRow, NullsFirst, RowOrdering, SortOrder, SortPrefix,
@@ -74,16 +73,17 @@ import org.apache.spark.unsafe.{KVIterator, Platform}
 class HashRowNumberGroupLimitAccumulator(
     partitionSpec: Seq[Expression],
     orderSpec: Seq[SortOrder],
-    childOutput: Seq[Attribute],
+    protected val childOutput: Seq[Attribute],
     numOutputRows: SQLMetric,
     peakMemory: SQLMetric,
     spillSize: SQLMetric,
-    numTasksFallBacked: SQLMetric,
-    minCompactionRatio: Double = 1.05,
+    protected val numTasksFallBackedOOM: SQLMetric,
+    protected val numTasksFallBackedPoorCompaction: SQLMetric,
+    protected val minCompactionRatio: Double = 1.05,
     minRowsBetweenCompactionChecks: Long = 100000L,
     enableRadixSort: Boolean = true,
     limit: Int,
-    mode: WindowGroupLimitMode = Partial) extends HashGroupLimitAccumulator with Logging {
+    protected val mode: WindowGroupLimitMode = Partial) extends HashGroupLimitAccumulator {
 
   private val numOrderCols = orderSpec.length
 
@@ -313,25 +313,6 @@ class HashRowNumberGroupLimitAccumulator(
 
   private var nextCompactionCheckAt: Long = minRowsBetweenCompactionChecks
 
-  // Non-null once the map or the row arena could no longer acquire memory, or the compaction
-  // ratio proved too low; from then on every row -- including ones already recorded as kept -- is
-  // routed here instead, and the hash map/row arena are abandoned. A [[SorterFallbackDestination]]
-  // under `mode == Partial`: its fallback output still has to be filtered down to `limit` rows per
-  // key, since it is the only thing standing between its task's rows and the shuffle -- skipping
-  // that filtering would ship every row across the network, losing the whole point of the
-  // pre-filter, and a sort-based filter needs sorted input, hence a real sorter. An
-  // [[ArrayFallbackDestination]] under `mode == Final`, where every row is instead appended
-  // unfiltered and unsorted: safe specifically because a hash-eligible WindowGroupLimitExec always
-  // declares outputOrdering = Nil (see isHashEligible), so EnsureRequirements unconditionally
-  // plants a real Sort directly above a Final node feeding the real WindowExec + its
-  // Filter(rn <= limit) above that -- which recomputes the correct answer from whatever rows
-  // arrive, regardless of how many that is. Skipping Final's own sort-then-filter here avoids
-  // sorting the same rows twice: once internally (for no benefit, since nothing downstream relies
-  // on Final's output being pre-filtered) and again in that unconditional Sort.
-  private var fallbackDestination: FallbackDestination = null
-
-  override def fallbackDestinationOrNull: FallbackDestination = fallbackDestination
-
   /**
    * Consumes one input row. Safe to call in any order; the hash path doesn't need sorted input.
    * Used by the interpreted path (see [[HashGroupLimitEvaluatorFactory.createEvaluator]]), which
@@ -373,7 +354,7 @@ class HashRowNumberGroupLimitAccumulator(
     }
     rowsConsumed += 1
     if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
-      maybeBailOutForPoorEfficiency()
+      maybeBailOutForPoorEfficiency(rowsConsumed, map.getNumKeys())
       nextCompactionCheckAt = rowsConsumed + minRowsBetweenCompactionChecks
     }
   }
@@ -402,7 +383,7 @@ class HashRowNumberGroupLimitAccumulator(
     }
     rowsConsumed += 1
     if (minRowsBetweenCompactionChecks > 0 && rowsConsumed >= nextCompactionCheckAt) {
-      maybeBailOutForPoorEfficiency()
+      maybeBailOutForPoorEfficiency(rowsConsumed, map.getNumKeys())
       nextCompactionCheckAt = rowsConsumed + minRowsBetweenCompactionChecks
     }
   }
@@ -505,79 +486,6 @@ class HashRowNumberGroupLimitAccumulator(
     }
   }
 
-  override def finish(): Iterator[InternalRow] = {
-    finishAccumulator()
-    val row = new UnsafeRow(childOutput.length)
-    new Iterator[InternalRow] {
-      private var hasPending = false
-      override def hasNext: Boolean = {
-        if (hasPending) true
-        else {
-          hasPending = nextResultRow(row)
-          hasPending
-        }
-      }
-      override def next(): InternalRow = {
-        if (!hasNext) throw new NoSuchElementException
-        hasPending = false
-        row
-      }
-    }
-  }
-
-  /**
-   * Checks whether hash accumulation is still paying off, proactively falling back rather than
-   * waiting for the hash map to genuinely run out of memory (which, for high-cardinality keys, may
-   * happen far later than it should, if at all -- see [[HashRowNumberGroupLimitAccumulator]]'s
-   * class doc): rows-processed-per-distinct-key has fallen below `minCompactionRatio` -- duplicate
-   * keys aren't being pruned enough to offset the hash map's per-row overhead.
-   */
-  private def maybeBailOutForPoorEfficiency(): Unit = {
-    val numKeys = map.getNumKeys()
-    if (numKeys > 0 && rowsConsumed.toDouble / numKeys < minCompactionRatio) {
-      val ratio = rowsConsumed.toDouble / numKeys
-      logInfo(s"Hash-based window group limit falling back to sort-based: compaction ratio " +
-        s"$ratio after $rowsConsumed rows is below the minimum $minCompactionRatio.")
-      switchToFallbackProactively()
-    }
-  }
-
-  /**
-   * Reached when the hash map or the row arena could no longer acquire memory. Dumps every row
-   * already known to be kept, plus `pendingRow` (the row that just failed to be
-   * inserted/updated), into the fallback destination (a sorter for `Partial`, an unsorted array
-   * for `Final`; see `fallbackDestination`'s doc). Every row consumed after this point (see
-   * [[consumeRow]]) goes straight there instead of the hash map.
-   */
-  private def switchToFallback(pendingRow: UnsafeRow): Unit = {
-    logInfo("Hash-based window group limit falling back to sort-based: could not acquire more " +
-      "memory for the hash map or the row arena.")
-    fallbackDestination = if (mode == Final) {
-      val array = buildFallbackArray()
-      array.add(pendingRow)
-      ArrayFallbackDestination(array)
-    } else {
-      val sorter = buildFallbackSorter()
-      sorter.insertRow(pendingRow)
-      SorterFallbackDestination(sorter)
-    }
-    numTasksFallBacked += 1
-  }
-
-  /**
-   * Reached when [[maybeBailOutForPoorEfficiency]] decides hash accumulation isn't paying off.
-   * Unlike [[switchToFallback]], there is no extra pending row to insert: the row that triggered
-   * this check was already fully processed into `rowArena`/the map.
-   */
-  private def switchToFallbackProactively(): Unit = {
-    fallbackDestination = if (mode == Final) {
-      ArrayFallbackDestination(buildFallbackArray())
-    } else {
-      SorterFallbackDestination(buildFallbackSorter())
-    }
-    numTasksFallBacked += 1
-  }
-
   /**
    * Drains every row already known to be kept (every populated slot, `0 until heapSize`, of every
    * key; see `emptyBuffer`'s doc) into a temporary, bounded (by distinct-key count times `limit`,
@@ -617,7 +525,7 @@ class HashRowNumberGroupLimitAccumulator(
    * [[drainWinnersAndFreeStructures]] already knows to be kept. Deliberately not a sorter: see
    * `fallbackDestination`'s doc for why `Final` never needs one.
    */
-  private def buildFallbackArray(): ExternalAppendOnlyUnsafeRowArray = {
+  protected def buildFallbackArray(): ExternalAppendOnlyUnsafeRowArray = {
     val winners = drainWinnersAndFreeStructures()
     // 0 in-memory-buffer thresholds: every row goes straight into the spill-capable backing
     // store, which is accounted Tungsten memory like the structures it replaces, rather than
@@ -635,7 +543,7 @@ class HashRowNumberGroupLimitAccumulator(
    * [[org.apache.spark.sql.execution.SortExec]] itself uses -- seeded with every row
    * [[drainWinnersAndFreeStructures]] already knows to be kept.
    */
-  private def buildFallbackSorter(): UnsafeExternalRowSorter = {
+  protected def buildFallbackSorter(): UnsafeExternalRowSorter = {
     val winners = drainWinnersAndFreeStructures()
 
     val sortOrder = partitionSpec.map(SortOrder(_, Ascending)) ++ orderSpec

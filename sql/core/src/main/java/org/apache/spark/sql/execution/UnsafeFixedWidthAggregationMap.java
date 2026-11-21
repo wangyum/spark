@@ -105,8 +105,8 @@ public final class UnsafeFixedWidthAggregationMap {
    * {@link org.apache.spark.sql.execution.joins.HashedRelation} already uses for its own
    * build-side `BytesToBytesMap`, for the identical reason.
    *
-   * @param initialPageSizeBytes the size of the first data page, in bytes; must not exceed
-   *                             `pageSizeBytes`.
+   * @param initialPageSizeBytes the size of the first data page, in bytes; if larger than
+   *                             `pageSizeBytes`, it is silently clamped down to `pageSizeBytes`.
    */
   public UnsafeFixedWidthAggregationMap(
       InternalRow emptyAggregationBuffer,

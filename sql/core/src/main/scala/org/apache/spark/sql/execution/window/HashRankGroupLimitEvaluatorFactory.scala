@@ -33,7 +33,8 @@ class HashRankGroupLimitEvaluatorFactory(
     numOutputRows: SQLMetric,
     peakMemory: SQLMetric,
     spillSize: SQLMetric,
-    numTasksFallBacked: SQLMetric,
+    numTasksFallBackedOOM: SQLMetric,
+    numTasksFallBackedPoorCompaction: SQLMetric,
     minCompactionRatio: Double,
     minRowsBetweenCompactionChecks: Long,
     enableRadixSort: Boolean,
@@ -50,6 +51,6 @@ class HashRankGroupLimitEvaluatorFactory(
   override def createAccumulator(): HashRankGroupLimitAccumulator =
     new HashRankGroupLimitAccumulator(
       partitionSpec, orderSpec, rankLikeFunction, childOutput, numOutputRows, peakMemory,
-      spillSize, numTasksFallBacked, minCompactionRatio, minRowsBetweenCompactionChecks,
-      enableRadixSort, limit, mode)
+      spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompactionRatio,
+      minRowsBetweenCompactionChecks, enableRadixSort, limit, mode)
 }
