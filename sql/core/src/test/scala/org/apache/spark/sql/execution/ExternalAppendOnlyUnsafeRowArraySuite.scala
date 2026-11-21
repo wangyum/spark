@@ -175,6 +175,43 @@ class ExternalAppendOnlyUnsafeRowArraySuite extends SparkFunSuite with LocalSpar
     }
   }
 
+  test("bufferSize tracks added rows and resets on clear(), independent of a later " +
+    "batch's row width") {
+    // RangeGroupProbe.perRowKeyBytes divides bufferSize by the *current* group's row count to
+    // get a boxed key's average row width, trusting that clear() (called by
+    // SortMergeJoinExec.resetBufferedGroup between equi-key groups sharing one buffered array)
+    // has reset this to exactly the new group's own bytes, with no carryover from a prior,
+    // differently-sized group. Exercise that exact clear()-then-reuse pattern with rows of two
+    // different widths, so a regression in either reset site (clear() or add()'s spill-switch
+    // branch) would surface as a wrong total here instead of silently matching by coincidence.
+    withExternalArray(inMemoryThreshold = 10, spillThreshold = 100) { array =>
+      assert(array.bufferSize == 0, "a fresh array must report zero buffered bytes")
+
+      val narrowRows = 5
+      populateRows(array, narrowRows)
+      assert(array.bufferSize == narrowRows * 16L,
+        "bufferSize must equal the sum of each added row's own UnsafeRow.getSizeInBytes")
+
+      array.clear()
+      assert(array.bufferSize == 0, "clear() must reset the buffered byte count to zero")
+
+      // A second, wider-row batch: if the reset above were ever skipped, this would report the
+      // narrow batch's stale bytes still added on top, not just the wide batch's own.
+      val wideRowBytes = 24
+      val wideRows = 3
+      (0 until wideRows).foreach { i =>
+        val row = new UnsafeRow(2)
+        row.pointTo(new Array[Byte](64), wideRowBytes)
+        row.setLong(0, i.toLong)
+        row.setLong(1, i.toLong)
+        array.add(row)
+      }
+      assert(array.bufferSize == wideRows * wideRowBytes.toLong,
+        "bufferSize after clear()-and-reuse must reflect only the new batch's rows, with no " +
+          "carryover from the earlier, differently-sized batch")
+    }
+  }
+
   test("insert rows less than the inMemoryThreshold") {
     val (inMemoryThreshold, spillThreshold) = (100, 50)
     withExternalArray(inMemoryThreshold, spillThreshold) { array =>

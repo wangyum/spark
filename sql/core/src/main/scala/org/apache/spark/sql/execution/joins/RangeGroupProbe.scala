@@ -205,7 +205,9 @@ private[joins] object RangeGroupProbe extends Logging {
      * the group's real, already-measured buffered-row byte count rather than a schema guess, and
      * from the `Array[InternalRow]` reference slot, which those two methods add separately. For
      * `usesLongKeys`, where every bound is a primitive long, this matches
-     * `LongIntervalIndex`/`LongPointIndex`'s zero-copy `estimatedSize` exactly; see
+     * `LongIntervalIndex`/`LongPointIndex`'s zero-copy `estimatedSize` up to a small, size-
+     * independent constant from the backing arrays' own object headers (which `SizeEstimator`
+     * counts and this fixed constant does not) - negligible next to the per-row term; see
      * `perRowKeyBytes` for the boxed-key case.
      */
     private val keyOverhead: Long = mode.indexKind match {
@@ -224,18 +226,19 @@ private[joins] object RangeGroupProbe extends Logging {
     /**
      * Per-row key storage cost. For `usesLongKeys`, every bound the index stores is a primitive
      * long (`RangeIndex.longKey`) regardless of the original column's declared type, so the
-     * fixed `keyOverhead` constant is exact. Otherwise `IntervalIndex`/`PointIndex` deep-copy
+     * fixed `keyOverhead` constant closely approximates it (see its own doc for the small,
+     * size-independent gap). Otherwise `IntervalIndex`/`PointIndex` deep-copy
      * the raw key value via `InternalRow.copyValue` - a cost that scales with the key's width
      * (e.g. a `StringType` range bound) - which `keyOverhead` alone does not capture. Since the
      * key is a subset of the row, the group's own already-measured average buffered-row size
-     * (`inMemoryBufferByteSize / length`) is a conservative, pre-`transform()` proxy for it that
+     * (`bufferSize / length`) is a conservative, pre-`transform()` proxy for it that
      * never under-counts.
      */
     private def perRowKeyBytes(matches: ExternalAppendOnlyUnsafeRowArray): Long = {
       if (usesLongKeys) {
         keyOverhead
       } else {
-        val avgRowBytes = matches.inMemoryBufferByteSize / math.max(1L, matches.length)
+        val avgRowBytes = matches.bufferSize / math.max(1L, matches.length)
         math.max(keyOverhead, boxedKeysPerRow * avgRowBytes)
       }
     }
@@ -263,12 +266,16 @@ private[joins] object RangeGroupProbe extends Logging {
       matches.length * (perRowKeyBytes(matches) + 48L)
 
     /**
-     * `matches.inMemoryBufferByteSize`, consulted by `estimatedRetainedBytes` for boxed keys, is
+     * `matches.bufferSize`, consulted by `estimatedRetainedBytes` for boxed keys, is
      * only valid while `!isSpillBacked`; short-circuiting on that check first, before it is
-     * reached, keeps this safe for a spill-backed group.
+     * reached, keeps this safe for a spill-backed group. The `matches.length > 0` conjunct
+     * guards a group that is permanently empty (no buffered row ever matches the streamed
+     * side) from being admitted when `threshold` is configured down to its minimum legal
+     * value of 0: without it, such a group would otherwise still look eligible (0 >= 0) and,
+     * after `MIN_PROBES_BEFORE_BUILD` probes, trigger a pointless `build()` over zero rows.
      */
     def isEligible(matches: ExternalAppendOnlyUnsafeRowArray): Boolean = {
-      matches.length >= threshold && !matches.isSpillBacked &&
+      matches.length > 0 && matches.length >= threshold && !matches.isSpillBacked &&
         estimatedRetainedBytes(matches) <= maxBytes
     }
   }

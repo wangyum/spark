@@ -119,9 +119,11 @@ class ExternalAppendOnlyUnsafeRowArray(
    * reset to zero either by `clear()`, when the whole buffer is reset for reuse, or inline
    * within `add()` itself, at the moment it switches the array over to the spill-backed store.
    * Exposed so a caller can budget memory for a transformation of these rows (e.g. a range
-   * index) against their real footprint instead of a schema-based guess.
+   * index) against their real footprint instead of a schema-based guess. Named to parallel
+   * [[spillSize]] below rather than the private `inMemoryBufferSizeInBytes` field it wraps,
+   * since a method can't share that field's exact name.
    */
-  private[execution] def inMemoryBufferByteSize: Long = inMemoryBufferSizeInBytes
+  private[execution] def bufferSize: Long = inMemoryBufferSizeInBytes
 
   /**
    * Total number of bytes that has been spilled into disk so far.
