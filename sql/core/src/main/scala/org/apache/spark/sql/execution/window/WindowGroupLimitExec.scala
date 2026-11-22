@@ -408,28 +408,53 @@ object HashGroupLimitAccumulator {
 }
 
 /**
- * Common interface over [[HashRowNumberGroupLimitEvaluatorFactory]] and
- * [[HashRankGroupLimitEvaluatorFactory]], mirroring [[HashGroupLimitAccumulator]]'s purpose for
- * the factory side: lets [[WindowGroupLimitExec]] hold one statically-typed
- * `hashEvaluatorFactory` regardless of `rankLikeFunction`, both for the interpreted `doExecute()`
- * path (via the inherited [[PartitionEvaluatorFactory]]) and for codegen's `createAccumulator()`
- * call in `doProduce`.
+ * Builds [[WindowGroupLimitExec]]'s per-task hash-based accumulator: a
+ * [[HashRowNumberGroupLimitAccumulator]] when `rankLikeFunction` is `RowNumber`, a
+ * [[HashRankGroupLimitAccumulator]] otherwise (`Rank`/`DenseRank`; see those two classes for the
+ * actual algorithms). Used both for the interpreted `doExecute()` path (via the inherited
+ * [[PartitionEvaluatorFactory]]) and directly by [[WindowGroupLimitExec]]'s whole-stage codegen,
+ * which calls [[createAccumulator]] itself and drives the result with generated code instead of
+ * going through [[createEvaluator]]'s pull-based [[PartitionEvaluator]]. A single class rather
+ * than one per `rankLikeFunction`: construction is the same one-case-or-the-other match either
+ * way, with no `RowNumber`- vs `Rank`/`DenseRank`-specific behavior for a second class to
+ * override, so splitting it in two would only add a shared supertype plus two near-identical
+ * constructors wrapped around it.
  */
-trait HashGroupLimitEvaluatorFactory extends PartitionEvaluatorFactory[InternalRow, InternalRow] {
-  /**
-   * Builds a fresh, per-task accumulator. Used both by [[createEvaluator]] below (the interpreted
-   * `doExecute()` path) and directly by [[WindowGroupLimitExec]]'s whole-stage codegen, which
-   * drives the accumulator with generated code instead of going through [[createEvaluator]]'s
-   * pull-based [[PartitionEvaluator]].
-   */
-  def createAccumulator(): HashGroupLimitAccumulator
+class HashGroupLimitEvaluatorFactory(
+    partitionSpec: Seq[Expression],
+    orderSpec: Seq[SortOrder],
+    rankLikeFunction: Expression,
+    childOutput: Seq[Attribute],
+    numOutputRows: SQLMetric,
+    peakMemory: SQLMetric,
+    spillSize: SQLMetric,
+    numTasksFallbackOOM: SQLMetric,
+    numTasksFallbackPoorCompaction: SQLMetric,
+    minCompaction: Double,
+    minRowsBetweenCompactionChecks: Long,
+    enableRadixSort: Boolean,
+    limit: Int,
+    mode: WindowGroupLimitMode = Partial)
+  extends PartitionEvaluatorFactory[InternalRow, InternalRow] {
+
+  def createAccumulator(): HashGroupLimitAccumulator = rankLikeFunction match {
+    case _: RowNumber =>
+      new HashRowNumberGroupLimitAccumulator(
+        partitionSpec, orderSpec, childOutput, numOutputRows, peakMemory, spillSize,
+        numTasksFallbackOOM, numTasksFallbackPoorCompaction, minCompaction,
+        minRowsBetweenCompactionChecks, enableRadixSort, limit = limit, mode = mode)
+    case _ =>
+      new HashRankGroupLimitAccumulator(
+        partitionSpec, orderSpec, rankLikeFunction, childOutput, numOutputRows, peakMemory,
+        spillSize, numTasksFallbackOOM, numTasksFallbackPoorCompaction, minCompaction,
+        minRowsBetweenCompactionChecks, enableRadixSort, limit, mode)
+  }
 
   /**
    * Pulls rows from the single child input, feeding each to a fresh [[createAccumulator]] via its
-   * single-argument `consumeRow(row)`, then drains the accumulator's result. Shared by both
-   * concrete factories -- the loop only ever touches [[HashGroupLimitAccumulator]]'s common
-   * interface, so there is nothing for a `RowNumber`- vs `Rank`/`DenseRank`-specific override to
-   * add.
+   * single-argument `consumeRow(row)`, then drains the accumulator's result. The loop only ever
+   * touches [[HashGroupLimitAccumulator]]'s common interface, so it is the same regardless of
+   * which accumulator [[createAccumulator]] built.
    */
   override def createEvaluator(): PartitionEvaluator[InternalRow, InternalRow] =
     new HashGroupLimitPartitionEvaluator
@@ -548,39 +573,21 @@ case class WindowGroupLimitExec(
   // partitionSpec/orderSpec/rankLikeFunction/child.output/the metrics -- not `this` or `child` --
   // so codegen's addReferenceObj does not drag the child plan into every task's closure.
   @transient private lazy val hashEvaluatorFactory: HashGroupLimitEvaluatorFactory =
-    rankLikeFunction match {
-      case _: RowNumber =>
-        new HashRowNumberGroupLimitEvaluatorFactory(
-          partitionSpec,
-          orderSpec,
-          child.output,
-          longMetric("numOutputRows"),
-          longMetric("peakMemory"),
-          longMetric("spillSize"),
-          longMetric("numTasksFallbackOOM"),
-          longMetric("numTasksFallbackPoorCompaction"),
-          conf.windowGroupLimitHashPushdownMinCompaction,
-          conf.windowGroupLimitHashPushdownMinRows,
-          conf.enableRadixSort,
-          limit,
-          mode)
-      case _ =>
-        new HashRankGroupLimitEvaluatorFactory(
-          partitionSpec,
-          orderSpec,
-          rankLikeFunction,
-          child.output,
-          longMetric("numOutputRows"),
-          longMetric("peakMemory"),
-          longMetric("spillSize"),
-          longMetric("numTasksFallbackOOM"),
-          longMetric("numTasksFallbackPoorCompaction"),
-          conf.windowGroupLimitHashPushdownMinCompaction,
-          conf.windowGroupLimitHashPushdownMinRows,
-          conf.enableRadixSort,
-          limit,
-          mode)
-    }
+    new HashGroupLimitEvaluatorFactory(
+      partitionSpec,
+      orderSpec,
+      rankLikeFunction,
+      child.output,
+      longMetric("numOutputRows"),
+      longMetric("peakMemory"),
+      longMetric("spillSize"),
+      longMetric("numTasksFallbackOOM"),
+      longMetric("numTasksFallbackPoorCompaction"),
+      conf.windowGroupLimitHashPushdownMinCompaction,
+      conf.windowGroupLimitHashPushdownMinRows,
+      conf.enableRadixSort,
+      limit,
+      mode)
 
   protected override def doExecute(): RDD[InternalRow] = {
     val evaluatorFactory =

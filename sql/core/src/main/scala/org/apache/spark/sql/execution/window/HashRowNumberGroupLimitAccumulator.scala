@@ -33,7 +33,7 @@ import org.apache.spark.unsafe.{KVIterator, Platform}
 /**
  * One task's worth of state for the hash-based top-`limit` `ROW_NUMBER()` accumulation described
  * on [[WindowGroupLimitExec.isHashEligible]]. Used by both the interpreted path
- * ([[HashRowNumberGroupLimitEvaluatorFactory]]) and [[WindowGroupLimitExec]]'s whole-stage codegen
+ * ([[HashGroupLimitEvaluatorFactory]]) and [[WindowGroupLimitExec]]'s whole-stage codegen
  * (`doConsume`/`doProduce`), so the two paths share one implementation instead of two that could
  * drift apart.
  *
