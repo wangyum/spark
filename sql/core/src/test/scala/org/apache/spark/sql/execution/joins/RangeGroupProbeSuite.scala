@@ -567,6 +567,25 @@ class RangeGroupProbeSuite extends SparkFunSuite with LocalSparkContext {
     }
   }
 
+  test("declineBuild does not count a permanently-empty group as a fallback, matching " +
+    "isEligible's own threshold=0 semantics") {
+    // Regression test for a prior divergence: isEligible correctly rejects a permanently
+    // empty group via Spec.rowCountRulesOut, but declineBuild's own guard used to check
+    // `matches.length >= spec.threshold` directly -- which at the legal threshold=0
+    // configuration evaluates `0 >= 0`, wrongly counting and logging a fallback for a group
+    // that was never a real candidate. Both now share `rowCountRulesOut`, so this must hold.
+    withRowArray(inMemoryRows = 1000, totalRows = 0) { (array, _) =>
+      assert(array.length == 0, "test setup needs a permanently empty group")
+      val fallbackMetric = SQLMetrics.createMetric(sc, "fallback")
+      val session = RangeGroupProbe.Session(
+        pointInRangeSpec(threshold = 0), numFallbackMetric = fallbackMetric)
+      session.onProbe(array)
+      assert(fallbackMetric.value == 0,
+        "a permanently empty group must never be counted as a declined build, even at " +
+          "threshold=0")
+    }
+  }
+
   test("Session.spill() releases an indexed group, falls back to a linear " +
     "scan, counts it as a fallback, and never rebuilds for the rest of the group") {
     withRowArray(inMemoryRows = 1000, totalRows = 10) { (array, tc) =>

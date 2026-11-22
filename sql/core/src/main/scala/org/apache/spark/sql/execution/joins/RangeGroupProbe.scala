@@ -176,10 +176,11 @@ private[joins] object RangeGroupProbe extends Logging {
 
   /**
    * Probes a buffered group must receive before its index is built, so the one-time build
-   * cost is paid only once the linear rescans it replaces would have cost about as much.
-   * SortMergeJoinRangeIndexBenchmark's reuse sweep (groupSize=1024) shows parity at 100
-   * reuses and a 2.9X win at 1000, so 128 sits just above that break-even point. A cost-model
-   * constant, not a user-facing config; revisit with new benchmark evidence if it's wrong.
+   * cost is paid only once the linear rescans it replaces would have cost about as much. See
+   * SortMergeJoinRangeIndexBenchmark-results.txt's reuse sweep (groupSize=1024) for the
+   * current numbers this threshold is set against, rather than hardcoding them here where
+   * they'd silently go stale the next time the benchmark is re-run. A cost-model constant,
+   * not a user-facing config; revisit if those numbers no longer support it.
    */
   private[joins] val MIN_PROBES_BEFORE_BUILD = 128
 
@@ -266,16 +267,25 @@ private[joins] object RangeGroupProbe extends Logging {
       matches.length * (perRowKeyBytes(matches) + 48L)
 
     /**
+     * Whether this group's row count alone already rules out ever being a real index
+     * candidate: either permanently empty (no buffered row ever matches the streamed side,
+     * reachable when `threshold` is configured down to its minimum legal value of 0 - at any
+     * `threshold >= 1` this is already implied by the second clause) or simply below
+     * `threshold`. Shared by `isEligible` (which must also reject a permanently empty group)
+     * and `Session.declineBuild` (which must *not* count or log a fallback for a group that
+     * was never a candidate in the first place), so the two can't drift apart on this
+     * question the way they once did.
+     */
+    def rowCountRulesOut(matches: ExternalAppendOnlyUnsafeRowArray): Boolean =
+      matches.length == 0 || matches.length < threshold
+
+    /**
      * `matches.bufferSize`, consulted by `estimatedRetainedBytes` for boxed keys, is
      * only valid while `!isSpillBacked`; short-circuiting on that check first, before it is
-     * reached, keeps this safe for a spill-backed group. The `matches.length > 0` conjunct
-     * guards a group that is permanently empty (no buffered row ever matches the streamed
-     * side) from being admitted when `threshold` is configured down to its minimum legal
-     * value of 0: without it, such a group would otherwise still look eligible (0 >= 0) and,
-     * after `MIN_PROBES_BEFORE_BUILD` probes, trigger a pointless `build()` over zero rows.
+     * reached, keeps this safe for a spill-backed group.
      */
     def isEligible(matches: ExternalAppendOnlyUnsafeRowArray): Boolean = {
-      matches.length > 0 && matches.length >= threshold && !matches.isSpillBacked &&
+      !rowCountRulesOut(matches) && !matches.isSpillBacked &&
         estimatedRetainedBytes(matches) <= maxBytes
     }
   }
@@ -387,7 +397,7 @@ private[joins] object RangeGroupProbe extends Logging {
      */
     private def declineBuild(matches: ExternalAppendOnlyUnsafeRowArray): Unit = {
       buildAttempted = true
-      if (matches.length >= spec.threshold) {
+      if (!spec.rowCountRulesOut(matches)) {
         if (numFallbackMetric != null) numFallbackMetric += 1
         logDebug(log"range index fallback for a buffered group of " +
           log"${MDC(NUM_ROWS, matches.length)} rows " +
