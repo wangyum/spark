@@ -17,19 +17,25 @@
 
 package org.apache.spark.sql.execution.window
 
+import scala.collection.mutable.ArrayBuffer
+
 import org.apache.spark.{PartitionEvaluator, PartitionEvaluatorFactory}
 import org.apache.spark.internal.Logging
+import org.apache.spark.memory.TaskMemoryManager
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet,
-  BindReferences, DenseRank, Expression, Rank, RowNumber, SortOrder, UnsafeProjection, UnsafeRow}
+  BindReferences, DenseRank, Expression, Rank, RowNumber, RowOrdering, SortOrder, SortPrefix,
+  UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode,
   GenerateOrdering, GenerateUnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.physical.{AllTuples, ClusteredDistribution,
   Distribution, Partitioning}
+import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.catalyst.util.SQLOrderingUtil
 import org.apache.spark.sql.execution.{BlockingOperatorWithCodegen, CodegenSupport,
-  ExternalAppendOnlyUnsafeRowArray, SparkPlan, UnaryExecNode, UnsafeExternalRowSorter}
+  ExternalAppendOnlyUnsafeRowArray, SortPrefixUtils, SparkPlan, UnaryExecNode,
+  UnsafeExternalRowSorter}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, DecimalType,
   DoubleType, FloatType, IntegerType, LongType, ShortType, TimestampNTZType, TimestampType}
@@ -186,6 +192,10 @@ trait HashGroupLimitAccumulator extends Logging {
   protected def childOutput: Seq[Attribute]
   protected def mode: WindowGroupLimitMode
   protected def minCompaction: Double
+  protected def partitionSpec: Seq[Expression]
+  protected def orderSpec: Seq[SortOrder]
+  protected def taskMemoryManager: TaskMemoryManager
+  protected def enableRadixSort: Boolean
 
   // Two distinct SQLMetrics rather than one combined "fallback happened" counter: the two
   // triggers call for opposite remediation (capacity/skew investigation for a genuine OOM, versus
@@ -193,8 +203,8 @@ trait HashGroupLimitAccumulator extends Logging {
   // bailout), so collapsing them into one count would hide which situation actually occurred from
   // anyone reading the SQL UI rather than grepping executor logs for the two already-distinct
   // logInfo messages below.
-  protected def numTasksFallBackedOOM: SQLMetric
-  protected def numTasksFallBackedPoorCompaction: SQLMetric
+  protected def numTasksFallbackOOM: SQLMetric
+  protected def numTasksFallbackPoorCompaction: SQLMetric
 
   /**
    * Builds the `Final`-mode fallback destination: an unsorted, append-only, spill-capable row
@@ -205,6 +215,47 @@ trait HashGroupLimitAccumulator extends Logging {
    */
   protected def buildFallbackArray(): ExternalAppendOnlyUnsafeRowArray
   protected def buildFallbackSorter(): UnsafeExternalRowSorter
+
+  /**
+   * Builds a fresh, spill-capable [[UnsafeExternalRowSorter]] -- the same kind
+   * [[org.apache.spark.sql.execution.SortExec]] itself uses -- seeded with `rows`, sorted by
+   * `partitionSpec` then `orderSpec`. The concrete sorter-construction logic both accumulators'
+   * `buildFallbackSorter` need: pulled up here for the same reason as the shared fallback control
+   * flow above -- the two implementations previously carried byte-for-byte identical copies of
+   * this (differing only in a local variable name), which is exactly the kind of duplication that
+   * let the signed-zero bug ship unfixed in one of its two copies.
+   */
+  protected def buildSorterFromRows(rows: ArrayBuffer[UnsafeRow]): UnsafeExternalRowSorter = {
+    val sortOrder = partitionSpec.map(SortOrder(_, Ascending)) ++ orderSpec
+    val ordering = RowOrdering.create(sortOrder, childOutput)
+    val boundSortExpression = BindReferences.bindReference(sortOrder.head, childOutput)
+    val prefixComparator = SortPrefixUtils.getPrefixComparator(boundSortExpression)
+    val canUseRadixSort = enableRadixSort && sortOrder.length == 1 &&
+      SortPrefixUtils.canSortFullyWithPrefix(boundSortExpression)
+    val prefixExpr = SortPrefix(boundSortExpression)
+    val prefixProjection = UnsafeProjection.create(Seq(prefixExpr))
+    val prefixComputer = new UnsafeExternalRowSorter.PrefixComputer {
+      private val result = new UnsafeExternalRowSorter.PrefixComputer.Prefix
+      override def computePrefix(
+          row: InternalRow): UnsafeExternalRowSorter.PrefixComputer.Prefix = {
+        val prefix = prefixProjection.apply(row)
+        result.isNull = prefix.isNullAt(0)
+        result.value = if (result.isNull) prefixExpr.nullValue else prefix.getLong(0)
+        result
+      }
+    }
+    val schema = DataTypeUtils.fromAttributes(childOutput)
+    val sorter = UnsafeExternalRowSorter.create(
+      schema,
+      ordering,
+      prefixComparator,
+      prefixComputer,
+      taskMemoryManager.pageSizeBytes,
+      canUseRadixSort)
+
+    rows.foreach(sorter.insertRow)
+    sorter
+  }
 
   /**
    * Reached when the hash map or the row arena could no longer acquire memory. Dumps every row
@@ -225,7 +276,7 @@ trait HashGroupLimitAccumulator extends Logging {
       sorter.insertRow(pendingRow)
       SorterFallbackDestination(sorter)
     }
-    numTasksFallBackedOOM += 1
+    numTasksFallbackOOM += 1
   }
 
   /**
@@ -239,7 +290,7 @@ trait HashGroupLimitAccumulator extends Logging {
     } else {
       SorterFallbackDestination(buildFallbackSorter())
     }
-    numTasksFallBackedPoorCompaction += 1
+    numTasksFallbackPoorCompaction += 1
   }
 
   /**
@@ -482,9 +533,9 @@ case class WindowGroupLimitExec(
       Map(
         "peakMemory" -> SQLMetrics.createSizeMetric(sparkContext, "peak memory"),
         "spillSize" -> SQLMetrics.createSizeMetric(sparkContext, "spill size"),
-        "numTasksFallBackedOOM" -> SQLMetrics.createMetric(
+        "numTasksFallbackOOM" -> SQLMetrics.createMetric(
           sparkContext, "number of sort fallback tasks (out of memory)"),
-        "numTasksFallBackedPoorCompaction" -> SQLMetrics.createMetric(
+        "numTasksFallbackPoorCompaction" -> SQLMetrics.createMetric(
           sparkContext, "number of sort fallback tasks (poor compaction ratio)"))
     } else {
       Map.empty
@@ -506,8 +557,8 @@ case class WindowGroupLimitExec(
           longMetric("numOutputRows"),
           longMetric("peakMemory"),
           longMetric("spillSize"),
-          longMetric("numTasksFallBackedOOM"),
-          longMetric("numTasksFallBackedPoorCompaction"),
+          longMetric("numTasksFallbackOOM"),
+          longMetric("numTasksFallbackPoorCompaction"),
           conf.windowGroupLimitHashPushdownMinCompaction,
           conf.windowGroupLimitHashPushdownMinRows,
           conf.enableRadixSort,
@@ -522,8 +573,8 @@ case class WindowGroupLimitExec(
           longMetric("numOutputRows"),
           longMetric("peakMemory"),
           longMetric("spillSize"),
-          longMetric("numTasksFallBackedOOM"),
-          longMetric("numTasksFallBackedPoorCompaction"),
+          longMetric("numTasksFallbackOOM"),
+          longMetric("numTasksFallbackPoorCompaction"),
           conf.windowGroupLimitHashPushdownMinCompaction,
           conf.windowGroupLimitHashPushdownMinRows,
           conf.enableRadixSort,

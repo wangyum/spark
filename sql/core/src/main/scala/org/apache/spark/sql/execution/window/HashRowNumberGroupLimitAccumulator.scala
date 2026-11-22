@@ -21,12 +21,10 @@ import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.TaskContext
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, BindReferences,
-  BoundReference, Expression, GenericInternalRow, NullsFirst, RowOrdering, SortOrder, SortPrefix,
-  UnsafeProjection, UnsafeRow}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, BoundReference,
+  Expression, GenericInternalRow, NullsFirst, SortOrder, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.GenerateOrdering
-import org.apache.spark.sql.catalyst.types.DataTypeUtils
-import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray, SortPrefixUtils,
+import org.apache.spark.sql.execution.{ExternalAppendOnlyUnsafeRowArray,
   UnsafeExternalRowSorter, UnsafeFixedWidthAggregationMap}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
@@ -71,17 +69,17 @@ import org.apache.spark.unsafe.{KVIterator, Platform}
  *     reason, against a different fallback mechanism here).
  */
 class HashRowNumberGroupLimitAccumulator(
-    partitionSpec: Seq[Expression],
-    orderSpec: Seq[SortOrder],
+    protected val partitionSpec: Seq[Expression],
+    protected val orderSpec: Seq[SortOrder],
     protected val childOutput: Seq[Attribute],
     numOutputRows: SQLMetric,
     peakMemory: SQLMetric,
     spillSize: SQLMetric,
-    protected val numTasksFallBackedOOM: SQLMetric,
-    protected val numTasksFallBackedPoorCompaction: SQLMetric,
+    protected val numTasksFallbackOOM: SQLMetric,
+    protected val numTasksFallbackPoorCompaction: SQLMetric,
     protected val minCompaction: Double = 1.05,
     minRowsBetweenCompactionChecks: Long = 100000L,
-    enableRadixSort: Boolean = true,
+    protected val enableRadixSort: Boolean = true,
     limit: Int,
     protected val mode: WindowGroupLimitMode = Partial) extends HashGroupLimitAccumulator {
 
@@ -284,7 +282,7 @@ class HashRowNumberGroupLimitAccumulator(
     }
   }
 
-  private val taskMemoryManager = TaskContext.get().taskMemoryManager()
+  protected val taskMemoryManager = TaskContext.get().taskMemoryManager()
 
   private val map = new UnsafeFixedWidthAggregationMap(
     emptyBuffer,
@@ -420,27 +418,35 @@ class HashRowNumberGroupLimitAccumulator(
   private var nextSlot: Int = 0
   private var uncommittedOutputRows: Int = 0
 
-  override def finishAccumulator(): Unit = fallbackDestination match {
-    case ArrayFallbackDestination(array) =>
-      peakMemory.set(math.max(peakMemory.value, array.spillSize))
-      spillSize.set(
-        TaskContext.get().taskMetrics().memoryBytesSpilled - spillSizeBefore)
-      fallbackIter = array.generateIterator()
-    case SorterFallbackDestination(sorter) =>
-      peakMemory.set(math.max(peakMemory.value, sorter.getPeakMemoryUsage))
-      spillSize.set(
-        TaskContext.get().taskMetrics().memoryBytesSpilled - spillSizeBefore)
-      val sortedIter = sorter.sort()
-      val limitFunc =
-        (iter: Iterator[InternalRow]) => SimpleLimitIterator(iter, limit, numOutputRows)
-      fallbackIter = if (partitionSpec.isEmpty) {
-        limitFunc(sortedIter)
-      } else {
-        new GroupedLimitIterator(sortedIter, childOutput, partitionSpec, limitFunc)
-      }
-    case null =>
-      peakMemory.set(math.max(peakMemory.value, map.getPeakMemoryUsedBytes + rowArena.bytesUsed))
-      kvIter = map.iterator()
+  override def finishAccumulator(): Unit = {
+    fallbackDestination match {
+      case ArrayFallbackDestination(array) =>
+        peakMemory.set(math.max(peakMemory.value, array.spillSize))
+        spillSize.set(
+          TaskContext.get().taskMetrics().memoryBytesSpilled - spillSizeBefore)
+        fallbackIter = array.generateIterator()
+      case SorterFallbackDestination(sorter) =>
+        peakMemory.set(math.max(peakMemory.value, sorter.getPeakMemoryUsage))
+        spillSize.set(
+          TaskContext.get().taskMetrics().memoryBytesSpilled - spillSizeBefore)
+        val sortedIter = sorter.sort()
+        val limitFunc =
+          (iter: Iterator[InternalRow]) => SimpleLimitIterator(iter, limit, numOutputRows)
+        fallbackIter = if (partitionSpec.isEmpty) {
+          limitFunc(sortedIter)
+        } else {
+          new GroupedLimitIterator(sortedIter, childOutput, partitionSpec, limitFunc)
+        }
+      case null =>
+        peakMemory.set(math.max(peakMemory.value, map.getPeakMemoryUsedBytes + rowArena.bytesUsed))
+        kvIter = map.iterator()
+    }
+    // Mirrors SortExec.recordSortMetrics/HashAggregateCodegenHelper.finishAggregate: feeds this
+    // operator's peak Tungsten usage into the Stage UI/REST API/SparkListener-visible task metric,
+    // not just the SQL-plan-only peakMemory SQLMetric set above. Called exactly once per
+    // accumulator instance (finishAccumulator is invoked once per interpreted eval() and once per
+    // codegen'd operator instance), so this can't double-count.
+    TaskContext.get().taskMetrics().incPeakExecutionMemory(peakMemory.value)
   }
 
   override def nextResultRow(resultRow: UnsafeRow): Boolean = {
@@ -539,41 +545,10 @@ class HashRowNumberGroupLimitAccumulator(
   }
 
   /**
-   * Builds the `Partial`-mode fallback sorter -- the same (spill-capable) sorter
-   * [[org.apache.spark.sql.execution.SortExec]] itself uses -- seeded with every row
-   * [[drainWinnersAndFreeStructures]] already knows to be kept.
+   * Builds the `Partial`-mode fallback sorter, seeded with every row
+   * [[drainWinnersAndFreeStructures]] already knows to be kept. See
+   * [[HashGroupLimitAccumulator.buildSorterFromRows]] for the shared sort-construction logic.
    */
-  protected def buildFallbackSorter(): UnsafeExternalRowSorter = {
-    val winners = drainWinnersAndFreeStructures()
-
-    val sortOrder = partitionSpec.map(SortOrder(_, Ascending)) ++ orderSpec
-    val ordering = RowOrdering.create(sortOrder, childOutput)
-    val boundSortExpression = BindReferences.bindReference(sortOrder.head, childOutput)
-    val prefixComparator = SortPrefixUtils.getPrefixComparator(boundSortExpression)
-    val canUseRadixSort = enableRadixSort && sortOrder.length == 1 &&
-      SortPrefixUtils.canSortFullyWithPrefix(boundSortExpression)
-    val prefixExpr = SortPrefix(boundSortExpression)
-    val prefixProjection = UnsafeProjection.create(Seq(prefixExpr))
-    val prefixComputer = new UnsafeExternalRowSorter.PrefixComputer {
-      private val result = new UnsafeExternalRowSorter.PrefixComputer.Prefix
-      override def computePrefix(
-          row: InternalRow): UnsafeExternalRowSorter.PrefixComputer.Prefix = {
-        val prefix = prefixProjection.apply(row)
-        result.isNull = prefix.isNullAt(0)
-        result.value = if (result.isNull) prefixExpr.nullValue else prefix.getLong(0)
-        result
-      }
-    }
-    val schema = DataTypeUtils.fromAttributes(childOutput)
-    val sorter = UnsafeExternalRowSorter.create(
-      schema,
-      ordering,
-      prefixComparator,
-      prefixComputer,
-      taskMemoryManager.pageSizeBytes,
-      canUseRadixSort)
-
-    winners.foreach(sorter.insertRow)
-    sorter
-  }
+  protected def buildFallbackSorter(): UnsafeExternalRowSorter =
+    buildSorterFromRows(drainWinnersAndFreeStructures())
 }

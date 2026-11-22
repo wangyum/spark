@@ -23,7 +23,7 @@ import org.apache.spark.sql.execution.metric.SQLMetric
 /**
  * Hash-based evaluator for [[WindowGroupLimitExec]] when [[WindowGroupLimitExec.isHashEligible]]
  * is true and `rankLikeFunction` is `Rank` or `DenseRank`. See
- * [[HashRowNumberGroupLimitAccumulator]]'s sibling for `RowNumber`.
+ * [[HashRowNumberGroupLimitEvaluatorFactory]] for `RowNumber`.
  */
 class HashRankGroupLimitEvaluatorFactory(
     partitionSpec: Seq[Expression],
@@ -33,8 +33,8 @@ class HashRankGroupLimitEvaluatorFactory(
     numOutputRows: SQLMetric,
     peakMemory: SQLMetric,
     spillSize: SQLMetric,
-    numTasksFallBackedOOM: SQLMetric,
-    numTasksFallBackedPoorCompaction: SQLMetric,
+    numTasksFallbackOOM: SQLMetric,
+    numTasksFallbackPoorCompaction: SQLMetric,
     minCompaction: Double,
     minRowsBetweenCompactionChecks: Long,
     enableRadixSort: Boolean,
@@ -51,6 +51,6 @@ class HashRankGroupLimitEvaluatorFactory(
   override def createAccumulator(): HashRankGroupLimitAccumulator =
     new HashRankGroupLimitAccumulator(
       partitionSpec, orderSpec, rankLikeFunction, childOutput, numOutputRows, peakMemory,
-      spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction,
+      spillSize, numTasksFallbackOOM, numTasksFallbackPoorCompaction, minCompaction,
       minRowsBetweenCompactionChecks, enableRadixSort, limit, mode)
 }

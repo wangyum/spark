@@ -24,8 +24,8 @@ import org.apache.spark.internal.config.BUFFER_PAGESIZE
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.sql.{DataFrame, Row}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, DenseRank, Descending,
-  Expression, Rank, SortOrder, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeReference,
+  DenseRank, Descending, Expression, Rank, SortOrder, UnsafeProjection}
 import org.apache.spark.sql.execution.SortExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.metric.SQLMetrics
@@ -83,17 +83,62 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
       rankLikeFunction: Expression,
       limit: Int,
       minCompaction: Double = 0.0,
-      minRowsBetweenCompactionChecks: Long = 0L): HashRankGroupLimitAccumulator = {
+      minRowsBetweenCompactionChecks: Long = 0L,
+      // Defaulted to the suite-level single-column fields so every existing call site is
+      // unaffected; a multi-column test overrides both to exercise the generic (numOrderCols > 1)
+      // comparison/shift branch instead of the single-column fast path.
+      customOrderSpec: Seq[SortOrder] = orderSpec,
+      customChildOutput: Seq[Attribute] = childOutput): HashRankGroupLimitAccumulator = {
     val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
     val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
     val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
-    val numTasksFallBackedOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
-    val numTasksFallBackedPoorCompaction =
+    val numTasksFallbackOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
+    val numTasksFallbackPoorCompaction =
       SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
     new HashRankGroupLimitAccumulator(
-      partitionSpec, orderSpec, rankLikeFunction, childOutput, numOutputRows, peakMemory,
-      spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction,
+      partitionSpec, customOrderSpec, rankLikeFunction, customChildOutput, numOutputRows,
+      peakMemory, spillSize, numTasksFallbackOOM, numTasksFallbackPoorCompaction, minCompaction,
       minRowsBetweenCompactionChecks, enableRadixSort = true, limit = limit)
+  }
+
+  // Regression test for a deep-review finding: finishAccumulator previously only updated the
+  // SQL-plan-local peakMemory SQLMetric, never TaskContext.taskMetrics().peakExecutionMemory --
+  // the field the Stage/Executors UI, REST API, and any SparkListener.onTaskEnd consumer actually
+  // read, unlike every sibling memory-consuming operator (SortExec, HashAggregateExec,
+  // BroadcastHashJoinExec). See HashWindowGroupLimitSuite's identically-purposed test.
+  // Constructed directly (not via newAccumulator()) so the test has its own handle on peakMemory
+  // to compare against -- newAccumulator() builds that SQLMetric as a local val and never returns
+  // it, which would leave this test unable to tell "the real peak" from "some other positive
+  // value" and only able to assert > 0, unlike HashWindowGroupLimitSuite's identically-purposed
+  // test (which does have that handle and asserts == alongside > 0).
+  test("SPARK-61804 (rank hash pushdown): finishAccumulator reports peak memory to TaskMetrics," +
+      " not just the SQL plan's own SQLMetric") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
+      val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
+      val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
+      val numTasksFallbackOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
+      val numTasksFallbackPoorCompaction =
+        SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
+      val accumulator = new HashRankGroupLimitAccumulator(
+        partitionSpec, orderSpec, new Rank(), childOutput, numOutputRows, peakMemory, spillSize,
+        numTasksFallbackOOM, numTasksFallbackPoorCompaction, minCompaction = 0.0,
+        minRowsBetweenCompactionChecks = 0L, enableRadixSort = true, limit = 2)
+
+      assert(TaskContext.get().taskMetrics().peakExecutionMemory == 0,
+        "test setup assumption: nothing else has reported peak execution memory yet")
+      val rowProjection = UnsafeProjection.create(childOutput.map(_.dataType).toArray)
+      (0 until 100).foreach { i =>
+        accumulator.consumeRow(rowProjection(InternalRow(i, i.toLong)).copy())
+      }
+      accumulator.finish().map(_.copy()).toSeq
+
+      assert(TaskContext.get().taskMetrics().peakExecutionMemory == peakMemory.value,
+        "finishAccumulator must feed its SQLMetric's peak value into TaskMetrics, mirroring " +
+          "SortExec/HashAggregateExec/BroadcastHashJoinExec")
+      assert(TaskContext.get().taskMetrics().peakExecutionMemory > 0,
+        "the map/arena must have reported a nonzero peak for 100 distinct-key rows")
+    }
   }
 
   test("SPARK-61804 (rank hash pushdown): DENSE_RANK() <= 2 keeps the first 2 distinct values" +
@@ -273,12 +318,12 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
       val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
       val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
       val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
-      val numTasksFallBackedOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
-      val numTasksFallBackedPoorCompaction =
+      val numTasksFallbackOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
+      val numTasksFallbackPoorCompaction =
         SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
       val accumulator = new HashRankGroupLimitAccumulator(
         partitionSpec, orderSpec, new Rank(), wideChildOutput, numOutputRows, peakMemory, spillSize,
-        numTasksFallBackedOOM, numTasksFallBackedPoorCompaction, minCompaction = 0.0,
+        numTasksFallbackOOM, numTasksFallbackPoorCompaction, minCompaction = 0.0,
         minRowsBetweenCompactionChecks = 0L, enableRadixSort = true, limit = 1)
 
       val rowProjection = UnsafeProjection.create(wideChildOutput.map(_.dataType).toArray)
@@ -294,30 +339,30 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
       val resultSet = result.map(r => (r.getInt(0), r.getLong(1))).toSet
       assert(resultSet == expected.toSet,
         "every key's single row must survive the fallback unchanged")
-      assert(numTasksFallBackedOOM.value > 0,
+      assert(numTasksFallbackOOM.value > 0,
         "this test is only meaningful if the genuine-OOM fallback actually triggered -- " +
           "if it stops triggering, tighten the budget/enlarge the padding above rather than " +
           "deleting this assertion")
-      assert(numTasksFallBackedPoorCompaction.value == 0,
+      assert(numTasksFallbackPoorCompaction.value == 0,
         "this test isolates the genuine-OOM trigger (minCompaction = 0.0 can never trip " +
           "the proactive bail-out)")
     }
   }
 
-  test("SPARK-61804: Final-mode genuine OOM fallback safely short-circuits without accessing" +
-      " freed memory") {
+  test("SPARK-61804 (rank hash pushdown): Final-mode genuine OOM fallback safely short-circuits" +
+      " without accessing freed memory") {
     withStandaloneTaskContext(budgetBytes = 2 * 1024 * 1024 + 300 * 1024, pageSizeBytes = "2m") {
       val padAttr = AttributeReference("pad", StringType)()
       val wideChildOutput = Seq(kAttr, tsAttr, padAttr)
       val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
       val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
       val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
-      val numTasksFallBackedOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
-      val numTasksFallBackedPoorCompaction =
+      val numTasksFallbackOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
+      val numTasksFallbackPoorCompaction =
         SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
       val accumulator = new HashRankGroupLimitAccumulator(
         partitionSpec, orderSpec, new Rank(), wideChildOutput, numOutputRows, peakMemory,
-        spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction,
+        spillSize, numTasksFallbackOOM, numTasksFallbackPoorCompaction,
         minCompaction = 0.0, minRowsBetweenCompactionChecks = 0L, enableRadixSort = true,
         limit = 1, mode = Final)
 
@@ -330,11 +375,48 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
       val result = accumulator.finish().map(_.copy()).toSeq
       assert(result.length == n,
         s"Final-mode fallback must emit every one of the $n rows, got ${result.length}")
-      assert(numTasksFallBackedOOM.value > 0,
+      assert(numTasksFallbackOOM.value > 0,
         "this test is only meaningful if the genuine-OOM fallback actually triggered")
-      assert(numTasksFallBackedPoorCompaction.value == 0,
+      assert(numTasksFallbackPoorCompaction.value == 0,
         "this test isolates the genuine-OOM trigger (minCompaction = 0.0 can never trip " +
           "the proactive bail-out)")
+    }
+  }
+
+  // Regression test for a deep-review finding: every other test in this suite uses the
+  // suite-level single-column `orderSpec` (`ts desc`), so `numOrderCols == 1` always held and
+  // every slot comparison/shift went through the single-column fast path
+  // (compareSlotSingle/insertSlotAtSingle). The generic multi-column branch (extractSlotInto +
+  // boundOrdering.compare for comparisons, copySlot's per-field loop -- including its
+  // isDenseRank row-count-copy gating -- for slot shifts) that RANK()/DENSE_RANK() ORDER BY 2+
+  // columns actually uses was never exercised by any test. Driven directly against the
+  // accumulator (not via SQL) with a hand-traced arrival order, mirroring this suite's other
+  // low-level tests, so the slot shift this is meant to cover is guaranteed to happen rather than
+  // left to shuffle-dependent chance.
+  test("SPARK-61804 (rank hash pushdown): multi-column order spec exercises the generic" +
+      " comparison/shift path, not just the single-column fast path") {
+    withStandaloneTaskContext(budgetBytes = Long.MaxValue) {
+      val aAttr = AttributeReference("a", LongType)()
+      val bAttr = AttributeReference("b", LongType)()
+      val multiOrderSpec = Seq(SortOrder(aAttr, Descending), SortOrder(bAttr, Ascending))
+      val multiChildOutput = Seq(kAttr, aAttr, bAttr)
+      val accumulator = newAccumulator(
+        new Rank(), limit = 2, customOrderSpec = multiOrderSpec,
+        customChildOutput = multiChildOutput)
+      val rowProjection = UnsafeProjection.create(multiChildOutput.map(_.dataType).toArray)
+      // Sorted by (a desc, b asc): (2,0), (2,9), (1,2), (1,5) -- a=2's two rows share the same
+      // first column but are genuinely distinct order-key values, only distinguishable via b; a
+      // comparator that dropped the second column would treat them as equal (one slot instead of
+      // two), silently changing which rows RANK()/DENSE_RANK() admit.
+      Seq((1, 1L, 5L), (1, 1L, 2L), (1, 2L, 0L), (1, 2L, 9L)).foreach { case (k, a, b) =>
+        accumulator.consumeRow(rowProjection(InternalRow(k, a, b)).copy())
+      }
+      val result = accumulator.finish().map(_.copy()).toSeq
+      val pairs = result.map(r => (r.getLong(1), r.getLong(2))).sorted
+      // rank(2,0)=1, rank(2,9)=2, rank(1,2)=3 (excluded), rank(1,5)=4 (excluded): RANK() <= 2
+      // keeps only the a=2 group, and only because b correctly ordered (2,0) ahead of (2,9).
+      assert(pairs == Seq((2L, 0L), (2L, 9L)),
+        s"RANK() <= 2 over (a desc, b asc) must keep exactly the a=2 group, got $pairs")
     }
   }
 
@@ -380,6 +462,37 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
     assert(withHash == Set(Row(1, 10L), Row(1, 10L), Row(1, 10L), Row(1, 5L), Row(2, 7L)))
   }
 
+  // Regression test for a deep-review finding: every SQL-level test in this suite orders by a
+  // single column (`ts desc`), unlike HashWindowGroupLimitSuite's own "multi-column order spec"
+  // test for ROW_NUMBER(). Compares the full hash-eligible routing (optimizer -> isHashEligible ->
+  // HashRankGroupLimitEvaluatorFactory) against the real sort-based baseline for both RANK() and
+  // DENSE_RANK() over a 2-column order spec with a genuine ordering dependency on the second
+  // column: key 1's two `a=2` rows are only correctly ordered relative to each other via `b`.
+  test("SPARK-61804 (rank hash pushdown): RANK()/DENSE_RANK() hash path matches sort-based path" +
+      " for a multi-column order spec") {
+    val df = Seq((1, 1L, 5L), (1, 1L, 2L), (1, 2L, 0L), (1, 2L, 9L), (2, 0L, 0L))
+      .toDF("key", "a", "b")
+    def topK(func: String, k: Int) =
+      df.selectExpr("*", s"$func() over (partition by key order by a desc, b asc) as rk")
+        .where(s"rk <= $k").drop("rk")
+
+    Seq("rank", "dense_rank").foreach { func =>
+      val withHash = withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "true") {
+        topK(func, 2).collect().toSet
+      }
+      val withoutHash =
+        withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_HASH_PUSHDOWN_ENABLED.key -> "false") {
+          topK(func, 2).collect().toSet
+        }
+      assert(withHash == withoutHash, s"$func() mismatch between hash and sort-based paths " +
+        s"for a multi-column order spec: hash=$withHash, sort=$withoutHash")
+      // Both functions keep exactly key 1's a=2 group (rank/dense_rank 1 and 2) plus key 2's
+      // single row -- correct only if b was actually used to order the two a=2 rows.
+      assert(withHash == Set(Row(1, 2L, 0L), Row(1, 2L, 9L), Row(2, 0L, 0L)),
+        s"$func() <= 2 over (a desc, b asc) must keep exactly the a=2 group, got $withHash")
+    }
+  }
+
   // Regression tests for a deep-review finding: the single-order-column fast path used to compare
   // Double/Float order keys with raw java.lang.Double/Float.compare on their bit-reconstructed
   // values instead of Spark's actual SQL float ordering (SQLOrderingUtil.compareDoubles/
@@ -408,12 +521,12 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
         val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
         val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
         val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
-        val numTasksFallBackedOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
-        val numTasksFallBackedPoorCompaction =
+        val numTasksFallbackOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
+        val numTasksFallbackPoorCompaction =
           SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
         new HashRankGroupLimitAccumulator(
           partitionSpec, doubleOrderSpec, new DenseRank(), doubleChildOutput, numOutputRows,
-          peakMemory, spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction,
+          peakMemory, spillSize, numTasksFallbackOOM, numTasksFallbackPoorCompaction,
           minCompaction = 0.0, minRowsBetweenCompactionChecks = 0L, enableRadixSort = true,
           limit = 2)
       }
@@ -438,12 +551,12 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
         val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
         val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
         val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
-        val numTasksFallBackedOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
-        val numTasksFallBackedPoorCompaction =
+        val numTasksFallbackOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
+        val numTasksFallbackPoorCompaction =
           SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
         new HashRankGroupLimitAccumulator(
           partitionSpec, floatOrderSpec, new DenseRank(), floatChildOutput, numOutputRows,
-          peakMemory, spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction,
+          peakMemory, spillSize, numTasksFallbackOOM, numTasksFallbackPoorCompaction,
           minCompaction = 0.0, minRowsBetweenCompactionChecks = 0L, enableRadixSort = true,
           limit = 2)
       }
@@ -514,12 +627,12 @@ class HashRankGroupLimitSuite extends SharedSparkSession with AdaptiveSparkPlanH
         val numOutputRows = SQLMetrics.createMetric(spark.sparkContext, "rows")
         val peakMemory = SQLMetrics.createSizeMetric(spark.sparkContext, "peak")
         val spillSize = SQLMetrics.createSizeMetric(spark.sparkContext, "spill")
-        val numTasksFallBackedOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
-        val numTasksFallBackedPoorCompaction =
+        val numTasksFallbackOOM = SQLMetrics.createMetric(spark.sparkContext, "fallbackOOM")
+        val numTasksFallbackPoorCompaction =
           SQLMetrics.createMetric(spark.sparkContext, "fallbackPoorCompaction")
         new HashRankGroupLimitAccumulator(
           partitionSpec, decimalOrderSpec, rankLikeFunction, decimalChildOutput, numOutputRows,
-          peakMemory, spillSize, numTasksFallBackedOOM, numTasksFallBackedPoorCompaction,
+          peakMemory, spillSize, numTasksFallbackOOM, numTasksFallbackPoorCompaction,
           limit = 2)
       }
       val rowProjection = UnsafeProjection.create(decimalChildOutput.map(_.dataType).toArray)
