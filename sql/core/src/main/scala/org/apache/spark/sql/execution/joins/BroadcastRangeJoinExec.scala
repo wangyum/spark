@@ -64,9 +64,10 @@ case class BroadcastRangeJoinExec(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
   /** BuildRight means the right relation is the broadcast relation. */
-  private val (streamed, broadcast) = RangeProbeKind.streamedAndBuild(buildSide, left, right)
-  private val (streamedKeys, buildKeys) =
-    RangeProbeKind.streamedAndBuild(buildSide, leftKeys, rightKeys)
+  private val (streamed, broadcast, streamedKeys, buildKeys) = buildSide match {
+    case BuildRight => (left, right, leftKeys, rightKeys)
+    case BuildLeft => (right, left, rightKeys, leftKeys)
+  }
 
   override def simpleStringWithNodeId(): String = {
     val opId = ExplainUtils.getOpId(this)

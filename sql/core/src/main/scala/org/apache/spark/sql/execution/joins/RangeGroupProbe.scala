@@ -27,7 +27,7 @@ import org.apache.spark.internal.LogKeys.{NUM_BYTES, NUM_ROWS, THRESHOLD}
 import org.apache.spark.memory.{MemoryConsumer, MemoryMode}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, BindReferences, Expression}
-import org.apache.spark.sql.catalyst.optimizer.BuildSide
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.planning.ExtractRangeJoinKeys
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.execution.ExternalAppendOnlyUnsafeRowArray
@@ -68,10 +68,10 @@ private[joins] object RangeGroupProbe extends Logging {
               if (AttributeSet(leftRange ++ rightRange).intersect(equiRefs).nonEmpty) {
                 None
               } else {
-                val (streamOutput, bufferOutput) =
-                  RangeProbeKind.streamedAndBuild(buildSide, leftOutput, rightOutput)
-                val (streamRange, bufferRange) =
-                  RangeProbeKind.streamedAndBuild(buildSide, leftRange, rightRange)
+                val (streamOutput, bufferOutput, streamRange, bufferRange) = buildSide match {
+                  case BuildRight => (leftOutput, rightOutput, leftRange, rightRange)
+                  case BuildLeft => (rightOutput, leftOutput, rightRange, leftRange)
+                }
                 val boundBufferKeys = BindReferences.bindReferences(bufferRange, bufferOutput)
                 val boundStreamKeys = BindReferences.bindReferences(streamRange, streamOutput)
                 val probeKind = RangeProbeKind.forJoin(kind, buildSide)
