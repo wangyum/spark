@@ -28,7 +28,7 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, CodeGenerator, ExprCode}
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildSide}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.planning.{IntervalOverlapJoin, PartialRangeJoin, PointInRangeJoin, RangeJoinKind}
 import org.apache.spark.sql.catalyst.plans.physical.BroadcastMode
 import org.apache.spark.sql.catalyst.types.PhysicalDataType
@@ -1305,6 +1305,19 @@ private[joins] object RangeProbeKind {
       val isUpTo = partial.leftIsLower == (buildSide == BuildLeft)
       Point(isUpTo, partial.strict)
     case _ => Interval
+  }
+
+  /**
+   * Splits a (left, right) pair into (streamed, build) ordered by which side `buildSide` names
+   * as the build/buffered side -- `BuildRight` means the right value is build/buffered,
+   * `BuildLeft` means the left value is. Shared by `BroadcastRangeJoinExec` and
+   * `RangeGroupProbe.createSpec`, which each independently split a plan/keys or
+   * output/range-keys pair this same way, so the two can't silently disagree on the
+   * convention the way `RangeGroupProbe.Spec`'s `isEligible`/`declineBuild` once did.
+   */
+  def streamedAndBuild[T](buildSide: BuildSide, left: T, right: T): (T, T) = buildSide match {
+    case BuildRight => (left, right)
+    case BuildLeft => (right, left)
   }
 }
 
