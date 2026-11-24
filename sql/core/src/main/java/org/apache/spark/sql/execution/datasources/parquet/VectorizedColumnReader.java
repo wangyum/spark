@@ -111,6 +111,16 @@ public class VectorizedColumnReader {
   private final ParsedVersion writerVersion;
 
   /**
+   * Average uncompressed bytes per value across this whole column chunk (every page, not just the
+   * current one), or -1 if unknown. A binary/string column whose values vary a lot in size, like
+   * one holding a few huge values, can make a batch's vector grow many times over as it decodes
+   * page after page -- each growth copying everything decoded so far into a bigger array. Knowing
+   * this average lets {@link #readBatch} reserve a batch's likely byte need once, up front,
+   * instead of growing the vector page by page.
+   */
+  private final long estimatedBytesPerValue;
+
+  /**
    * A reader of the rows the store names, as {@code rowRanges = null} below. Kept for code outside
    * Spark that uses the constructor that predates the ranges.
    */
@@ -177,9 +187,13 @@ public class VectorizedColumnReader {
     }
     this.dictionary = dict;
     this.isCurrentPageDictionaryEncoded = dict != null;
-    if (pageReader.getTotalValueCount() == 0) {
+    long totalValueCount = pageReader.getTotalValueCount();
+    if (totalValueCount == 0) {
       throw new IOException("totalValueCount == 0 in col " + descriptor);
     }
+    long totalUncompressedSize = pageReader.getTotalUncompressedSize();
+    this.estimatedBytesPerValue =
+      totalUncompressedSize > 0 ? totalUncompressedSize / totalValueCount : -1;
     assert "LEGACY".equals(datetimeRebaseMode) || "EXCEPTION".equals(datetimeRebaseMode) ||
       "CORRECTED".equals(datetimeRebaseMode);
     this.datetimeRebaseMode = datetimeRebaseMode;
@@ -347,6 +361,14 @@ public class VectorizedColumnReader {
               dictionary);
           }
           column.setDictionary(null);
+          if (estimatedBytesPerValue > 0 && typeName == PrimitiveType.PrimitiveTypeName.BINARY) {
+            // This page (and, once a column chunk falls back to PLAIN, typically every later page
+            // in it too) isn't dictionary-encoded, so its values land directly in column's byte
+            // vector. Reserve this whole batch's likely need now, using the chunk-wide average,
+            // rather than letting it grow page by page as readBatch below crosses page boundaries.
+            long estimate = estimatedBytesPerValue * readState.rowsToReadInBatch;
+            column.arrayData().reserveAdditional((int) Math.min(Integer.MAX_VALUE, estimate));
+          }
           VectorizedValuesReader valuesReader = (VectorizedValuesReader) dataColumn;
           if (readState.maxRepetitionLevel == 0) {
             defColumn.readBatch(readState, column, definitionLevels, valuesReader, updater);

@@ -538,6 +538,14 @@ public class VectorizedPlainValuesReader extends ValuesReader implements Vectori
 
   @Override
   public final void readBinary(int total, WritableColumnVector v, int rowId) {
+    // The remaining bytes in `in` at this point are exactly the length-prefixed values still to
+    // be read for the current page (repetition/definition levels were already consumed before
+    // this reader was initialized, and PLAIN-encoded nulls contribute no bytes here). Reserving
+    // that many bytes up front -- a safe upper bound, since it also counts the 4-byte length
+    // prefixes that don't get stored in the vector -- avoids the repeated incremental growth
+    // (and the array copies/zeroing that come with it) that putByteArray would otherwise trigger
+    // one value at a time, which is especially costly for large binary/string values.
+    v.arrayData().reserveAdditional(in.available());
     for (int i = 0; i < total; i++) {
       int len = readLength();
       ByteBuffer buffer = getBuffer(len);
