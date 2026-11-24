@@ -184,11 +184,19 @@ jobs:
     - name: Build Thrift (required by parquet-format-structures)
       working-directory: parquet-java-src
       run: ./dev/ci-before_install.sh
-    - name: Build and install parquet-java snapshot locally
+    - name: Build parquet-java snapshot in an isolated local repo
       working-directory: parquet-java-src
       run: |
-        ./mvnw -q -B -pl parquet-common,parquet-format-structures,parquet-encoding,parquet-column,parquet-hadoop -am \
+        ./mvnw -q -B -Dmaven.repo.local="${{ github.workspace }}/.m2-parquet-build" \
+          -pl parquet-common,parquet-format-structures,parquet-encoding,parquet-column,parquet-hadoop -am \
           install -DskipTests -Dspotless.check.skip=true -Djapicmp.skip=true
+    - name: Merge the built parquet-java artifacts into the shared local repo
+      # Built in an isolated -Dmaven.repo.local above so any issue resolving parquet-java's
+      # own (unrelated) dependencies can't corrupt the ~/.m2/repository that Spark's build
+      # also reads from -- only the org.apache.parquet artifacts we just built are copied over.
+      run: |
+        mkdir -p ~/.m2/repository/org/apache/parquet
+        cp -r "${{ github.workspace }}/.m2-parquet-build/org/apache/parquet/." ~/.m2/repository/org/apache/parquet/
     - name: Cache TPC-DS generated data
       if: inputs.generate-tpcds
       id: cache-tpcds-sf-1
