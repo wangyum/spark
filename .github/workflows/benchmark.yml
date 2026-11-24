@@ -175,6 +175,20 @@ jobs:
       with:
         java-version: ${{ inputs.jdk }}
         coursier: cache
+    - name: Checkout parquet-java (apache/parquet-java#3990)
+      uses: actions/checkout@v7
+      with:
+        repository: wangyum/parquet-java
+        ref: expose-pagereader-uncompressed-size
+        path: parquet-java-src
+    - name: Build Thrift (required by parquet-format-structures)
+      working-directory: parquet-java-src
+      run: ./dev/ci-before_install.sh
+    - name: Build and install parquet-java snapshot locally
+      working-directory: parquet-java-src
+      run: |
+        ./mvnw -q -B -pl parquet-common,parquet-format-structures,parquet-encoding,parquet-column,parquet-hadoop -am \
+          install -DskipTests -Dspotless.check.skip=true -Djapicmp.skip=true
     - name: Cache TPC-DS generated data
       if: inputs.generate-tpcds
       id: cache-tpcds-sf-1
