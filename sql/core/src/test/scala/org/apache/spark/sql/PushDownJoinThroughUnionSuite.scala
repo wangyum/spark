@@ -363,12 +363,13 @@ class PushDownJoinThroughUnionSuite
    * joins is left to their own assertion. Should a planner change stop picking a build-left
    * broadcast hash join here, retune the table sizes and the threshold.
    */
+  protected def joins(df: DataFrame) = collectWithSubqueries(df.queryExecution.executedPlan) {
+    case j: BroadcastHashJoinExec => j
+  }
+
   protected def assertBuildsFromTheLeft(df: DataFrame): Unit = {
-    val joins = collectWithSubqueries(df.queryExecution.executedPlan) {
-      case j: BroadcastHashJoinExec => j
-    }
-    assert(joins.nonEmpty && joins.forall(_.buildSide == BuildLeft),
-      s"expected every broadcast hash join to build from the left, found ${joins.map(_.buildSide)}")
+    assert(joins(df).nonEmpty && joins(df).forall(_.buildSide == BuildLeft),
+      s"expected every broadcast hash join to build from the left, found ${joins(df).map(_.buildSide)}")
   }
 
   protected def rightScansOf(df: DataFrame): Int = {

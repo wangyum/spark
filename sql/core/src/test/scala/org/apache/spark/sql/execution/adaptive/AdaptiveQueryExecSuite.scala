@@ -216,21 +216,23 @@ class AdaptiveQueryExecSuite
     }
   }
 
+  protected def numLocalReads(plan: SparkPlan) = collect(plan) {
+    case read: AQEShuffleReadExec if read.isLocalRead => read
+  }
+
+  protected def numShuffles(plan: SparkPlan) = collect(plan) {
+    case s: ShuffleQueryStageExec => s
+  }.length
+
   protected def checkNumLocalShuffleReads(
       plan: SparkPlan, numShufflesWithoutLocalRead: Int = 0): Unit = {
-    val numShuffles = collect(plan) {
-      case s: ShuffleQueryStageExec => s
-    }.length
 
-    val numLocalReads = collect(plan) {
-      case read: AQEShuffleReadExec if read.isLocalRead => read
-    }
-    numLocalReads.foreach { r =>
+    numLocalReads(plan).foreach { r =>
       val rdd = r.execute()
       val parts = rdd.partitions
       assert(parts.forall(rdd.preferredLocations(_).nonEmpty))
     }
-    assert(numShuffles === (numLocalReads.length + numShufflesWithoutLocalRead))
+    assert(numShuffles(plan) === (numLocalReads(plan).length + numShufflesWithoutLocalRead))
   }
 
   protected def checkInitialPartitionNum(df: Dataset[_], numPartition: Int): Unit = {

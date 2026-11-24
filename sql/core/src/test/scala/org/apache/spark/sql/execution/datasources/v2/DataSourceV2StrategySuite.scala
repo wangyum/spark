@@ -2119,16 +2119,17 @@ class DataSourceV2StrategySuite extends SharedSparkSession {
     assert(v2ExprActual == v2Expr, "V2 expressions must match")
   }
 
+  protected def catalystExprExpected(catalystExpr: Expression) = catalystExpr.transform {
+    case attr: Attribute => UnresolvedAttribute(attr.name)
+  }
+
   protected def checkCatalystConversion(
       v2Expr: V2Expression,
       catalystExpr: Expression): Unit = {
     val catalystExprActual = V2ExpressionUtils.toCatalyst(v2Expr).getOrElse {
       fail(s"can't convert to Catalyst expression: $v2Expr")
     }
-    val catalystExprExpected = catalystExpr.transform {
-      case attr: Attribute => UnresolvedAttribute(attr.name)
-    }
-    assert(catalystExprActual == catalystExprExpected, "V1 expressions must match")
+    assert(catalystExprActual == catalystExprExpected(catalystExpr), "V1 expressions must match")
   }
 
   private def checkRoundTripConversion(

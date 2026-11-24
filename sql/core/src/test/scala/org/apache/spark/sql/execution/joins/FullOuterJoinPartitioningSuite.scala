@@ -62,10 +62,11 @@ class FullOuterJoinPartitioningSuite
     SQLConf.COALESCE_PARTITIONS_MAX_REDUCER_PARTITIONS_PER_TASK.key -> "3",
     SQLConf.SHUFFLE_PARTITIONS.key -> "10")
 
+  protected def reads(plan: SparkPlan) = collect(plan) { case r: AQEShuffleReadExec => r }
+
   protected def assertCoalescedToSeveralPartitions(plan: SparkPlan): Unit = {
-    val reads = collect(plan) { case r: AQEShuffleReadExec => r }
-    assert(reads.nonEmpty, plan)
-    assert(reads.forall(r => (2 to 4).contains(r.outputPartitioning.numPartitions)), plan)
+    assert(reads(plan).nonEmpty, plan)
+    assert(reads(plan).forall(r => (2 to 4).contains(r.outputPartitioning.numPartitions)), plan)
   }
 
   override def beforeAll(): Unit = {

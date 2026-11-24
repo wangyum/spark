@@ -26,13 +26,14 @@ class TableOptionsConstantFoldingSuite extends SharedSparkSession {
   val prefix = "create table t (col int) using json options "
 
   /** Helper method to create a table with a OPTIONS list and then check the resulting value. */
+  protected def actual = spark.table("t")
+    .queryExecution.sparkPlan.asInstanceOf[FileSourceScanExec].relation.options
+
   def checkOption(createOption: String, expectedValue: String): Unit = {
     withTable("t") {
       sql(s"$prefix ('k' = $createOption)")
       sql("insert into t values (42)")
       checkAnswer(spark.table("t"), Seq(Row(42)))
-      val actual = spark.table("t")
-        .queryExecution.sparkPlan.asInstanceOf[FileSourceScanExec].relation.options
       assert(actual.get("k").get == expectedValue)
     }
   }

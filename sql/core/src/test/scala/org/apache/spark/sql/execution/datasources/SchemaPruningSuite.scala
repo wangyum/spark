@@ -1201,15 +1201,16 @@ abstract class SchemaPruningSuite
     df.collect()
   }
 
+  protected def fileSourceScanSchemata(df: DataFrame) =
+    collect(df.queryExecution.executedPlan) {
+      case scan: FileSourceScanExec => scan.requiredSchema
+    }
+
   protected def checkScanSchemata(df: DataFrame, expectedSchemaCatalogStrings: String*): Unit = {
-    val fileSourceScanSchemata =
-      collect(df.queryExecution.executedPlan) {
-        case scan: FileSourceScanExec => scan.requiredSchema
-      }
-    assert(fileSourceScanSchemata.size === expectedSchemaCatalogStrings.size,
-      s"Found ${fileSourceScanSchemata.size} file sources in dataframe, " +
+    assert(fileSourceScanSchemata(df).size === expectedSchemaCatalogStrings.size,
+      s"Found ${fileSourceScanSchemata(df).size} file sources in dataframe, " +
         s"but expected $expectedSchemaCatalogStrings")
-    fileSourceScanSchemata.zip(expectedSchemaCatalogStrings).foreach {
+    fileSourceScanSchemata(df).zip(expectedSchemaCatalogStrings).foreach {
       case (scanSchema, expectedScanSchemaCatalogString) =>
         val expectedScanSchema = CatalystSqlParser.parseDataType(expectedScanSchemaCatalogString)
         implicit val equality = schemaEquality

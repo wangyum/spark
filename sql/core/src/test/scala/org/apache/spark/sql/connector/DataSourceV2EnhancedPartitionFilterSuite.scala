@@ -730,15 +730,17 @@ class DataSourceV2EnhancedPartitionFilterSuite
     }
   }
 
-  protected def assertTranslatableBeforeUntranslatableInPostScan(df: DataFrame): Unit = {
-    val postScanFilterExec = df.queryExecution.executedPlan.collect {
-      case f @ FilterExec(_, _) if f.exists(_.isInstanceOf[BatchScanExec]) => f
-    }.headOption.getOrElse(fail("Expected a post-scan FilterExec above BatchScanExec"))
+  protected def isUntranslatable(pred: Expression): Boolean =
+    pred.exists(_.isInstanceOf[ScalaUDF]) || pred.exists(_.isInstanceOf[In])
 
-    val predicates = splitConjunctivePredicates(postScanFilterExec.condition)
+  protected def postScanFilterExec(df: DataFrame) = df.queryExecution.executedPlan.collect {
+    case f @ FilterExec(_, _) if f.exists(_.isInstanceOf[BatchScanExec]) => f
+  }.headOption.getOrElse(fail("Expected a post-scan FilterExec above BatchScanExec"))
+
+  protected def assertTranslatableBeforeUntranslatableInPostScan(df: DataFrame): Unit = {
+
+    val predicates = splitConjunctivePredicates(postScanFilterExec(df).condition)
     // Untranslatable: UDFs and predicates that may be rejected by the scan (e.g. IN)
-    def isUntranslatable(pred: Expression): Boolean =
-      pred.exists(_.isInstanceOf[ScalaUDF]) || pred.exists(_.isInstanceOf[In])
     val untranslatableIndices = predicates.indices.filter(i => isUntranslatable(predicates(i)))
     val translatableIndices = predicates.indices.filter(i => !isUntranslatable(predicates(i)))
 

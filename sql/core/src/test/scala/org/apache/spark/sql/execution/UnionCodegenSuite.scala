@@ -87,12 +87,13 @@ class UnionCodegenSuite extends SharedSparkSession with AdaptiveSparkPlanHelper 
    * through AQE wrappers and query stages; `SparkPlan.collect` stops at them, since both are
    * `LeafExecNode`s.
    */
+  protected def participating(plan: SparkPlan): Seq[UnionExec] = plan match {
+    case _: InputAdapter => Nil
+    case u: UnionExec => u +: u.children.flatMap(participating)
+    case other => other.children.flatMap(participating)
+  }
+
   protected def codegenUnions(df: DataFrame): Seq[UnionExec] = {
-    def participating(plan: SparkPlan): Seq[UnionExec] = plan match {
-      case _: InputAdapter => Nil
-      case u: UnionExec => u +: u.children.flatMap(participating)
-      case other => other.children.flatMap(participating)
-    }
     collect(df.queryExecution.executedPlan) { case w: WholeStageCodegenExec => w }
       .flatMap(w => participating(w.child))
   }

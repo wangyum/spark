@@ -57,6 +57,11 @@ class LogicalPlanTagInSparkPlanSuite extends TPCDSQuerySuite {
     case _ => false
   }
 
+  protected def actualPlan(plan: SparkPlan) = plan match {
+    case ColumnarToRowExec(i: InputAdapter) => i.child
+    case _ => plan
+  }
+
   protected def checkLogicalPlanTag(plan: SparkPlan): Unit = {
     plan match {
       case _: HashJoin | _: BroadcastNestedLoopJoinExec | _: CartesianProductExec
@@ -96,10 +101,6 @@ class LogicalPlanTagInSparkPlanSuite extends TPCDSQuerySuite {
       case _ if isScanPlanTree(plan) =>
         // `ColumnarToRowExec` and `InputAdapter` are added outside of the planner, which doesn't
         // have the logical plan tag.
-        val actualPlan = plan match {
-          case ColumnarToRowExec(i: InputAdapter) => i.child
-          case _ => plan
-        }
 
         // The strategies for planning scan can remove or add FilterExec/ProjectExec nodes,
         // so it's not simple to check. Instead, we only check that the origin LogicalPlan
@@ -108,7 +109,7 @@ class LogicalPlanTagInSparkPlanSuite extends TPCDSQuerySuite {
         //   logical = Project(Filter(Scan A))
         //   physical = ProjectExec(ScanExec A)
         // we only check that leaf modes match between logical and physical plan.
-        val logicalPlan = getLogicalPlan(actualPlan) match {
+        val logicalPlan = getLogicalPlan(actualPlan(plan)) match {
           case w: WithCTE => w.plan
           case o => o
         }

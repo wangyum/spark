@@ -366,11 +366,12 @@ class DataSourceV2TableSampleSuite extends DatasourceV2SQLBase
       s"inferred filter $inferred should remain scan metadata:\n${plan.treeString}")
   }
 
+  protected def execFilters(df: DataFrame) = df.queryExecution.executedPlan.collect {
+    case filter: FilterExec => filter.condition
+  }
+
   protected def assertInferredNotInFilterExec(df: DataFrame, inferred: String): Unit = {
-    val execFilters = df.queryExecution.executedPlan.collect {
-      case filter: FilterExec => filter.condition
-    }
-    assert(!execFilters.exists(containsFilter(_, inferred)),
+    assert(!execFilters(df).exists(containsFilter(_, inferred)),
       s"inferred filter $inferred should not reach FilterExec:\n" +
         df.queryExecution.executedPlan)
   }

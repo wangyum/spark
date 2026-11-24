@@ -59,13 +59,14 @@ class OrcFilterSuite extends OrcTest with SharedSparkSession {
       .sparkConf
       .set(SQLConf.USE_V1_SOURCE_LIST, "")
 
+  protected def output(predicate: Predicate) = predicate.collect { case a: Attribute => a }.distinct
+
   protected def checkFilterPredicate(
       df: DataFrame,
       predicate: Predicate,
       checker: (SearchArgument) => Unit): Unit = {
-    val output = predicate.collect { case a: Attribute => a }.distinct
     val query = df
-      .select(output.map(e => Column(e)): _*)
+      .select(output(predicate).map(e => Column(e)): _*)
       .where(Column(predicate))
 
     query.queryExecution.optimizedPlan match {

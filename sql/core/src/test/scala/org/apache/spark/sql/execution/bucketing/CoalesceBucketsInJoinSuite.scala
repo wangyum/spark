@@ -100,6 +100,19 @@ class CoalesceBucketsInJoinSuite extends QueryTest with SharedSparkSession
     }
   }
 
+  protected def coalesced(subPlan: SparkPlan) = subPlan.collect {
+    case f: FileSourceScanExec if f.optionalNumCoalescedBuckets.nonEmpty =>
+      f.optionalNumCoalescedBuckets.get
+  }
+
+  protected def verify(expected: Option[Int], subPlan: SparkPlan): Unit = {
+    if (expected.isDefined) {
+      assert(coalesced(subPlan).size == 1 && coalesced(subPlan).head == expected.get)
+    } else {
+      assert(coalesced(subPlan).isEmpty)
+    }
+  }
+
   protected def run(setting: JoinSetting): Unit = {
     val swappedSetting = setting.copy(
       leftKeys = setting.rightKeys,
@@ -126,17 +139,6 @@ class CoalesceBucketsInJoinSuite extends QueryTest with SharedSparkSession
 
       val plan = CoalesceBucketsInJoin(join)
 
-      def verify(expected: Option[Int], subPlan: SparkPlan): Unit = {
-        val coalesced = subPlan.collect {
-          case f: FileSourceScanExec if f.optionalNumCoalescedBuckets.nonEmpty =>
-            f.optionalNumCoalescedBuckets.get
-        }
-        if (expected.isDefined) {
-          assert(coalesced.size == 1 && coalesced.head == expected.get)
-        } else {
-          assert(coalesced.isEmpty)
-        }
-      }
 
       verify(s.leftRelation.expectedCoalescedNumBuckets, plan.asInstanceOf[BinaryExecNode].left)
       verify(s.rightRelation.expectedCoalescedNumBuckets, plan.asInstanceOf[BinaryExecNode].right)

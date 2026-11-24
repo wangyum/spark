@@ -548,20 +548,21 @@ class SparkSessionExtensionSuite extends PlanTest with AdaptiveSparkPlanHelper {
     }
   }
 
-  protected def testInjectColumnar(enableAQE: Boolean): Unit = {
-    def collectPlanSteps(plan: SparkPlan): Seq[Int] = plan match {
-      case a: AdaptiveSparkPlanExec =>
-        assert(a.toString.startsWith("AdaptiveSparkPlan isFinalPlan=true"))
-        collectPlanSteps(a.executedPlan)
-      case _ => plan.collect {
-        case _: ReplacedRowToColumnarExec => 1
-        case _: ColumnarProjectExec => 10
-        case _: ColumnarToRowExec => 100
-        case s: QueryStageExec => collectPlanSteps(s.plan).sum
-        case _: MyShuffleExchangeExec => 1000
-        case _: MyBroadcastExchangeExec => 10000
-      }
+  protected def collectPlanSteps(plan: SparkPlan): Seq[Int] = plan match {
+    case a: AdaptiveSparkPlanExec =>
+      assert(a.toString.startsWith("AdaptiveSparkPlan isFinalPlan=true"))
+      collectPlanSteps(a.executedPlan)
+    case _ => plan.collect {
+      case _: ReplacedRowToColumnarExec => 1
+      case _: ColumnarProjectExec => 10
+      case _: ColumnarToRowExec => 100
+      case s: QueryStageExec => collectPlanSteps(s.plan).sum
+      case _: MyShuffleExchangeExec => 1000
+      case _: MyBroadcastExchangeExec => 10000
     }
+  }
+
+  protected def testInjectColumnar(enableAQE: Boolean): Unit = {
 
     val extensions = create { extensions =>
       extensions.injectColumnar(session =>

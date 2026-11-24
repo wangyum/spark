@@ -46,14 +46,15 @@ class DatasetOptimizationSuite extends SharedSparkSession {
   // serializer. The varargs parameter `structFields` is the struct fields for object
   // serializers. The first `structFields` is aligned with first serializer and ditto
   // for other `structFields`.
+  protected def collectNamedStruct: PartialFunction[Expression, Seq[CreateNamedStruct]] = {
+    case c: CreateNamedStruct => Seq(c)
+  }
+
   protected def testSerializer(df: DataFrame, structFields: Seq[Seq[String]]*): Unit = {
     val serializerOpt = df.queryExecution.optimizedPlan.collectFirst {
       case s: SerializeFromObject => s
     }
 
-    def collectNamedStruct: PartialFunction[Expression, Seq[CreateNamedStruct]] = {
-      case c: CreateNamedStruct => Seq(c)
-    }
 
     assert(serializerOpt.isDefined)
     serializerOpt.get.serializer.zip(structFields).foreach { case (ser, fields) =>

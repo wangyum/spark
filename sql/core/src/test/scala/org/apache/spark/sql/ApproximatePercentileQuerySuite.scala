@@ -59,14 +59,15 @@ class ApproximatePercentileQuerySuite extends SharedSparkSession {
       .filter(_.nonEmpty)
   }
 
+  protected def counts(query: DataFrame) = query.queryExecution.sparkPlan.collect {
+    case aggregate: ObjectHashAggregateExec =>
+      aggregate.aggregateExpressions.count(
+        _.aggregateFunction.isInstanceOf[ApproximatePercentile])
+  }
+
   protected def assertPercentileDigestCount(query: DataFrame, expected: Int): Unit = {
-    val counts = query.queryExecution.sparkPlan.collect {
-      case aggregate: ObjectHashAggregateExec =>
-        aggregate.aggregateExpressions.count(
-          _.aggregateFunction.isInstanceOf[ApproximatePercentile])
-    }
-    assert(counts.nonEmpty)
-    assert(counts.forall(_ == expected), counts)
+    assert(counts(query).nonEmpty)
+    assert(counts(query).forall(_ == expected), counts(query))
   }
 
   private def checkMatchesUnfusedBaseline(sql: String, expectedDigests: Int): Unit = {

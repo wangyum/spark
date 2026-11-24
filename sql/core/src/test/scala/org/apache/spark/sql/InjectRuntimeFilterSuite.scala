@@ -258,28 +258,29 @@ class InjectRuntimeFilterSuite extends SharedSparkSession
     }
   }
 
-  def getNumBloomFilters(plan: LogicalPlan): Integer = {
-    val numBloomFilterAggs = plan.collect {
-      case Filter(condition, _) => condition.collect {
-        case subquery: org.apache.spark.sql.catalyst.expressions.ScalarSubquery
-        => subquery.plan.collect {
-          case Aggregate(_, aggregateExpressions, _, _) =>
-            aggregateExpressions.map {
-              case Alias(AggregateExpression(bfAgg : BloomFilterAggregate, _, _, _, _),
-              _) =>
-                assert(bfAgg.estimatedNumItemsExpression.isInstanceOf[Literal])
-                assert(bfAgg.numBitsExpression.isInstanceOf[Literal])
-                1
-            }.sum
-        }.sum
+  protected def numBloomFilterAggs(plan: LogicalPlan) = plan.collect {
+    case Filter(condition, _) => condition.collect {
+      case subquery: org.apache.spark.sql.catalyst.expressions.ScalarSubquery
+      => subquery.plan.collect {
+        case Aggregate(_, aggregateExpressions, _, _) =>
+          aggregateExpressions.map {
+            case Alias(AggregateExpression(bfAgg : BloomFilterAggregate, _, _, _, _),
+            _) =>
+              assert(bfAgg.estimatedNumItemsExpression.isInstanceOf[Literal])
+              assert(bfAgg.numBitsExpression.isInstanceOf[Literal])
+              1
+          }.sum
       }.sum
     }.sum
+  }.sum
+
+  def getNumBloomFilters(plan: LogicalPlan): Integer = {
     val numMightContains = plan.collect {
       case Filter(condition, _) => condition.collect {
         case BloomFilterMightContain(_, _) => 1
       }.sum
     }.sum
-    assert(numBloomFilterAggs == numMightContains)
+    assert(numBloomFilterAggs(plan) == numMightContains)
     numMightContains
   }
 

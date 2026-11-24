@@ -256,14 +256,15 @@ abstract class DynamicPartitionPruningSuiteBase
   /**
    * Check if the plan has the given number of distinct broadcast exchange subqueries.
    */
+  protected def buf(df: DataFrame) = collectDynamicPruningExpressions(df.queryExecution.executedPlan).collect {
+    case InSubqueryExec(_, b: SubqueryBroadcastExec, _, _, _, _) =>
+      b.indices.map(idx => b.buildKeys(idx))
+  }
+
   def checkDistinctSubqueries(df: DataFrame, n: Int): Unit = {
     df.collect()
 
-    val buf = collectDynamicPruningExpressions(df.queryExecution.executedPlan).collect {
-      case InSubqueryExec(_, b: SubqueryBroadcastExec, _, _, _, _) =>
-        b.indices.map(idx => b.buildKeys(idx))
-    }
-    assert(buf.distinct.size == n)
+    assert(buf(df).distinct.size == n)
   }
 
   test("reuse ancestor broadcast value rows for composite-key date partition pruning") {

@@ -558,12 +558,13 @@ class StreamRealTimeModeWithManualClockSuite extends StreamRealTimeModeManualClo
   }
 
   /** Assert every shuffle exchange in the query's last executed plan is pipelined. */
+  protected def exchanges(q: StreamExecution) = q.lastExecution.executedPlan.collect { case s: ShuffleExchangeExec => s }
+
   protected def assertAllExchangesPipelined(q: StreamExecution): Unit = {
-    val exchanges = q.lastExecution.executedPlan.collect { case s: ShuffleExchangeExec => s }
-    assert(exchanges.nonEmpty, "expected at least one shuffle exchange in the plan")
-    assert(exchanges.forall(_.pipelined),
-      "expected all Real-Time Mode shuffle exchanges to be pipelined, got: " +
-        exchanges.map(e => s"pipelined=${e.pipelined}").mkString(", "))
+    assert(exchanges(q).nonEmpty, "expected at least one shuffle exchange in the plan")
+    assert(exchanges(q).forall(_.pipelined),
+      "expected all Real-Time Mode shuffle exchanges(q) to be pipelined, got: " +
+        exchanges(q).map(e => s"pipelined=${e.pipelined}").mkString(", "))
   }
 
   test("pipelined shuffle: stateful dedup runs in Real-Time Mode and co-schedules its stages") {

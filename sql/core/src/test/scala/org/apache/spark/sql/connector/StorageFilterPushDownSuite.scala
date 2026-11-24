@@ -79,10 +79,11 @@ class StorageFilterPushDownSuite
 
   // The blooms the Filters above the scan evaluate on every row, and those they skip on the rows
   // the reader marks as checked.
+  protected def conditions(plan: SparkPlan) = collect(plan) { case f: FilterExec => f.condition }
+
   protected def bloomsAbove(plan: SparkPlan): (Int, Int) = {
-    val conditions = collect(plan) { case f: FilterExec => f.condition }
-    val all = conditions.map(_.collect { case _: BloomFilterMightContain => 1 }.sum).sum
-    val skipped = conditions.map(_.collect {
+    val all = conditions(plan).map(_.collect { case _: BloomFilterMightContain => 1 }.sum).sum
+    val skipped = conditions(plan).map(_.collect {
       case If(a: Attribute, Literal.TrueLiteral, _: BloomFilterMightContain)
         if a.name == checkedName => 1
     }.sum).sum
@@ -97,12 +98,13 @@ class StorageFilterPushDownSuite
   }
 
   // The rows the Filter on the scan returned, counted before the join.
+  protected def filters(plan: SparkPlan) = collect(plan) {
+    case f: FilterExec if f.exists(_.isInstanceOf[BatchScanExec]) => f
+  }
+
   protected def rowsOutOfFilter(plan: SparkPlan): Long = {
-    val filters = collect(plan) {
-      case f: FilterExec if f.exists(_.isInstanceOf[BatchScanExec]) => f
-    }
-    assert(filters.size == 1, s"expected one Filter on the scan:\n$plan")
-    filters.head.metrics("numOutputRows").value
+    assert(filters(plan).size == 1, s"expected one Filter on the scan:\n$plan")
+    filters(plan).head.metrics("numOutputRows").value
   }
 
   // Runs `df`, whose reader was asked for the checked column after `k` and `v`, and checks that the

@@ -840,14 +840,15 @@ class SQLMetricsSuite extends SharedSparkSession with SQLMetricsTestUtils
     testMetricsDynamicPartition("parquet", "parquet", "t1")
   }
 
+  protected def stages(plan: SparkPlan) = plan.collect {
+    case w: WholeStageCodegenExec => w
+  }
+
   protected def collectNodeWithinWholeStage[T <: SparkPlan : ClassTag](plan: SparkPlan): Seq[T] = {
-    val stages = plan.collect {
-      case w: WholeStageCodegenExec => w
-    }
-    assert(stages.length == 1, "The query plan should have one and only one whole-stage.")
+    assert(stages(plan).length == 1, "The query plan should have one and only one whole-stage.")
 
     val cls = classTag[T].runtimeClass
-    stages.head.collect {
+    stages(plan).head.collect {
       case n if n.getClass == cls => n.asInstanceOf[T]
     }
   }

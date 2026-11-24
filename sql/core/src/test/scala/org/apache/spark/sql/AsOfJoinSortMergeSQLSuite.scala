@@ -112,15 +112,16 @@ class AsOfJoinSortMergeSQLSuite extends QueryTest
    * codegen on, all but the nearest ones, and with it off, none. Spark builds no codegen stage
    * when whole-stage codegen is off or the codegen factory mode is NO_CODEGEN.
    */
+  protected def stageJoins(plan: SparkPlan): Seq[SortMergeAsOfJoinExec] = plan match {
+    case _: InputAdapter => Nil
+    case j: SortMergeAsOfJoinExec => j +: j.children.flatMap(stageJoins)
+    case other => other.children.flatMap(stageJoins)
+  }
+
   protected def assertAsOfJoinCodegen(df: DataFrame, codegen: Boolean): Unit = {
     val sqlConf = spark.sessionState.conf
     val stagesOn = sqlConf.wholeStageEnabled &&
       sqlConf.codegenFactoryMode != CodegenObjectFactoryMode.NO_CODEGEN
-    def stageJoins(plan: SparkPlan): Seq[SortMergeAsOfJoinExec] = plan match {
-      case _: InputAdapter => Nil
-      case j: SortMergeAsOfJoinExec => j +: j.children.flatMap(stageJoins)
-      case other => other.children.flatMap(stageJoins)
-    }
     val plan = df.queryExecution.executedPlan
     val generated = collect(plan) { case stage: WholeStageCodegenExec => stage }
       .flatMap(stage => stageJoins(stage.child))

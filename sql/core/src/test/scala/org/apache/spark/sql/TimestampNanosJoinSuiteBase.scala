@@ -122,24 +122,26 @@ abstract class TimestampNanosJoinSuiteBase extends SharedSparkSession with Adapt
    * micro-vs-nanos join actually widens the key via `findWiderDateTimeType` rather than, say,
    * comparing at the narrower precision and dropping the distinguishing digit.
    */
+  protected def equalTos(df: DataFrame) = df.queryExecution.analyzed.collect { case j: Join => j.condition }.flatten
+    .flatMap(_.collect { case e: EqualTo => e })
+
   protected def assertJoinKeyType(df: DataFrame, expected: DataType): Unit = {
-    val equalTos = df.queryExecution.analyzed.collect { case j: Join => j.condition }.flatten
-      .flatMap(_.collect { case e: EqualTo => e })
-    assert(equalTos.nonEmpty,
+    assert(equalTos(df).nonEmpty,
       s"No EqualTo join condition found in analyzed plan:\n${df.queryExecution.analyzed}")
-    equalTos.foreach { e =>
+    equalTos(df).foreach { e =>
       assert(e.left.dataType == expected && e.right.dataType == expected,
         s"Join key not coerced to $expected: ${e.left.dataType} === ${e.right.dataType}")
     }
   }
 
   /** Whether a sort-merge ASOF join of `plan` runs in a codegen stage, not only in one below it. */
+  protected def inStage(node: SparkPlan): Boolean = node match {
+    case _: SortMergeAsOfJoinExec => true
+    case _: InputAdapter => false
+    case other => other.children.exists(inStage)
+  }
+
   protected def isAsOfJoinGenerated(plan: SparkPlan): Boolean = {
-    def inStage(node: SparkPlan): Boolean = node match {
-      case _: SortMergeAsOfJoinExec => true
-      case _: InputAdapter => false
-      case other => other.children.exists(inStage)
-    }
     collect(plan) { case stage: WholeStageCodegenExec if inStage(stage.child) => stage }.nonEmpty
   }
 

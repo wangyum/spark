@@ -82,11 +82,12 @@ class PipelinedLimitHangSuite extends SparkFunSuite
   }
 
   /** Assert no exchange in `df`'s executed plan is pipelined (the LIMIT fallback). */
+  protected def pipelined(df: org.apache.spark.sql.DataFrame) = collect(df.queryExecution.executedPlan) {
+    case s: ShuffleExchangeExec if s.pipelined => s
+  }
+
   protected def requireNotPipelined(df: org.apache.spark.sql.DataFrame): Unit = {
-    val pipelined = collect(df.queryExecution.executedPlan) {
-      case s: ShuffleExchangeExec if s.pipelined => s
-    }
-    require(pipelined.isEmpty,
+    require(pipelined(df).isEmpty,
       s"a plan with a LIMIT operator above a shuffle must stay regular; plan:" +
         s"\n${df.queryExecution.executedPlan}")
   }

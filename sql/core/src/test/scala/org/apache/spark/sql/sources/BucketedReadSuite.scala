@@ -103,10 +103,11 @@ abstract class BucketedReadSuite extends QueryTest with AdaptiveSparkPlanHelper 
     }
   }
 
+  protected def fileScan(plan: SparkPlan) = collect(plan) { case f: FileSourceScanExec => f }
+
   protected def getFileScan(plan: SparkPlan): FileSourceScanExec = {
-    val fileScan = collect(plan) { case f: FileSourceScanExec => f }
-    assert(fileScan.nonEmpty, plan)
-    fileScan.head
+    assert(fileScan(plan).nonEmpty, plan)
+    fileScan(plan).head
   }
 
   // To verify if the bucket pruning works, this function checks two conditions:

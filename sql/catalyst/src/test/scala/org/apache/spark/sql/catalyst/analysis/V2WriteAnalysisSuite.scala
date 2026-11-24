@@ -254,20 +254,21 @@ object TestRelationAcceptAnySchema {
 abstract class V2ANSIWriteAnalysisSuiteBase extends V2WriteAnalysisSuiteBase {
 
   // For Ansi store assignment policy, expression `AnsiCast` is used instead of `Cast`.
+  protected def expectedPlanWithAnsiCast(expectedPlan: LogicalPlan) = expectedPlan transformAllExpressions {
+    case c: Cast =>
+      val cast = Cast(c.child, c.dataType, c.timeZoneId, ansiEnabled = true)
+      cast.setTagValue(Cast.BY_TABLE_INSERTION, ())
+      cast
+    case other => other
+  }
+
   override def checkAnalysis(
       inputPlan: LogicalPlan,
       expectedPlan: LogicalPlan,
       caseSensitive: Boolean = true): Unit = {
-    val expectedPlanWithAnsiCast = expectedPlan transformAllExpressions {
-      case c: Cast =>
-        val cast = Cast(c.child, c.dataType, c.timeZoneId, ansiEnabled = true)
-        cast.setTagValue(Cast.BY_TABLE_INSERTION, ())
-        cast
-      case other => other
-    }
 
     withSQLConf(SQLConf.STORE_ASSIGNMENT_POLICY.key -> StoreAssignmentPolicy.ANSI.toString) {
-      super.checkAnalysis(inputPlan, expectedPlanWithAnsiCast, caseSensitive)
+      super.checkAnalysis(inputPlan, expectedPlanWithAnsiCast(expectedPlan), caseSensitive)
     }
   }
 

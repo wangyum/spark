@@ -639,6 +639,10 @@ class DataSourceV2EnhancedDeleteFilterSuite extends SharedSparkSession
    * the given references, and that only the partitions with the given `dep` values, the first
    * partition field, were replaced.
    */
+  protected def table(plan: SparkPlan) = collect(plan) { case s: BatchScanExec => s }.map(_.table).collectFirst {
+    case RowLevelOperationTable(t: InMemoryPartitionPredicateDeleteTable, _) => t
+  }.getOrElse(fail("Expected the row-level operation table"))
+
   protected def assertRowLevelScanPrunedByPartitionPredicate(
       plan: SparkPlan,
       expectedOrdinals: Array[Int],
@@ -651,10 +655,7 @@ class DataSourceV2EnhancedDeleteFilterSuite extends SharedSparkSession
       Seq(expectedOrdinals),
       expectedPartitionFieldNames)
 
-    val table = collect(plan) { case s: BatchScanExec => s }.map(_.table).collectFirst {
-      case RowLevelOperationTable(t: InMemoryPartitionPredicateDeleteTable, _) => t
-    }.getOrElse(fail("Expected the row-level operation table"))
-    val replacedDeps = table.replacedPartitions.map(_.head.toString)
+    val replacedDeps = table(plan).replacedPartitions.map(_.head.toString)
     assert(replacedDeps.sorted === expectedReplacedDeps.toSeq.sorted)
   }
 

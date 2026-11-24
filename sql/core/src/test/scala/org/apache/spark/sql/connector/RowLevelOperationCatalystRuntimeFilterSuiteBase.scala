@@ -190,21 +190,22 @@ abstract class RowLevelOperationCatalystRuntimeFilterSuiteBase
    * against `expectedFilter` rather than against one another, so the expectation stays explicit
    * and does not depend on how many copies the rewrite happens to produce.
    */
+  protected def batchScans(executedPlan: SparkPlan) = collect(executedPlan) { case s: BatchScanExec => s }
+
   protected def assertCatalystGroupFilter(
       executedPlan: SparkPlan,
       expectedFilterPaths: Seq[Seq[String]],
       expectedFilter: GroupFilter): Unit = {
-    val batchScans = collect(executedPlan) { case s: BatchScanExec => s }
-    assert(batchScans.nonEmpty, "expected a batch scan for the row-level operation")
-    val scan = catalystScan(batchScans.head)
-    assert(batchScans.forall(_.scan eq scan),
-      s"expected all ${batchScans.size} scan nodes to share one scan")
+    assert(batchScans(executedPlan).nonEmpty, "expected a batch scan for the row-level operation")
+    val scan = catalystScan(batchScans(executedPlan).head)
+    assert(batchScans(executedPlan).forall(_.scan eq scan),
+      s"expected all ${batchScans(executedPlan).size} scan nodes to share one scan")
 
     val filterPaths = scan.filterAttributes().map(_.fieldNames.toSeq).toSeq
     assert(filterPaths === expectedFilterPaths,
       s"expected the scan to declare $expectedFilterPaths as filter attributes, got $filterPaths")
 
-    batchScans.foreach { batchScan =>
+    batchScans(executedPlan).foreach { batchScan =>
       batchScan.runtimeFilters match {
         case Seq(DynamicPruningExpression(inSubquery: InSubqueryExec)) =>
           assertGroupFilter(inSubquery, expectedFilterPaths, expectedFilter)
@@ -215,8 +216,8 @@ abstract class RowLevelOperationCatalystRuntimeFilterSuiteBase
     // the scan must receive the Catalyst subquery Spark planned, not a translated connector
     // predicate, once per scan node
     val pushed = scan.pushedCatalystPredicates
-    assert(pushed.size === batchScans.size,
-      s"expected each of the ${batchScans.size} scan node(s) to push the filter once, got $pushed")
+    assert(pushed.size === batchScans(executedPlan).size,
+      s"expected each of the ${batchScans(executedPlan).size} scan node(s) to push the filter once, got $pushed")
     pushed.foreach {
       case inSubquery: InSubqueryExec =>
         assertGroupFilter(inSubquery, expectedFilterPaths, expectedFilter)
@@ -231,7 +232,7 @@ abstract class RowLevelOperationCatalystRuntimeFilterSuiteBase
       s"scan must read only the filtered groups, got ${scannedGroups.mkString(", ")}")
 
     // and what each scan node read
-    batchScans.foreach { batchScan =>
+    batchScans(executedPlan).foreach { batchScan =>
       val readGroups = batchScan.filteredPartitions.flatten
         .map(_.asInstanceOf[BufferedRows].keyString()).distinct
       assert(readGroups.sorted === expectedFilter.groups.sorted,
@@ -245,6 +246,11 @@ abstract class RowLevelOperationCatalystRuntimeFilterSuiteBase
    */
   protected case class GroupFilter(scanSchema: String, groups: Seq[String])
 
+  protected def subqueryPlan(filter: InSubqueryExec) = filter.plan match {
+    case reused: ReusedSubqueryExec => reused.child
+    case plan => plan
+  }
+
   protected def assertGroupFilter(
       filter: InSubqueryExec,
       expectedFilterPaths: Seq[Seq[String]],
@@ -255,11 +261,7 @@ abstract class RowLevelOperationCatalystRuntimeFilterSuiteBase
 
     // the second branch of a group-based UPDATE reuses the first branch's subquery, and
     // ReusedSubqueryExec is a leaf node, so unwrap it to reach the plan underneath
-    val subqueryPlan = filter.plan match {
-      case reused: ReusedSubqueryExec => reused.child
-      case plan => plan
-    }
-    val subqueryScan = find(subqueryPlan) { case _: BatchScanExec => true; case _ => false }
+    val subqueryScan = find(subqueryPlan(filter)) { case _: BatchScanExec => true; case _ => false }
       .getOrElse(fail(s"could not find the scan of group filter subquery ${filter.plan.name}"))
     assert(
       DataTypeUtils.sameType(subqueryScan.schema, StructType.fromDDL(expectedFilter.scanSchema)),
@@ -286,13 +288,14 @@ abstract class RowLevelOperationCatalystRuntimeFilterSuiteBase
   }
 
   /** Asserts no group filter was injected, e.g. because the scan does not read the group key. */
+  protected def batchScan(executedPlan: SparkPlan) = collect(executedPlan) { case s: BatchScanExec => s }.head
+
   protected def assertNoCatalystGroupFilter(executedPlan: SparkPlan): Unit = {
-    val batchScan = collect(executedPlan) { case s: BatchScanExec => s }.head
-    val scan = catalystScan(batchScan)
+    val scan = catalystScan(batchScan(executedPlan))
     assert(scan.filterAttributes().isEmpty,
       s"expected no filter attributes, got ${scan.filterAttributes().mkString(", ")}")
-    assert(batchScan.runtimeFilters.isEmpty,
-      s"expected no runtime filters, got ${batchScan.runtimeFilters}")
+    assert(batchScan(executedPlan).runtimeFilters.isEmpty,
+      s"expected no runtime filters, got ${batchScan(executedPlan).runtimeFilters}")
     assert(scan.pushedCatalystPredicates.isEmpty,
       s"expected no pushed predicates, got ${scan.pushedCatalystPredicates}")
   }

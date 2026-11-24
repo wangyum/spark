@@ -3265,13 +3265,14 @@ abstract class MergeIntoTableSuiteBase extends RowLevelOperationSuiteBase
     assertNoLeftBroadcastOrReplication(plan)
   }
 
+  protected def joins(plan: SparkPlan) = plan.collect {
+    case j: BroadcastHashJoinExec if j.buildSide == BuildLeft => j
+    case j: BroadcastNestedLoopJoinExec if j.buildSide == BuildLeft => j
+    case j: CartesianProductExec => j
+  }
+
   protected def assertNoLeftBroadcastOrReplication(plan: SparkPlan): Unit = {
-    val joins = plan.collect {
-      case j: BroadcastHashJoinExec if j.buildSide == BuildLeft => j
-      case j: BroadcastNestedLoopJoinExec if j.buildSide == BuildLeft => j
-      case j: CartesianProductExec => j
-    }
-    assert(joins.isEmpty, "left side must not be broadcasted or replicated")
+    assert(joins(plan).isEmpty, "left side must not be broadcasted or replicated")
   }
 
   private def assertCardinalityError(query: String): Unit = {

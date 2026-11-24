@@ -1060,6 +1060,21 @@ class FilterEstimationSuite extends StatsEstimationTestBase {
       attributeStats = AttributeMap(outList.map(a => a -> attributeMap(a))))
   }
 
+  protected def swappedFilter(filterNode: Filter) = filterNode transformExpressionsDown {
+    case EqualTo(attr: Attribute, l: Literal) =>
+      EqualTo(l, attr)
+
+    case LessThan(attr: Attribute, l: Literal) =>
+      GreaterThan(l, attr)
+    case LessThanOrEqual(attr: Attribute, l: Literal) =>
+      GreaterThanOrEqual(l, attr)
+
+    case GreaterThan(attr: Attribute, l: Literal) =>
+      LessThan(l, attr)
+    case GreaterThanOrEqual(attr: Attribute, l: Literal) =>
+      LessThanOrEqual(l, attr)
+  }
+
   protected def validateEstimatedStats(
       filterNode: Filter,
       expectedColStats: Seq[(Attribute, ColumnStat)],
@@ -1067,23 +1082,9 @@ class FilterEstimationSuite extends StatsEstimationTestBase {
 
     // If the filter has a binary operator (including those nested inside AND/OR/NOT), swap the
     // sides of the attribute and the literal, reverse the operator, and then check again.
-    val swappedFilter = filterNode transformExpressionsDown {
-      case EqualTo(attr: Attribute, l: Literal) =>
-        EqualTo(l, attr)
 
-      case LessThan(attr: Attribute, l: Literal) =>
-        GreaterThan(l, attr)
-      case LessThanOrEqual(attr: Attribute, l: Literal) =>
-        GreaterThanOrEqual(l, attr)
-
-      case GreaterThan(attr: Attribute, l: Literal) =>
-        LessThan(l, attr)
-      case GreaterThanOrEqual(attr: Attribute, l: Literal) =>
-        LessThanOrEqual(l, attr)
-    }
-
-    val testFilters = if (swappedFilter != filterNode) {
-      Seq(swappedFilter, filterNode)
+    val testFilters = if (swappedFilter(filterNode) != filterNode) {
+      Seq(swappedFilter(filterNode), filterNode)
     } else {
       Seq(filterNode)
     }
