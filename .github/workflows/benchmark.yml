@@ -187,8 +187,12 @@ jobs:
     - name: Build parquet-java snapshot in an isolated local repo
       working-directory: parquet-java-src
       run: |
+        # -pl lists every org.apache.parquet artifact Spark's pom.xml pins to ${parquet.version}
+        # (parquet-column, parquet-hadoop, parquet-avro); -am also-makes whatever those need
+        # transitively (parquet-common, parquet-encoding, parquet-format-structures,
+        # parquet-variant, parquet-jackson, parquet-generator, ...), however deep that goes.
         ./mvnw -q -B -Dmaven.repo.local="${{ github.workspace }}/.m2-parquet-build" \
-          -pl parquet-common,parquet-format-structures,parquet-encoding,parquet-column,parquet-hadoop -am \
+          -pl parquet-avro,parquet-column,parquet-hadoop -am \
           install -DskipTests -Dspotless.check.skip=true -Djapicmp.skip=true
     - name: Merge the built parquet-java artifacts into the shared local repo
       # Built in an isolated -Dmaven.repo.local above so any issue resolving parquet-java's
