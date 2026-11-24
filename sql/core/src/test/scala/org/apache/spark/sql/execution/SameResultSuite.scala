@@ -110,7 +110,7 @@ class SameResultSuite extends SharedSparkSession {
     plan.find(_.isInstanceOf[BatchScanExec]).get.asInstanceOf[BatchScanExec]
   }
 
-  protected def getFileSourceScanExec(df: DataFrame): FileSourceScanExec = {
+  protected def getFileSourceScanExec(df: DataFrame): FileSourceScanLike = {
     df.queryExecution.sparkPlan.find(_.isInstanceOf[FileSourceScanExec]).get
       .asInstanceOf[FileSourceScanExec]
   }

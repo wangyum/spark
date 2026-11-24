@@ -110,7 +110,7 @@ class PushDownShuffleExchangeThroughUnionSuite extends QueryTest with SharedSpar
 
   protected def countShuffles(
       plan: SparkPlan,
-      underUnion: Boolean)(matches: ShuffleExchangeExec => Boolean): Int = {
+      underUnion: Boolean)(matches: ShuffleExchangeLike => Boolean): Int = {
     val here = plan match {
       case s: ShuffleExchangeExec if !underUnion && matches(s) => 1
       case _ => 0

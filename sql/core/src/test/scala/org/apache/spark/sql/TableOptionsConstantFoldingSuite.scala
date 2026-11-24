@@ -17,7 +17,7 @@
 
 package org.apache.spark.sql
 
-import org.apache.spark.sql.execution.FileSourceScanExec
+import org.apache.spark.sql.execution.FileSourceScanLike
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
 
@@ -27,7 +27,7 @@ class TableOptionsConstantFoldingSuite extends SharedSparkSession {
 
   /** Helper method to create a table with a OPTIONS list and then check the resulting value. */
   protected def actual = spark.table("t")
-    .queryExecution.sparkPlan.asInstanceOf[FileSourceScanExec].relation.options
+    .queryExecution.sparkPlan.asInstanceOf[FileSourceScanLike].relation.options
 
   def checkOption(createOption: String, expectedValue: String): Unit = {
     withTable("t") {

@@ -26,7 +26,7 @@ import org.apache.spark.sql.catalyst.expressions
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.catalyst.types.DataTypeUtils
-import org.apache.spark.sql.execution.{FileSourceScanExec, SortExec, SparkPlan}
+import org.apache.spark.sql.execution.{FileSourceScanExec, FileSourceScanLike, SortExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
 import org.apache.spark.sql.execution.datasources.BucketingUtils
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
@@ -105,7 +105,7 @@ abstract class BucketedReadSuite extends QueryTest with AdaptiveSparkPlanHelper 
 
   protected def fileScan(plan: SparkPlan) = collect(plan) { case f: FileSourceScanExec => f }
 
-  protected def getFileScan(plan: SparkPlan): FileSourceScanExec = {
+  protected def getFileScan(plan: SparkPlan): FileSourceScanLike = {
     assert(fileScan(plan).nonEmpty, plan)
     fileScan(plan).head
   }
