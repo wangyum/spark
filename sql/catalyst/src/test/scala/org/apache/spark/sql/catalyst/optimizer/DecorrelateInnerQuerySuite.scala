@@ -73,7 +73,7 @@ class DecorrelateInnerQuerySuite extends PlanTest {
 
   // For tests involving window functions: extract and return the ROW_NUMBER function
   // from the 'input' plan.
-  private def getRowNumberFunc(input: LogicalPlan): Alias = {
+  protected def getRowNumberFunc(input: LogicalPlan): Alias = {
     val windowFunction = input.collect({ case w: Window => w }).head
     windowFunction.expressions.collect(
       { case w: Alias if w.child.isInstanceOf[WindowExpression] => w }).head

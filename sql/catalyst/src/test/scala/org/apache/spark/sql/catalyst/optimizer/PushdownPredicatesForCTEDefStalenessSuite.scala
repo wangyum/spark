@@ -360,7 +360,7 @@ class PushdownPredicatesForCTEDefStalenessSuite extends PlanTest {
    * (recognizable by the IsNotNull enrichment). Any leftover copy of the previous
    * push-down shows up as an additional filter and fails the test.
    */
-  private def assertSingleEnrichedTopFilter(plan: LogicalPlan, message: String): Unit = {
+  protected def assertSingleEnrichedTopFilter(plan: LogicalPlan, message: String): Unit = {
     val cteDef = theOnlyDef(PushdownPredicatesAndPruneColumnsForCTEDef.apply(plan))
     val filters = cteDef.child.collect { case f: Filter => f }
     assert(filters.length == 1, s"$message: ${cteDef.child}")
@@ -405,7 +405,7 @@ class PushdownPredicatesForCTEDefStalenessSuite extends PlanTest {
    * real rule because the real rule would also rewrite the pushed filter inside the
    * definition, defeating the exact-match removal those tests isolate.
    */
-  private def addIsNotNullToRef(
+  protected def addIsNotNullToRef(
       plan: LogicalPlan, cteId: Long, marker: Literal): LogicalPlan = {
     plan.transform {
       case f @ Filter(cond, ref: CTERelationRef) if ref.cteId == cteId =>

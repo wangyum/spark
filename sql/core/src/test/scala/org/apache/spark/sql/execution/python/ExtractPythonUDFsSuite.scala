@@ -34,11 +34,11 @@ class ExtractPythonUDFsSuite extends SharedSparkSession {
   val batchedNondeterministicPythonUDF = new MyDummyNondeterministicPythonUDF
   val scalarPandasUDF = new MyDummyScalarPandasUDF
 
-  private def collectBatchExec(plan: SparkPlan): Seq[BatchEvalPythonExec] = plan.collect {
+  protected def collectBatchExec(plan: SparkPlan): Seq[BatchEvalPythonExec] = plan.collect {
     case b: BatchEvalPythonExec => b
   }
 
-  private def collectArrowExec(plan: SparkPlan): Seq[ArrowEvalPythonExec] = plan.collect {
+  protected def collectArrowExec(plan: SparkPlan): Seq[ArrowEvalPythonExec] = plan.collect {
     case b: ArrowEvalPythonExec => b
   }
 

@@ -530,10 +530,10 @@ class DecimalAggregatesSuite extends PlanTest with ScalaCheckDrivenPropertyCheck
   //   features/spark-decimal-aggregate-evalmode-preserve/docs/0001-idea.md (section 3)
   // ---------------------------------------------------------------------------
 
-  private def findSum(plan: LogicalPlan): Seq[Sum] =
+  protected def findSum(plan: LogicalPlan): Seq[Sum] =
     plan.collect { case n => n.expressions }.flatten
       .flatMap(_.collect { case s: Sum => s })
-  private def findAverage(plan: LogicalPlan): Seq[Average] =
+  protected def findAverage(plan: LogicalPlan): Seq[Average] =
     plan.collect { case n => n.expressions }.flatten
       .flatMap(_.collect { case a: Average => a })
 

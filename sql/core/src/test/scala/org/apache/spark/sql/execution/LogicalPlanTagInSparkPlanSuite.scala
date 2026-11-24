@@ -49,7 +49,7 @@ class LogicalPlanTagInSparkPlanSuite extends TPCDSQuerySuite {
   // A scan plan tree is a plan tree that has a leaf node under zero or more Project/Filter nodes.
   // We may add `ColumnarToRowExec` and `InputAdapter` above the scan node after planning.
   @scala.annotation.tailrec
-  private def isScanPlanTree(plan: SparkPlan): Boolean = plan match {
+  protected def isScanPlanTree(plan: SparkPlan): Boolean = plan match {
     case ColumnarToRowExec(i: InputAdapter) => isScanPlanTree(i.child)
     case p: ProjectExec => isScanPlanTree(p.child)
     case f: FilterExec => isScanPlanTree(f.child)
@@ -57,7 +57,7 @@ class LogicalPlanTagInSparkPlanSuite extends TPCDSQuerySuite {
     case _ => false
   }
 
-  private def checkLogicalPlanTag(plan: SparkPlan): Unit = {
+  protected def checkLogicalPlanTag(plan: SparkPlan): Unit = {
     plan match {
       case _: HashJoin | _: BroadcastNestedLoopJoinExec | _: CartesianProductExec
            | _: ShuffledHashJoinExec | _: SortMergeJoinExec =>

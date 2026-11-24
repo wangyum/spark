@@ -1246,7 +1246,7 @@ class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase
   }
 
   // scalastyle:off argcount
-  private def checkBatchWriteRequirements(
+  protected def checkBatchWriteRequirements(
       tableDistribution: Distribution,
       tableOrdering: Array[SortOrder],
       tableNumPartitions: Option[Int],
@@ -1431,7 +1431,7 @@ class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase
     }
   }
 
-  private def checkPartitioningAndOrdering(
+  protected def checkPartitioningAndOrdering(
       plan: SparkPlan,
       partitioning: physical.Partitioning,
       ordering: Seq[catalyst.expressions.SortOrder],
@@ -1480,7 +1480,7 @@ class WriteDistributionAndOrderingSuite extends DistributionAndOrderingSuiteBase
   }
 
   // executes a write operation and keeps the executed physical plan
-  private def execute(writeFunc: => Unit): SparkPlan = {
+  protected def execute(writeFunc: => Unit): SparkPlan = {
     var executedPlan: SparkPlan = null
 
     val listener = new QueryExecutionListener {

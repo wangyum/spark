@@ -1661,7 +1661,7 @@ class ExpressionIdAssignerSuite extends SharedSparkSession {
     checkSubtreeConstraints(originalPlan, newPlan, preserveExpressionIds = true)
   }
 
-  private def checkPlanConstraints(
+  protected def checkPlanConstraints(
       originalPlan: LogicalPlan,
       newPlan: LogicalPlan,
       preserveExpressionIds: Boolean): Unit = {
@@ -1716,7 +1716,7 @@ class ExpressionIdAssignerSuite extends SharedSparkSession {
     }
   }
 
-  private def checkSubtreeConstraints(
+  protected def checkSubtreeConstraints(
       originalPlan: LogicalPlan,
       newPlan: LogicalPlan,
       preserveExpressionIds: Boolean): Unit = {
@@ -1839,7 +1839,7 @@ class ExpressionIdAssignerSuite extends SharedSparkSession {
     }
   }
 
-  private def collectAttributesAndAliases(plan: LogicalPlan): Seq[NamedExpression] = {
+  protected def collectAttributesAndAliases(plan: LogicalPlan): Seq[NamedExpression] = {
     plan.expressions.flatMap { expression =>
       expression.collect {
         case attribute: AttributeReference => attribute

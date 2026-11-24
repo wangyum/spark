@@ -94,13 +94,13 @@ class CoalesceBucketsInJoinSuite extends QueryTest with SharedSparkSession
     newFileSourceScanExec(RelationSetting(cols, numBuckets, None, bucketCols = Seq(cols.head)))
   }
 
-  private def coalescedBuckets(plan: SparkPlan): Seq[(Int, Option[Int])] = {
+  protected def coalescedBuckets(plan: SparkPlan): Seq[(Int, Option[Int])] = {
     plan.collect { case f: FileSourceScanExec =>
       (f.relation.bucketSpec.get.numBuckets, f.optionalNumCoalescedBuckets)
     }
   }
 
-  private def run(setting: JoinSetting): Unit = {
+  protected def run(setting: JoinSetting): Unit = {
     val swappedSetting = setting.copy(
       leftKeys = setting.rightKeys,
       rightKeys = setting.leftKeys,

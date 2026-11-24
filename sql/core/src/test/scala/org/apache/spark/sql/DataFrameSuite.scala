@@ -1500,7 +1500,7 @@ class DataFrameSuite extends SharedSparkSession
   /**
    * Verifies that there is no Exchange between the Aggregations for `df`
    */
-  private def verifyNonExchangingAgg(df: classic.DataFrame) = {
+  protected def verifyNonExchangingAgg(df: classic.DataFrame) = {
     var atFirstAgg: Boolean = false
     df.queryExecution.executedPlan.foreach {
       case agg: HashAggregateExec =>
@@ -1515,7 +1515,7 @@ class DataFrameSuite extends SharedSparkSession
   /**
    * Verifies that there is an Exchange between the Aggregations for `df`
    */
-  private def verifyExchangingAgg(df: classic.DataFrame) = {
+  protected def verifyExchangingAgg(df: classic.DataFrame) = {
     var atFirstAgg: Boolean = false
     df.queryExecution.executedPlan.foreach {
       case agg: HashAggregateExec =>
@@ -1830,7 +1830,7 @@ class DataFrameSuite extends SharedSparkSession
     assert(d.length == d.distinct.length)
   }
 
-  private def verifyNullabilityInFilterExec(
+  protected def verifyNullabilityInFilterExec(
       df: classic.DataFrame,
       expr: String,
       expectedNonNullableColumns: Seq[String]): Unit = {

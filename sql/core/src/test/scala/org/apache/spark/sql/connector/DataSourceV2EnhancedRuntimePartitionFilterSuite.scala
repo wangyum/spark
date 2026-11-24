@@ -605,7 +605,7 @@ class DataSourceV2EnhancedRuntimePartitionFilterSuite
   // Helper methods
   // ---------------------------------------------------------------------------
 
-  private def assertDPPRuntimeFilters(
+  protected def assertDPPRuntimeFilters(
       df: DataFrame, expectedCount: Int = 1): Unit = {
     val batchScan = collectBatchScan(df)
     val dppFilters = batchScan.runtimeFilters.collect {
@@ -621,7 +621,7 @@ class DataSourceV2EnhancedRuntimePartitionFilterSuite
       "Expected non-empty runtimeFilters on BatchScanExec")
   }
 
-  private def assertScalarSubqueryRuntimeFilters(
+  protected def assertScalarSubqueryRuntimeFilters(
       df: DataFrame, expectedCount: Int = 1): Unit = {
     val batchScan = collectBatchScan(df)
     val scalarFilters = batchScan.runtimeFilters.collect {
@@ -637,7 +637,7 @@ class DataSourceV2EnhancedRuntimePartitionFilterSuite
       "Expected non-DPP runtime filters (scalar subquery)")
   }
 
-  private def collectBatchScan(df: DataFrame): BatchScanExec = {
+  protected def collectBatchScan(df: DataFrame): BatchScanExec = {
     ExplainUtils.collectFirst(df.queryExecution.executedPlan) {
       case b: BatchScanExec => b
     }.getOrElse(fail("Expected BatchScanExec in plan"))

@@ -99,7 +99,7 @@ class SpecialDatetimeValuesSuite extends PlanTest {
     }
   }
 
-  private def testSpecialTs(tsType: AtomicType, expected: Set[Long], zoneId: ZoneId): Unit = {
+  protected def testSpecialTs(tsType: AtomicType, expected: Set[Long], zoneId: ZoneId): Unit = {
     val in = Project(Seq(
       Alias(Cast(Literal("epoch"), tsType, Some(zoneId.getId)), "epoch")(),
       Alias(Cast(Literal("now"), tsType, Some(zoneId.getId)), "now")(),

@@ -27,7 +27,7 @@ abstract class ReplaceHashWithSortAggSuiteBase
     extends SharedSparkSession
     with AdaptiveSparkPlanHelper {
 
-  private def checkNumAggs(df: DataFrame, hashAggCount: Int, sortAggCount: Int): Unit = {
+  protected def checkNumAggs(df: DataFrame, hashAggCount: Int, sortAggCount: Int): Unit = {
     val plan = df.queryExecution.executedPlan
     assert(collectWithSubqueries(plan) {
       case s @ (_: HashAggregateExec | _: ObjectHashAggregateExec) => s

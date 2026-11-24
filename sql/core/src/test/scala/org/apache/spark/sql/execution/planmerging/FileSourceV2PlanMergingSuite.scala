@@ -122,7 +122,7 @@ class FileSourceV2PlanMergingSuite extends QueryTest with SharedSparkSession
   }
 
   /** `(SubqueryExec, ReusedSubqueryExec)` counts, the same measure `PlanMergingSuite` uses. */
-  private def subqueryCounts(df: DataFrame): (Int, Int) = {
+  protected def subqueryCounts(df: DataFrame): (Int, Int) = {
     val plan = df.queryExecution.executedPlan
     val subqueries = collectWithSubqueries(plan) { case s: SubqueryExec => s.id }
     val reused = collectWithSubqueries(plan) { case rs: ReusedSubqueryExec => rs.child.id }

@@ -89,7 +89,7 @@ class SortMergeAsOfJoinSuite extends QueryTest
   }
 
   // Whether `join` runs in a codegen stage, and not only in a stage below it.
-  private def isGenerated(plan: SparkPlan, join: SortMergeAsOfJoinExec): Boolean = {
+  protected def isGenerated(plan: SparkPlan, join: SortMergeAsOfJoinExec): Boolean = {
     def inStage(node: SparkPlan): Boolean = node match {
       case j: SortMergeAsOfJoinExec => j eq join
       case _: InputAdapter => false
@@ -135,7 +135,7 @@ class SortMergeAsOfJoinSuite extends QueryTest
    * Asserts that `df`, after it ran, has a sort-merge ASOF join, and that the join ran generated
    * exactly when the codegen is on and the join is not nearest. Returns the join.
    */
-  private def assertAsOfJoinCodegen(df: DataFrame, codegen: Boolean): SortMergeAsOfJoinExec = {
+  protected def assertAsOfJoinCodegen(df: DataFrame, codegen: Boolean): SortMergeAsOfJoinExec = {
     val plan = df.queryExecution.executedPlan
     val op = collectFirst(plan) { case s: SortMergeAsOfJoinExec => s }
     assert(op.isDefined, s"Expected SortMergeAsOfJoinExec in plan:\n$plan")

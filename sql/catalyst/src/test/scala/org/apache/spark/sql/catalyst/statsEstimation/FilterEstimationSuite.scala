@@ -1060,7 +1060,7 @@ class FilterEstimationSuite extends StatsEstimationTestBase {
       attributeStats = AttributeMap(outList.map(a => a -> attributeMap(a))))
   }
 
-  private def validateEstimatedStats(
+  protected def validateEstimatedStats(
       filterNode: Filter,
       expectedColStats: Seq[(Attribute, ColumnStat)],
       expectedRowCount: Int): Unit = {

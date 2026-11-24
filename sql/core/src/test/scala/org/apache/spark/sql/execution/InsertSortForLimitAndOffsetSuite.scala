@@ -29,28 +29,28 @@ class InsertSortForLimitAndOffsetSuite extends SharedSparkSession
   with AdaptiveSparkPlanHelper {
   import testImplicits._
 
-  private def assertHasTopKSort(plan: SparkPlan): Unit = {
+  protected def assertHasTopKSort(plan: SparkPlan): Unit = {
     assert(find(plan) {
       case _: TakeOrderedAndProjectExec => true
       case _ => false
     }.isDefined)
   }
 
-  private def assertHasCollectLimitExec(plan: SparkPlan): Unit = {
+  protected def assertHasCollectLimitExec(plan: SparkPlan): Unit = {
     assert(find(plan) {
       case _: CollectLimitExec => true
       case _ => false
     }.isDefined)
   }
 
-  private def assertHasGlobalLimitExec(plan: SparkPlan): Unit = {
+  protected def assertHasGlobalLimitExec(plan: SparkPlan): Unit = {
     assert(find(plan) {
       case _: GlobalLimitExec => true
       case _ => false
     }.isDefined)
   }
 
-  private def hasLocalSort(plan: SparkPlan): Boolean = {
+  protected def hasLocalSort(plan: SparkPlan): Boolean = {
     find(plan) {
       case GlobalLimitExec(_, s: SortExec, _) => !s.global
       case GlobalLimitExec(_, ProjectExec(_, s: SortExec), _) => !s.global

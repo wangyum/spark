@@ -1665,7 +1665,7 @@ abstract class ParquetFilterSuite extends ParquetTest with SharedSparkSession {
     }
   }
 
-  private def checkStringFilterPushdown(
+  protected def checkStringFilterPushdown(
       stringPredicate: String => Expression,
       sourceFilter: (String, String) => sources.Filter): Unit = {
     withParquetDataFrame((1 to 4).map(i => Tuple1(s"${i}str$i"))) { implicit df =>

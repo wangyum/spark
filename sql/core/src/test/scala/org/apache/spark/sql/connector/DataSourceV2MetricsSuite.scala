@@ -81,7 +81,7 @@ class DataSourceV2MetricsSuite extends DatasourceV2SQLBase {
   private val nonExistingTable = "non_existing_table"
   private val existingTable = "existing_table"
 
-  private def captureStagedTableWrite(thunk: => Unit): SparkPlan = {
+  protected def captureStagedTableWrite(thunk: => Unit): SparkPlan = {
     val physicalPlans = withQueryExecutionsCaptured(spark)(thunk).map(_.executedPlan)
     val stagedTableWrites = physicalPlans.filter {
       case _: AtomicCreateTableAsSelectExec | _: CreateTableAsSelectExec |

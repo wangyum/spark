@@ -63,7 +63,7 @@ class RewriteWithExpressionSuite extends PlanTest {
       SpecialDatetimeValues.applyForExpression(afterCurrentLike))
   }
 
-  private def normalizeCommonExpressionIds(plan: LogicalPlan): LogicalPlan = {
+  protected def normalizeCommonExpressionIds(plan: LogicalPlan): LogicalPlan = {
     plan.transformAllExpressions {
       case a: Alias if a.name.startsWith("_common_expr") =>
         a.withName("_common_expr_0")

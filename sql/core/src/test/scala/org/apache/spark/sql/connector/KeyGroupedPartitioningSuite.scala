@@ -848,7 +848,7 @@ class KeyGroupedPartitioningSuite
    * Check whether the query plan from `df` has the expected `distribution`, `ordering` and
    * `partitioning`.
    */
-  private def checkQueryPlan(
+  protected def checkQueryPlan(
       df: DataFrame,
       distribution: physical.Distribution,
       partitioning: physical.Partitioning): Unit = {
@@ -931,7 +931,7 @@ class KeyGroupedPartitioningSuite
    * Asserts `df` plans exactly one shuffled join accepted by `isJoinType`, that no shuffle was
    * added under it, and that partition filtering left it `expectedNumGroups` key groups.
    */
-  private def checkPartitionFilteredJoin(
+  protected def checkPartitionFilteredJoin(
       df: DataFrame,
       isJoinType: JoinType => Boolean,
       expectedNumGroups: Int): Unit = {
@@ -974,7 +974,7 @@ class KeyGroupedPartitioningSuite
    * `expected` gives: whether the left grouping distributes its splits (the right never does) and
    * both sides' partition count.
    */
-  private def checkPartiallyClusteredJoin(
+  protected def checkPartiallyClusteredJoin(
       query: String,
       isJoinType: JoinType => Boolean,
       expectedRows: Seq[Row],
@@ -4731,7 +4731,7 @@ class KeyGroupedPartitioningSuite
       : Seq[(Seq[String], org.apache.spark.sql.catalyst.expressions.SortDirection)] =
     scan.outputOrdering.map(o => (o.child.references.map(_.name).toSeq, o.direction))
 
-  private def sortsAbove(plan: SparkPlan, scan: BatchScanExec): Seq[SortExec] =
+  protected def sortsAbove(plan: SparkPlan, scan: BatchScanExec): Seq[SortExec] =
     collect(plan) { case s: SortExec if s.exists(_ eq scan) => s }
 
   test("SPARK-59721: a reported partitioning with an unresolvable key is ignored") {
@@ -9835,7 +9835,7 @@ class KeyGroupedPartitioningSuite
    * given `mayContainUnknownPartitionKeys` flags (a `KeyedPartitioning` produced by
    * `KeyedShuffleSpec.createPartitioning` always carries the marker).
    */
-  private def assertShuffleMayContainUnknownPartitionKeys(
+  protected def assertShuffleMayContainUnknownPartitionKeys(
       plan: SparkPlan,
       expected: Seq[Boolean]): Unit = {
     val shuffles = collectAllShuffles(plan)

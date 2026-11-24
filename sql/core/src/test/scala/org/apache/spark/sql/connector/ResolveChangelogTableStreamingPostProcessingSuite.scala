@@ -120,7 +120,7 @@ class ResolveChangelogTableStreamingPostProcessingSuite extends SharedSparkSessi
         s"found on: ${leaks.map(_.name).mkString(",")}. Plan:\n$plan")
   }
 
-  private def assertInlineGenerate(plan: LogicalPlan): Unit = {
+  protected def assertInlineGenerate(plan: LogicalPlan): Unit = {
     val gens = plan.collect { case g: Generate => g }
     assert(gens.size == 1,
       s"Expected exactly one Generate; found ${gens.size}. Plan:\n$plan")
@@ -128,7 +128,7 @@ class ResolveChangelogTableStreamingPostProcessingSuite extends SharedSparkSessi
       s"Generate must use Inline. Plan:\n$plan")
   }
 
-  private def assertContainsNullCommitTimestampGuard(plan: LogicalPlan): Unit = {
+  protected def assertContainsNullCommitTimestampGuard(plan: LogicalPlan): Unit = {
     import org.apache.spark.sql.catalyst.analysis.CdcAssertCommitTimestampNotNull
     val nullGuards = plan.collect {
       case f: Filter

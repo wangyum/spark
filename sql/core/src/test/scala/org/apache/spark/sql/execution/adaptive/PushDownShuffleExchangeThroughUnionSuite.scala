@@ -84,19 +84,19 @@ class PushDownShuffleExchangeThroughUnionSuite extends QueryTest with SharedSpar
 
   // A shuffle that moves a union as a whole, not one the rewrite puts under one of its children to
   // lay that child out on the target.
-  private def numShufflesOnUnion(plan: SparkPlan): Int =
+  protected def numShufflesOnUnion(plan: SparkPlan): Int =
     plan.collect { case s: ShuffleExchangeExec if isUnionPlan(s.child) => s }.size
 
-  private def numShuffleExchanges(plan: SparkPlan): Int =
+  protected def numShuffleExchanges(plan: SparkPlan): Int =
     collect(plan) { case _: ShuffleExchangeLike => () }.size
 
-  private def numUnionExchanges(plan: SparkPlan): Int =
+  protected def numUnionExchanges(plan: SparkPlan): Int =
     collect(plan) { case s: ShuffleExchangeExec if isUnionPlan(s.child) => () }.size
 
   // The union may be wrapped in a `WholeStageCodegenExec` by `CollapseCodegenStages`, or in an
   // `InputAdapter` when it feeds a codegen'd parent, so look through both when checking whether
   // a shuffle's child is (effectively) a union.
-  private def isUnionPlan(plan: SparkPlan): Boolean = plan match {
+  protected def isUnionPlan(plan: SparkPlan): Boolean = plan match {
     case _: UnionExec => true
     case w: WholeStageCodegenExec => isUnionPlan(w.child)
     case i: InputAdapter => isUnionPlan(i.child)
@@ -108,7 +108,7 @@ class PushDownShuffleExchangeThroughUnionSuite extends QueryTest with SharedSpar
   private def numShufflesOverUnion(plan: SparkPlan): Int =
     countShuffles(plan, underUnion = false) { s => reachesUnion(s.child) }
 
-  private def countShuffles(
+  protected def countShuffles(
       plan: SparkPlan,
       underUnion: Boolean)(matches: ShuffleExchangeExec => Boolean): Int = {
     val here = plan match {
@@ -119,7 +119,7 @@ class PushDownShuffleExchangeThroughUnionSuite extends QueryTest with SharedSpar
       .sum
   }
 
-  private def reachesUnion(plan: SparkPlan): Boolean = plan match {
+  protected def reachesUnion(plan: SparkPlan): Boolean = plan match {
     case _: UnionExec => true
     case unary: UnaryExecNode => reachesUnion(unary.child)
     case _ => false
@@ -128,7 +128,7 @@ class PushDownShuffleExchangeThroughUnionSuite extends QueryTest with SharedSpar
   private def withLookThrough(f: => Unit): Unit = withSQLConf(
     SQLConf.PUSH_DOWN_SHUFFLE_THROUGH_UNION_LOOK_THROUGH_OPERATORS_ENABLED.key -> "true")(f)
 
-  private def aqeInitialPlan(df: DataFrame): SparkPlan = df.queryExecution.executedPlan match {
+  protected def aqeInitialPlan(df: DataFrame): SparkPlan = df.queryExecution.executedPlan match {
     case a: AdaptiveSparkPlanExec => a.initialPlan
     case other => fail(s"expected an adaptive plan:\n$other")
   }
@@ -181,7 +181,7 @@ class PushDownShuffleExchangeThroughUnionSuite extends QueryTest with SharedSpar
     ShuffleQueryStageExec(0, exchange, exchange.canonicalized)
   }
 
-  private def assertReshuffled(plan: SparkPlan, expected: Partitioning, child: SparkPlan): Unit = {
+  protected def assertReshuffled(plan: SparkPlan, expected: Partitioning, child: SparkPlan): Unit = {
     plan match {
       case s: ShuffleExchangeExec =>
         assert(s.shuffleOrigin === ENSURE_REQUIREMENTS)

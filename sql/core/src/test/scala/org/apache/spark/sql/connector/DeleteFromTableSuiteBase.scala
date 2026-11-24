@@ -1148,7 +1148,7 @@ abstract class DeleteFromTableSuiteBase extends RowLevelOperationSuiteBase {
     }
   }
 
-  private def executeDeleteWithFilters(query: String): Unit = {
+  protected def executeDeleteWithFilters(query: String): Unit = {
     val executedPlan = executeAndKeepPlan {
       sql(query)
     }
@@ -1316,7 +1316,7 @@ abstract class DeleteFromTableSuiteBase extends RowLevelOperationSuiteBase {
     }
   }
 
-  private def executeDeleteWithRewrite(query: String): Unit = {
+  protected def executeDeleteWithRewrite(query: String): Unit = {
     val executedPlan = executeAndKeepPlan {
       sql(query)
     }

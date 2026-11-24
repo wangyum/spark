@@ -192,7 +192,7 @@ class RewriteDistinctAggregatesSuite extends PlanTest {
     Count(caseWhen).toAggregateExpression(isDistinct = true)
   }
 
-  private def collectAggregateExpressions(plan: LogicalPlan): Seq[AggregateExpression] = {
+  protected def collectAggregateExpressions(plan: LogicalPlan): Seq[AggregateExpression] = {
     plan.collect { case a: Aggregate => a.aggregateExpressions }
       .flatten
       .flatMap(_.collect { case ae: AggregateExpression => ae })
@@ -251,7 +251,7 @@ class RewriteDistinctAggregatesSuite extends PlanTest {
   }
 
   /** EXISTS / IN / NOT IN nodes in Expand projections. The guard must not copy these. */
-  private def subqueryExprCount(plan: LogicalPlan): Int = {
+  protected def subqueryExprCount(plan: LogicalPlan): Int = {
     val exprs = plan.collect { case e: Expand => e }.flatMap(_.projections.flatten)
     exprs.map(_.collect { case _: Exists | _: InSubquery => () }.size).sum
   }

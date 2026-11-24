@@ -78,7 +78,7 @@ class GeneratedColumnWriteSuite extends QueryTest with DatasourceV2SQLBase {
     }
   }
 
-  private def hasCheckInvariant(sqlText: String): Boolean = {
+  protected def hasCheckInvariant(sqlText: String): Boolean = {
     val parsed = spark.sessionState.sqlParser.parsePlan(sqlText)
     val analyzed = spark.sessionState.analyzer.executeAndCheck(parsed, new QueryPlanningTracker)
     analyzed.exists { node =>

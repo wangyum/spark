@@ -29,7 +29,7 @@ import org.apache.spark.sql.types._
 class DataFramePivotSuite extends SharedSparkSession {
   import testImplicits._
 
-  private def usesPivotFirst(df: DataFrame): Boolean = {
+  protected def usesPivotFirst(df: DataFrame): Boolean = {
     df.queryExecution.analyzed.exists(_.expressions.exists(_.exists(_.isInstanceOf[PivotFirst])))
   }
 

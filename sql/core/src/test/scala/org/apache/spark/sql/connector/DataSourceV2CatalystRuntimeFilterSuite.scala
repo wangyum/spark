@@ -915,7 +915,7 @@ class DataSourceV2CatalystRuntimeFilterSuite extends SharedSparkSession {
   // Helper methods
   // ---------------------------------------------------------------------------
 
-  private def assertDPPRuntimeFilters(
+  protected def assertDPPRuntimeFilters(
       df: DataFrame, expectedCount: Int = 1): Unit = {
     val batchScan = collectBatchScan(df)
     val dppFilters = batchScan.runtimeFilters.collect {
@@ -926,7 +926,7 @@ class DataSourceV2CatalystRuntimeFilterSuite extends SharedSparkSession {
         s"in runtimeFilters, got ${dppFilters.size}")
   }
 
-  private def assertScalarSubqueryRuntimeFilters(
+  protected def assertScalarSubqueryRuntimeFilters(
       df: DataFrame, expectedCount: Int = 1): Unit = {
     val batchScan = collectBatchScan(df)
     val scalarFilters = batchScan.runtimeFilters.collect {
@@ -946,7 +946,7 @@ class DataSourceV2CatalystRuntimeFilterSuite extends SharedSparkSession {
    * Checks whether a scalar subquery runtime filter is still evaluated by a [[FilterExec]] above
    * the scan. Filters that only reference `fullyPushedFilterAttributes` are dropped from it.
    */
-  private def assertScalarSubqueryEvaluatedAfterScan(
+  protected def assertScalarSubqueryEvaluatedAfterScan(
       df: DataFrame,
       expected: Boolean): Unit = {
     val postScanConditions = stripAQEPlan(df.queryExecution.executedPlan).collect {
@@ -958,7 +958,7 @@ class DataSourceV2CatalystRuntimeFilterSuite extends SharedSparkSession {
         s"post-scan filter conditions: $postScanConditions")
   }
 
-  private def collectBatchScan(df: DataFrame): BatchScanExec = {
+  protected def collectBatchScan(df: DataFrame): BatchScanExec = {
     stripAQEPlan(df.queryExecution.executedPlan).collectFirst {
       case b: BatchScanExec => b
     }.getOrElse(fail("Expected BatchScanExec in plan"))
@@ -1003,7 +1003,7 @@ class DataSourceV2CatalystRuntimeFilterSuite extends SharedSparkSession {
     }
   }
 
-  private def bindToScanOutput(
+  protected def bindToScanOutput(
       expr: Expression,
       output: Seq[AttributeReference]): Expression = {
     val resolver = SQLConf.get.resolver

@@ -26,7 +26,7 @@ import org.apache.spark.sql.types._
 class IntegralRangeSimplificationSuite extends PlanTest with ExpressionEvalHelper {
   private val a = AttributeReference("a", IntegerType)()
 
-  private def optimize(expression: Expression): Expression = {
+  protected def optimize(expression: Expression): Expression = {
     val relation = LocalRelation(expression.references.toSeq)
     BooleanSimplification(Project(Seq(Alias(expression, "result")()), relation))
       .asInstanceOf[Project].projectList.head.asInstanceOf[Alias].child

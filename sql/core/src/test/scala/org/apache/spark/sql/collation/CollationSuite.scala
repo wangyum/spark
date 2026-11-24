@@ -61,7 +61,7 @@ class CollationSuite extends DatasourceV2SQLBase with AdaptiveSparkPlanHelper {
     SQLConf.get.getConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD) == -1
   }
 
-  private def checkRightTypeOfJoinUsed(queryPlan: SparkPlan): Unit = {
+  protected def checkRightTypeOfJoinUsed(queryPlan: SparkPlan): Unit = {
     assert(
       collectFirst(queryPlan) {
         case _: SortMergeJoinExec => assert(isSortMergeForced)

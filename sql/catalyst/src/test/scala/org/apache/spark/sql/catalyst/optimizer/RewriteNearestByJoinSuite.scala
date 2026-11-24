@@ -31,11 +31,11 @@ class RewriteNearestByJoinSuite extends PlanTest {
   // expected plans below use `Uuid(Some(0L))`, and we normalize the actual plan's `Uuid`
   // seeds to 0L before `comparePlans` so the structural shape is the only thing being
   // compared, not the (necessarily different) random seed values.
-  private def normalizeUuidSeed(plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan)
+  protected def normalizeUuidSeed(plan: org.apache.spark.sql.catalyst.plans.logical.LogicalPlan)
       : org.apache.spark.sql.catalyst.plans.logical.LogicalPlan =
     plan.transformAllExpressions { case _: Uuid => Uuid(Some(0L)) }
 
-  private def expectedRewrite(
+  protected def expectedRewrite(
       left: LocalRelation,
       right: LocalRelation,
       numResults: Int,

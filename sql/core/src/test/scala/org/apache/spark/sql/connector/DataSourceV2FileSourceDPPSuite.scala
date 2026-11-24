@@ -98,7 +98,7 @@ abstract class DataSourceV2FileSourceDPPSuiteBase extends QueryTest
 
   // The BatchScanExec reading `fact`, the only partitioned table of the two. The lookup descends
   // into AQE query stages, so it finds the scan whichever stage it ended up in.
-  private def factScanOf(df: DataFrame): BatchScanExec = {
+  protected def factScanOf(df: DataFrame): BatchScanExec = {
     val executedPlan = df.queryExecution.executedPlan
     collectFirst(executedPlan) {
       case b: BatchScanExec if b.scan.isInstanceOf[FileScan] &&
@@ -129,7 +129,7 @@ abstract class DataSourceV2FileSourceDPPSuiteBase extends QueryTest
       (f.filePath.toString, f.start, f.length)
     })
 
-  private def collectDppFilters(plan: LogicalPlan): Seq[Expression] = {
+  protected def collectDppFilters(plan: LogicalPlan): Seq[Expression] = {
     plan.collect {
       case f: Filter if f.condition.exists(_.isInstanceOf[DynamicPruningSubquery]) => f.condition
     }

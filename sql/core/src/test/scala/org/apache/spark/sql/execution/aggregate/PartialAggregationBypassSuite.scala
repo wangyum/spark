@@ -32,7 +32,7 @@ abstract class PartialAggregationBypassSuiteBase
 
   import testImplicits._
 
-  private def aggNodes(plan: SparkPlan): Seq[BaseAggregateExec] =
+  protected def aggNodes(plan: SparkPlan): Seq[BaseAggregateExec] =
     collectWithSubqueries(plan) { case a: BaseAggregateExec => a }
 
   test("bypassPartialAggregation=true produces no Partial-mode node and one Complete-mode node") {

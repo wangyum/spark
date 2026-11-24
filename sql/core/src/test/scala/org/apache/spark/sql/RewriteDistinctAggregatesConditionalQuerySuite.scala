@@ -44,7 +44,7 @@ class RewriteDistinctAggregatesConditionalQuerySuite extends QueryTest with Shar
     }
   }
 
-  private def hasUserConditionFilter(plan: LogicalPlan): Boolean = {
+  protected def hasUserConditionFilter(plan: LogicalPlan): Boolean = {
     val aggregateExpressions = plan.collect {
       case a: Aggregate => a.aggregateExpressions
     }.flatten

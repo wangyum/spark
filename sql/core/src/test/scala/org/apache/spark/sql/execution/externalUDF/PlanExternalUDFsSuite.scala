@@ -129,7 +129,7 @@ class PlanExternalUDFsSuite extends QueryTest with SharedSparkSession {
     }
   }
 
-  private def singleProjectExpression(plan: LogicalPlan): Expression = {
+  protected def singleProjectExpression(plan: LogicalPlan): Expression = {
     plan match {
       case Project(Seq(alias: Alias), _) => alias.child
       case other => fail(s"Expected a Project with one Alias, found:\n$other")
@@ -140,7 +140,7 @@ class PlanExternalUDFsSuite extends QueryTest with SharedSparkSession {
     rendered.replaceAll("#[0-9]+", "#x")
   }
 
-  private def callCount(expression: Expression): Int = {
+  protected def callCount(expression: Expression): Int = {
     expression.collect { case _: ExternalUserDefinedFunction => 1 }.size
   }
 

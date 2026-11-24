@@ -51,7 +51,7 @@ class MonotonicDequeWindowFunctionSuite extends QueryTest with SharedSparkSessio
     SQLConf.WINDOW_SEGMENT_TREE_ENABLED.key -> "false")
 
   /** Build `df` thrice (Deque, SegTree, Naive) and assert equal results. */
-  private def checkEquivalence(
+  protected def checkEquivalence(
       build: () => DataFrame,
       expectDeque: Boolean = true,
       expectedDequeCount: Int = 3): Unit = {

@@ -177,7 +177,7 @@ trait PlanStabilitySuite extends DisableAdaptiveExecutionSuite {
    * Exchange, Subquery, in the simplified plan. Given such a identical but simplified plan, we'd
    * expect to avoid frequent plan changing and catch the possible meaningful regression.
    */
-  private def getSimplifiedPlan(plan: SparkPlan): String = {
+  protected def getSimplifiedPlan(plan: SparkPlan): String = {
     val exchangeIdMap = new mutable.HashMap[Int, Int]()
     val subqueriesMap = new mutable.HashMap[Int, Int]()
 

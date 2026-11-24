@@ -30,10 +30,10 @@ class AQEPipelinedShuffleSuite extends SparkFunSuite
   private def withAqePipelinedSession(body: SparkSession => Unit): Unit =
     withPipelinedSession("aqe-pipelined-shuffle", aqe = true)(body)
 
-  private def pipelinedExchanges(plan: org.apache.spark.sql.execution.SparkPlan) =
+  protected def pipelinedExchanges(plan: org.apache.spark.sql.execution.SparkPlan) =
     collect(plan) { case s: ShuffleExchangeExec if s.pipelined => s }
 
-  private def materializedStages(plan: org.apache.spark.sql.execution.SparkPlan) =
+  protected def materializedStages(plan: org.apache.spark.sql.execution.SparkPlan) =
     collect(plan) { case q: ShuffleQueryStageExec => q }
 
   test("single-exchange aggregate pipelines the whole final job under AQE") {

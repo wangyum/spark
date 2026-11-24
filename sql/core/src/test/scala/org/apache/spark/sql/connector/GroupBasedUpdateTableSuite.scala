@@ -158,7 +158,7 @@ class GroupBasedUpdateTableSuite extends UpdateTableSuiteBase {
     }
   }
 
-  private def checkUpdateRuntimeFilterSubqueryReuse(): Unit = {
+  protected def checkUpdateRuntimeFilterSubqueryReuse(): Unit = {
     withTable(tableNameAsString) {
       withTempView("deleted_id") {
         createAndInitTable("id INT, salary INT, dep STRING",

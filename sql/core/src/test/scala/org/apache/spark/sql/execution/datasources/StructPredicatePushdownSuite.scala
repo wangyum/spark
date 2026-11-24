@@ -40,18 +40,18 @@ import org.apache.spark.sql.types._
  */
 class StructPredicatePushdownSuite extends QueryTest with SharedSparkSession {
 
-  private def getFileSourceScanDataFilters(df: DataFrame): Seq[Expression] = {
+  protected def getFileSourceScanDataFilters(df: DataFrame): Seq[Expression] = {
     val plan = df.queryExecution.executedPlan
     plan.collect { case scan: FileSourceScanExec => scan.dataFilters }.flatten
   }
 
-  private def hasPostScanFilter(df: DataFrame): Boolean = {
+  protected def hasPostScanFilter(df: DataFrame): Boolean = {
     val plan = df.queryExecution.executedPlan
     plan.collect { case f: FilterExec => f }.nonEmpty
   }
 
   // Pushed filters on the DSv2 parquet scan (BatchScanExec -> ParquetScan).
-  private def getV2ParquetPushedFilters(df: DataFrame): Seq[SourcesFilter] = {
+  protected def getV2ParquetPushedFilters(df: DataFrame): Seq[SourcesFilter] = {
     val plan = df.queryExecution.executedPlan
     plan.collect {
       case scan: BatchScanExec =>

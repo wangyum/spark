@@ -74,28 +74,28 @@ import org.apache.spark.util.ArrayImplicits._
 class DataSourceV2Suite extends SharedSparkSession with AdaptiveSparkPlanHelper {
   import testImplicits._
 
-  private def getBatch(query: DataFrame): AdvancedBatch = {
+  protected def getBatch(query: DataFrame): AdvancedBatch = {
     query.queryExecution.executedPlan.collect {
       case d: BatchScanExec =>
         d.batch.asInstanceOf[AdvancedBatch]
     }.head
   }
 
-  private def getBatchWithV2Filter(query: DataFrame): AdvancedBatchWithV2Filter = {
+  protected def getBatchWithV2Filter(query: DataFrame): AdvancedBatchWithV2Filter = {
     query.queryExecution.executedPlan.collect {
       case d: BatchScanExec =>
         d.batch.asInstanceOf[AdvancedBatchWithV2Filter]
     }.head
   }
 
-  private def getJavaBatch(query: DataFrame): JavaAdvancedDataSourceV2.AdvancedBatch = {
+  protected def getJavaBatch(query: DataFrame): JavaAdvancedDataSourceV2.AdvancedBatch = {
     query.queryExecution.executedPlan.collect {
       case d: BatchScanExec =>
         d.batch.asInstanceOf[JavaAdvancedDataSourceV2.AdvancedBatch]
     }.head
   }
 
-  private def getJavaBatchWithV2Filter(
+  protected def getJavaBatchWithV2Filter(
       query: DataFrame): JavaAdvancedDataSourceV2WithV2Filter.AdvancedBatchWithV2Filter = {
     query.queryExecution.executedPlan.collect {
       case d: BatchScanExec =>
@@ -1247,7 +1247,7 @@ class DataSourceV2Suite extends SharedSparkSession with AdaptiveSparkPlanHelper 
     }.head
   }
 
-  private def hasIGt3(condition: CatalystExpression): Boolean = {
+  protected def hasIGt3(condition: CatalystExpression): Boolean = {
     condition.exists {
       case CatalystGreaterThan(attr: AttributeReference, CatalystLiteral(value: Int, _)) =>
         attr.name == "i" && value == 3
@@ -1260,7 +1260,7 @@ class DataSourceV2Suite extends SharedSparkSession with AdaptiveSparkPlanHelper 
     condition.exists(_.sql == expected)
   }
 
-  private def hasJLtNeg5(condition: CatalystExpression): Boolean = {
+  protected def hasJLtNeg5(condition: CatalystExpression): Boolean = {
     condition.exists {
       case CatalystLessThan(attr: AttributeReference, CatalystLiteral(value: Int, _)) =>
         attr.name == "j" && value == -5

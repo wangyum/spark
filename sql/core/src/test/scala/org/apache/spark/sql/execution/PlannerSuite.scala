@@ -539,7 +539,7 @@ class PlannerSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
 
   assert(orderingA != orderingB && orderingA != orderingC && orderingB != orderingC)
 
-  private def assertSortRequirementsAreSatisfied(
+  protected def assertSortRequirementsAreSatisfied(
       childPlan: SparkPlan,
       requiredOrdering: Seq[SortOrder],
       shouldHaveSort: Boolean): Unit = {
@@ -1556,7 +1556,7 @@ class PlannerSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
    * @param df The DataFrame whose physical plan will be examined.
    * @param expectedShuffles The expected number of shuffle exchanges.
    */
-  private def checkShuffleCount(df: DataFrame, expectedShuffles: Int): Unit = {
+  protected def checkShuffleCount(df: DataFrame, expectedShuffles: Int): Unit = {
     val plan = df.queryExecution.executedPlan
     val shuffles = collect(plan) {
       case s: ShuffleExchangeLike => s

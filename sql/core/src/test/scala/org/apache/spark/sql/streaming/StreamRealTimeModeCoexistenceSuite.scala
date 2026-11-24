@@ -54,7 +54,7 @@ class StreamRealTimeModeCoexistenceSuite extends StreamRealTimeModeSuiteBase {
   import testImplicits._
 
   /** Every shuffle exchange in the query's last executed plan, with its `pipelined` flag. */
-  private def exchangePipelinedFlags(q: StreamExecution): Seq[Boolean] =
+  protected def exchangePipelinedFlags(q: StreamExecution): Seq[Boolean] =
     q.lastExecution.executedPlan.collect { case s: ShuffleExchangeExec => s.pipelined }
 
   /** Asserts the query has at least one shuffle and every one of them is pipelined. */

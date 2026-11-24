@@ -74,7 +74,7 @@ class TranspiledUDFParameterSuite extends QueryTest with SharedSparkSession {
       List(List.fill(arity)("numeric").asJava).asJava)
 
   /** The argument indexes the single option the builder produced refers to, in tree order. */
-  private def parameterIndexes(option: Expression, args: Expression*): Seq[Int] =
+  protected def parameterIndexes(option: Expression, args: Expression*): Seq[Int] =
     udfWith(option).builder(args) match {
       case t: TranspiledPythonUDF =>
         t.transpiledOptions.head.collect { case p: TranspiledUDFParameter => p.index }

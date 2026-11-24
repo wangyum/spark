@@ -29,7 +29,7 @@ class CombineAdjacentAggregationSuite extends QueryTest
   with SharedSparkSession
   with AdaptiveSparkPlanHelper {
 
-  private def numAggregates(query: String): Int = {
+  protected def numAggregates(query: String): Int = {
     val df = sql(query)
     df.collect()
     collect(df.queryExecution.executedPlan) {
@@ -37,7 +37,7 @@ class CombineAdjacentAggregationSuite extends QueryTest
     }.size
   }
 
-  private def checkNumAggregation(
+  protected def checkNumAggregation(
       query: String,
       numAggWithDisabled: Int,
       numAggWithEnabled: Int): Unit = {

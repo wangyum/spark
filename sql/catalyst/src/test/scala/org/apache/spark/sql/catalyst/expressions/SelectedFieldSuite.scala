@@ -610,7 +610,7 @@ class SelectedFieldSuite extends AnalysisTest {
     SelectedField.unapply(analyzed.expressions.head)
   }
 
-  private def parseAsCatalystExpression(exprs: Seq[String]) = {
+  protected def parseAsCatalystExpression(exprs: Seq[String]) = {
     exprs.map(CatalystSqlParser.parseExpression(_) match {
       case namedExpr: NamedExpression => namedExpr
     })

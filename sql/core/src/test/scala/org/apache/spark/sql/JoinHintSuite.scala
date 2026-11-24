@@ -339,7 +339,7 @@ class JoinHintSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
     hints.map("/*+ " + _ + " */").mkString(
       "SELECT ", " ", s" * FROM t1 $joinType JOIN t2 ON t1.key > t2.key")
 
-  private def assertBroadcastHashJoin(df: DataFrame, buildSide: BuildSide): Unit = {
+  protected def assertBroadcastHashJoin(df: DataFrame, buildSide: BuildSide): Unit = {
     val executedPlan = df.queryExecution.executedPlan
     val broadcastHashJoins = collect(executedPlan) {
       case b: BroadcastHashJoinExec => b
@@ -348,7 +348,7 @@ class JoinHintSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
     assert(broadcastHashJoins.head.buildSide == buildSide)
   }
 
-  private def assertBroadcastNLJoin(df: DataFrame, buildSide: BuildSide): Unit = {
+  protected def assertBroadcastNLJoin(df: DataFrame, buildSide: BuildSide): Unit = {
     val executedPlan = df.queryExecution.executedPlan
     val broadcastNLJoins = collect(executedPlan) {
       case b: BroadcastNestedLoopJoinExec => b
@@ -357,7 +357,7 @@ class JoinHintSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
     assert(broadcastNLJoins.head.buildSide == buildSide)
   }
 
-  private def assertShuffleHashJoin(df: DataFrame, buildSide: BuildSide): Unit = {
+  protected def assertShuffleHashJoin(df: DataFrame, buildSide: BuildSide): Unit = {
     val executedPlan = df.queryExecution.executedPlan
     val shuffleHashJoins = collect(executedPlan) {
       case s: ShuffledHashJoinExec => s
@@ -366,7 +366,7 @@ class JoinHintSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
     assert(shuffleHashJoins.head.buildSide == buildSide)
   }
 
-  private def assertShuffleMergeJoin(df: DataFrame): Unit = {
+  protected def assertShuffleMergeJoin(df: DataFrame): Unit = {
     val executedPlan = df.queryExecution.executedPlan
     val shuffleMergeJoins = collect(executedPlan) {
       case s: SortMergeJoinExec => s
@@ -374,7 +374,7 @@ class JoinHintSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
     assert(shuffleMergeJoins.size == 1)
   }
 
-  private def assertShuffleReplicateNLJoin(df: DataFrame): Unit = {
+  protected def assertShuffleReplicateNLJoin(df: DataFrame): Unit = {
     val executedPlan = df.queryExecution.executedPlan
     val shuffleReplicateNLJoins = collect(executedPlan) {
       case c: CartesianProductExec => c

@@ -218,7 +218,7 @@ class SingleJoinSuite extends SharedSparkSession with AdaptiveSparkPlanHelper {
 
   // The join type and build side of each BroadcastNestedLoopJoinExec in the plan of `df`: with
   // AQE, the initial plan before `df` runs and the final plan after.
-  private def nestedLoopJoins(df: DataFrame): Seq[(JoinType, BuildSide)] =
+  protected def nestedLoopJoins(df: DataFrame): Seq[(JoinType, BuildSide)] =
     collect(df.queryExecution.executedPlan) {
       case j: BroadcastNestedLoopJoinExec => (j.joinType, j.buildSide)
     }

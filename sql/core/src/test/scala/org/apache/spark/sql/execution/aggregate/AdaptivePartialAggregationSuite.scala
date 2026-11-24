@@ -87,7 +87,7 @@ class AdaptivePartialAggregationSuite extends QueryTest with SharedSparkSession
     agg.metrics.get(passThroughRowsMetric).map(_.value).getOrElse(0L)
 
   // The rows the partial phases of an already-collected `df` passed through.
-  private def passThroughRows(df: DataFrame): Long =
+  protected def passThroughRows(df: DataFrame): Long =
     collect(df.queryExecution.executedPlan) {
       case agg: HashAggregateExec if isPartialPhase(agg) => passThroughRows(agg)
     }.sum
@@ -181,7 +181,7 @@ class AdaptivePartialAggregationSuite extends QueryTest with SharedSparkSession
    *     at the spill boundary the sorter is never created, so this stays 0 -- direct, per-operator
    *     evidence the bypass replaced the sort fallback.
    */
-  private case class AggCounters(
+  protected case class AggCounters(
       passedThrough: Long,
       partialOutputRows: Long,
       spillBytes: Long,
@@ -198,7 +198,7 @@ class AdaptivePartialAggregationSuite extends QueryTest with SharedSparkSession
     checkAnswer(df, reference)
   }
 
-  private def runAndReadCounters(build: () => DataFrame): AggCounters = {
+  protected def runAndReadCounters(build: () => DataFrame): AggCounters = {
     // The triggering tests assert on metrics, so also verify the bypassing run produces the same
     // results as the feature-off reference.
     val df = build()
@@ -226,7 +226,7 @@ class AdaptivePartialAggregationSuite extends QueryTest with SharedSparkSession
   // key + distinct columns) and the distinct partial (grouping on the keys only, whose non-distinct
   // aggregates run in `PartialMerge`) -- so their bypasses can be told apart by the grouping key
   // count.
-  private def passThroughRowsByGroupingKeyCount(build: () => DataFrame): Map[Int, Long] = {
+  protected def passThroughRowsByGroupingKeyCount(build: () => DataFrame): Map[Int, Long] = {
     val df = build()
     df.collect()
     val byKeyCount = collect(df.queryExecution.executedPlan) {

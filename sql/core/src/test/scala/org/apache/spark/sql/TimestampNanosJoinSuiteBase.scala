@@ -134,7 +134,7 @@ abstract class TimestampNanosJoinSuiteBase extends SharedSparkSession with Adapt
   }
 
   /** Whether a sort-merge ASOF join of `plan` runs in a codegen stage, not only in one below it. */
-  private def isAsOfJoinGenerated(plan: SparkPlan): Boolean = {
+  protected def isAsOfJoinGenerated(plan: SparkPlan): Boolean = {
     def inStage(node: SparkPlan): Boolean = node match {
       case _: SortMergeAsOfJoinExec => true
       case _: InputAdapter => false

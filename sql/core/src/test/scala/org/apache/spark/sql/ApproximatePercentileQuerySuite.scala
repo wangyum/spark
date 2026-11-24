@@ -59,7 +59,7 @@ class ApproximatePercentileQuerySuite extends SharedSparkSession {
       .filter(_.nonEmpty)
   }
 
-  private def assertPercentileDigestCount(query: DataFrame, expected: Int): Unit = {
+  protected def assertPercentileDigestCount(query: DataFrame, expected: Int): Unit = {
     val counts = query.queryExecution.sparkPlan.collect {
       case aggregate: ObjectHashAggregateExec =>
         aggregate.aggregateExpressions.count(

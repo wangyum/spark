@@ -314,7 +314,7 @@ class JDBCSuite extends SharedSparkSession {
       s"Expecting a JDBCRelation with $expectedNumPartitions partitions, but got:`$jdbcRelations`")
   }
 
-  private def checkPushdown(df: DataFrame): DataFrame = {
+  protected def checkPushdown(df: DataFrame): DataFrame = {
     val parentPlan = df.queryExecution.executedPlan
     // Check if SparkPlan Filter is removed in a physical plan and
     // the plan only has PhysicalRDD to scan JDBCRelation.
@@ -329,7 +329,7 @@ class JDBCSuite extends SharedSparkSession {
     df
   }
 
-  private def checkNotPushdown(df: DataFrame): DataFrame = {
+  protected def checkNotPushdown(df: DataFrame): DataFrame = {
     val parentPlan = df.queryExecution.executedPlan
     // Check if SparkPlan Filter is not removed in a physical plan because JDBCRDD
     // cannot compile given predicates.

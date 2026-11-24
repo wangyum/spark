@@ -412,7 +412,7 @@ class ComputeCurrentTimeSuite extends PlanTest {
     assert(remainingCasts.isEmpty)
   }
 
-  private def dateLiterals(plan: LogicalPlan): scala.collection.mutable.ArrayBuffer[Int] = {
+  protected def dateLiterals(plan: LogicalPlan): scala.collection.mutable.ArrayBuffer[Int] = {
     val buf = new scala.collection.mutable.ArrayBuffer[Int]
     plan.transformWithSubqueries { case subQuery =>
       subQuery.transformAllExpressions { case lit: Literal if lit.dataType == DateType =>
@@ -423,7 +423,7 @@ class ComputeCurrentTimeSuite extends PlanTest {
     buf
   }
 
-  private def literals[T](plan: LogicalPlan): scala.collection.mutable.ArrayBuffer[T] = {
+  protected def literals[T](plan: LogicalPlan): scala.collection.mutable.ArrayBuffer[T] = {
     val literals = new scala.collection.mutable.ArrayBuffer[T]
     plan.transformWithSubqueries { case subQuery =>
       subQuery.transformAllExpressions { case expression: Literal =>
@@ -434,7 +434,7 @@ class ComputeCurrentTimeSuite extends PlanTest {
     literals
   }
 
-  private def literalsWithType(
+  protected def literalsWithType(
       plan: LogicalPlan,
       dataType: org.apache.spark.sql.types.DataType)
     : scala.collection.mutable.ArrayBuffer[Any] = {

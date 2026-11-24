@@ -700,7 +700,7 @@ class PipelinedShuffleSqlSuite extends SparkFunSuite
     }
   }
 
-  private def assertNotPipelined(df: org.apache.spark.sql.DataFrame, why: String): Unit = {
+  protected def assertNotPipelined(df: org.apache.spark.sql.DataFrame, why: String): Unit = {
     val pipelined = collect(df.queryExecution.executedPlan) {
       case s: ShuffleExchangeExec if s.pipelined => s
     }

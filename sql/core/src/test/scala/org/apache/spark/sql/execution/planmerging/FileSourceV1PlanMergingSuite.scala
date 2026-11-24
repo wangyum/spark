@@ -81,7 +81,7 @@ class FileSourceV1PlanMergingSuite extends QueryTest with SharedSparkSession {
    * `ReusedExchangeExec` are leaf nodes, which is why the self join below shows three scans of the
    * four its plan contains.
    */
-  private def scanColumns(df: DataFrame): Seq[Seq[String]] =
+  protected def scanColumns(df: DataFrame): Seq[Seq[String]] =
     df.queryExecution.executedPlan
       .collectWithSubqueries { case s: FileSourceScanExec => s }
       .map(_.requiredSchema.fieldNames.sorted.toSeq)

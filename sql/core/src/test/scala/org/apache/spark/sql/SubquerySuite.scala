@@ -1224,7 +1224,7 @@ class SubquerySuite extends SharedSparkSession
     getNumSorts(plan) + getSubqueryExpressions(plan).map{s => getNumSorts(s.plan)}.sum
   }
 
-  private def getSubqueryExpressions(plan: LogicalPlan): Seq[SubqueryExpression] = {
+  protected def getSubqueryExpressions(plan: LogicalPlan): Seq[SubqueryExpression] = {
     val subqueryExpressions = ArrayBuffer.empty[SubqueryExpression]
     plan transformAllExpressions {
       case s: SubqueryExpression =>
@@ -2799,7 +2799,7 @@ class SubquerySuite extends SharedSparkSession
   // a join input, and assert that InSubqueryExec survived into the executed plan.
   // AdaptiveSparkPlanHelper.find traverses AQE wrapper nodes; Expression.exists recurses into
   // the join condition to find the wrapped InSubqueryExec.
-  private def assertContainsInSubqueryExec(df: DataFrame): Unit = {
+  protected def assertContainsInSubqueryExec(df: DataFrame): Unit = {
     assert(
       find(df.queryExecution.executedPlan) { p =>
         p.expressions.exists(_.exists(_.isInstanceOf[InSubqueryExec]))

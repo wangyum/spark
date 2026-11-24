@@ -81,7 +81,7 @@ class DataSourceV2FileScanSubclassSuite extends QueryTest with SharedSparkSessio
     }
   }
 
-  private def factScanOf(df: DataFrame): BatchScanExec = {
+  protected def factScanOf(df: DataFrame): BatchScanExec = {
     df.queryExecution.executedPlan.collectFirst {
       case b: BatchScanExec if b.scan.isInstanceOf[FileScan] &&
         b.scan.asInstanceOf[FileScan].readPartitionSchema.nonEmpty => b

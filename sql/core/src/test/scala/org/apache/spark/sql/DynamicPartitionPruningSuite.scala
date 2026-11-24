@@ -2742,7 +2742,7 @@ abstract class DynamicPartitionPruningV2Suite extends DynamicPartitionPruningDat
     spark.conf.set("spark.sql.defaultCatalog", "testcat")
   }
 
-  private def collectFactScan(df: DataFrame): BatchScanExec = {
+  protected def collectFactScan(df: DataFrame): BatchScanExec = {
     val scans = collectWithSubqueries(df.queryExecution.executedPlan) {
       case b: BatchScanExec if b.runtimeFilters.nonEmpty => b
     }

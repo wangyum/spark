@@ -38,7 +38,7 @@ class ResolvedUuidExpressionsSuite extends AnalysisTest {
   private val tracker = new QueryPlanningTracker
   private val analyzer = getAnalyzer
 
-  private def getUuidExpressions(plan: LogicalPlan): Seq[Uuid] = {
+  protected def getUuidExpressions(plan: LogicalPlan): Seq[Uuid] = {
     plan.flatMap {
       case p =>
         p.expressions.flatMap(_.collect {

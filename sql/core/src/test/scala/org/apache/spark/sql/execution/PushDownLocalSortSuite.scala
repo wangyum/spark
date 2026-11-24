@@ -31,7 +31,7 @@ abstract class PushDownLocalSortSuiteBase
     extends SharedSparkSession
     with AdaptiveSparkPlanHelper {
 
-  private def checkNumSorts(df: DataFrame, count: Int): Unit = {
+  protected def checkNumSorts(df: DataFrame, count: Int): Unit = {
     // Execute first so that, under AQE, the final adaptive plan (after query-stage materialization
     // and any replanning) is inspected rather than the initial plan.
     df.collect()

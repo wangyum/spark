@@ -124,7 +124,7 @@ class ParquetStorageFilterSuite extends QueryTest with SharedSparkSession
     writeParquetFile(dir, rows400, rowGroupSize = 64 * 1024L, pageSize = Some(512L))
 
   // The scan node of a plan, which every test that inspects or rewrites `storageFilters` needs.
-  private def scanOf(plan: SparkPlan): FileSourceScanExec =
+  protected def scanOf(plan: SparkPlan): FileSourceScanExec =
     plan.collect { case s: FileSourceScanExec => s }.headOption
       .getOrElse(fail(s"No FileSourceScanExec found in plan: $plan"))
 
@@ -975,7 +975,7 @@ class ParquetStorageFilterSuite extends QueryTest with SharedSparkSession
   // Counts BloomFilterMightContain expressions inside FilterExec nodes of a physical plan.
   // `collect` from AdaptiveSparkPlanHelper rather than SparkPlan's, which stops at an
   // `AdaptiveSparkPlanExec` and would report zero for every plan AQE wrapped.
-  private def countBloomFiltersInPostScanFilters(plan: SparkPlan): Int = {
+  protected def countBloomFiltersInPostScanFilters(plan: SparkPlan): Int = {
     collect(plan) {
       case f: FilterExec =>
         f.condition.collect { case _: BloomFilterMightContain => 1 }.sum
@@ -985,7 +985,7 @@ class ParquetStorageFilterSuite extends QueryTest with SharedSparkSession
   // The rows the scans with storage filters excluded, by both row metrics unless `metrics` names
   // others. Through `collect(plan)`,
   // which finds those scans in a plan AQE wrapped too.
-  private def rowsExcludedByStorageFilters(
+  protected def rowsExcludedByStorageFilters(
       plan: SparkPlan,
       metrics: Seq[String] = Seq(StorageFilterMetrics.ROWS_EXCLUDED_BY_ROW_GROUP,
         StorageFilterMetrics.ROWS_EXCLUDED_WITHIN_ROW_GROUP)): Long =
@@ -994,7 +994,7 @@ class ParquetStorageFilterSuite extends QueryTest with SharedSparkSession
     }.sum
 
   // Counts BloomFilterMightContain expressions inside FileSourceScanExec.storageFilters.
-  private def countBloomFiltersInStorageFilters(plan: SparkPlan): Int = {
+  protected def countBloomFiltersInStorageFilters(plan: SparkPlan): Int = {
     collect(plan) {
       case s: FileSourceScanExec =>
         s.storageFilters.map(_.collect { case _: BloomFilterMightContain => 1 }.sum).sum

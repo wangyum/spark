@@ -548,7 +548,7 @@ class DataSourceV2EnhancedDeleteFilterSuite extends SharedSparkSession
    *   PartitionPredicate, each listing the ordinals that predicate
    *   should reference, in the order they appear in the plan.
    */
-  private def assertDeleteWithFilters(
+  protected def assertDeleteWithFilters(
       query: String,
       expectedNumConditions: Int,
       expectedNumPartitionPredicates: Int = 0,
@@ -639,7 +639,7 @@ class DataSourceV2EnhancedDeleteFilterSuite extends SharedSparkSession
    * the given references, and that only the partitions with the given `dep` values, the first
    * partition field, were replaced.
    */
-  private def assertRowLevelScanPrunedByPartitionPredicate(
+  protected def assertRowLevelScanPrunedByPartitionPredicate(
       plan: SparkPlan,
       expectedOrdinals: Array[Int],
       expectedPartitionFieldNames: Array[String],
@@ -659,14 +659,14 @@ class DataSourceV2EnhancedDeleteFilterSuite extends SharedSparkSession
   }
 
   /** The PartitionPredicates the in-memory row-level scan in `plan` was pruned by. */
-  private def rowLevelScanPartitionPredicates(plan: SparkPlan): Seq[PartitionPredicate] = {
+  protected def rowLevelScanPartitionPredicates(plan: SparkPlan): Seq[PartitionPredicate] = {
     collect(plan) { case s: BatchScanExec => s }.map(_.scan).collectFirst {
       case s: InMemoryPartitionPredicateDeleteTable#PartitionPredicateRowLevelBatchScan => s
     }.getOrElse(fail("Expected the row-level scan of the in-memory table"))
       .pushedPartitionPredicates
   }
 
-  private def assertDeleteWithRowLevel(query: String): Unit = {
+  protected def assertDeleteWithRowLevel(query: String): Unit = {
     val plan = executeAndKeepPlan { sql(query) }
     plan match {
       case _: ReplaceDataExec => // expected

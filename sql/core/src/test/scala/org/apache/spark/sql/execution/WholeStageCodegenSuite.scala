@@ -89,7 +89,7 @@ class WholeStageCodegenSuite extends SharedSparkSession
   // Runs `query` on `data` with sort aggregate forced and its code-gen enabled, asserts the plan
   // actually uses a code-gen'd SortAggregateExec, and checks the result matches the interpreted
   // (code-gen disabled) result.
-  private def checkSortAggregateCodegen(
+  protected def checkSortAggregateCodegen(
       data: Dataset[Row])(query: Dataset[Row] => Dataset[Row]): Unit = {
     // Disable both hash-based aggregate operators so the planner always picks SortAggregateExec.
     val forceSortAggregate = Seq(
@@ -2000,7 +2000,7 @@ class WholeStageCodegenSuite extends SharedSparkSession
     withSQLConf(SQLConf.WHOLESTAGE_SPLIT_EXPRESSIONS_METHOD_LIMIT.key -> "0")(body)
 
   /** The splits recorded in generating `df`'s stages with them recorded, as the gate first does. */
-  private def recordedSplits(df: DataFrame): Int = df.queryExecution.executedPlan.collect {
+  protected def recordedSplits(df: DataFrame): Int = df.queryExecution.executedPlan.collect {
     case w: WholeStageCodegenExec => w.generate(WholeStageSplit.Record)._1.wholeStageSplitsRecorded
       .length
   }.sum
@@ -2036,7 +2036,7 @@ class WholeStageCodegenSuite extends SharedSparkSession
   }
 
   /** The first whole-stage codegen stage of `df`. */
-  private def stageOf(df: DataFrame): WholeStageCodegenExec =
+  protected def stageOf(df: DataFrame): WholeStageCodegenExec =
     df.queryExecution.executedPlan.collectFirst { case w: WholeStageCodegenExec => w }.get
 
   /**
@@ -2065,7 +2065,7 @@ class WholeStageCodegenSuite extends SharedSparkSession
    * With the slot handed out as a local variable instead, building that method fails the testing
    * check on its parameters.
    */
-  private def checkExpandSlotRead(
+  protected def checkExpandSlotRead(
       method: String,
       query: String => String,
       check: Seq[CodeAndComment] => Unit = _ => ()): Unit = {

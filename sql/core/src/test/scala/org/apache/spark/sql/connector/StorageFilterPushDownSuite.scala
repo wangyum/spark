@@ -73,13 +73,13 @@ class StorageFilterPushDownSuite
 
   private val checkedName = FileFormat.STORAGE_FILTER_CHECKED_COLUMN_NAME
 
-  private def scanOf(plan: SparkPlan): BatchScanExec =
+  protected def scanOf(plan: SparkPlan): BatchScanExec =
     collect(plan) { case b: BatchScanExec => b }.headOption
       .getOrElse(fail(s"no BatchScanExec in plan:\n$plan"))
 
   // The blooms the Filters above the scan evaluate on every row, and those they skip on the rows
   // the reader marks as checked.
-  private def bloomsAbove(plan: SparkPlan): (Int, Int) = {
+  protected def bloomsAbove(plan: SparkPlan): (Int, Int) = {
     val conditions = collect(plan) { case f: FilterExec => f.condition }
     val all = conditions.map(_.collect { case _: BloomFilterMightContain => 1 }.sum).sum
     val skipped = conditions.map(_.collect {
@@ -97,7 +97,7 @@ class StorageFilterPushDownSuite
   }
 
   // The rows the Filter on the scan returned, counted before the join.
-  private def rowsOutOfFilter(plan: SparkPlan): Long = {
+  protected def rowsOutOfFilter(plan: SparkPlan): Long = {
     val filters = collect(plan) {
       case f: FilterExec if f.exists(_.isInstanceOf[BatchScanExec]) => f
     }

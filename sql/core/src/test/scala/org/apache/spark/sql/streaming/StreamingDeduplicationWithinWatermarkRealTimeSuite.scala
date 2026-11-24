@@ -55,7 +55,7 @@ class StreamingDeduplicationWithinWatermarkRealTimeSuite
     }
   }
 
-  private def checkExecutionMode(realTimeMode: Boolean): AssertOnQuery = {
+  protected def checkExecutionMode(realTimeMode: Boolean): AssertOnQuery = {
     Execute { q =>
       val operators = q.lastExecution.executedPlan.collect {
         case d: StreamingDeduplicateWithinWatermarkExec => d

@@ -40,7 +40,7 @@ class DataSourceAnalysisSuite extends SparkFunSuite with SQLHelper {
       .add("c", IntegerType)
   }
 
-  private def checkProjectList(actual: Seq[Expression], expected: Seq[Expression]): Unit = {
+  protected def checkProjectList(actual: Seq[Expression], expected: Seq[Expression]): Unit = {
     // Remove aliases since we have no control on their exprId.
     val withoutAliases = actual.map {
       case alias: Alias => alias.child

@@ -466,7 +466,7 @@ class NormalizePlanSuite extends SparkFunSuite with SQLConfHelper {
     assert(NormalizePlan(recursiveCTE2) == normalizedRecursiveCTE)
   }
 
-  private def setTimezoneForAllExpression(plan: LogicalPlan): LogicalPlan = {
+  protected def setTimezoneForAllExpression(plan: LogicalPlan): LogicalPlan = {
     plan.transformAllExpressions {
       case e: TimeZoneAwareExpression if e.timeZoneId.isEmpty =>
         e.withTimeZone(conf.sessionLocalTimeZone)

@@ -55,14 +55,14 @@ class AsOfJoinSortMergeSQLSuite extends QueryTest
     super.afterAll()
   }
 
-  private def assertUsesSortMergeAsOfJoin(query: DataFrame): Unit = {
+  protected def assertUsesSortMergeAsOfJoin(query: DataFrame): Unit = {
     val plan = query.queryExecution.executedPlan
     assert(collectWithSubqueries(plan) {
       case _: SortMergeAsOfJoinExec => true
     }.nonEmpty, s"Expected SortMergeAsOfJoinExec in plan:\n$plan")
   }
 
-  private def assertPlannedDirection(query: DataFrame, direction: AsOfJoinDirection): Unit = {
+  protected def assertPlannedDirection(query: DataFrame, direction: AsOfJoinDirection): Unit = {
     val plan = query.queryExecution.executedPlan
     val directions = collectWithSubqueries(plan) { case j: SortMergeAsOfJoinExec => j.direction }
     assert(directions === Seq(direction),
@@ -112,7 +112,7 @@ class AsOfJoinSortMergeSQLSuite extends QueryTest
    * codegen on, all but the nearest ones, and with it off, none. Spark builds no codegen stage
    * when whole-stage codegen is off or the codegen factory mode is NO_CODEGEN.
    */
-  private def assertAsOfJoinCodegen(df: DataFrame, codegen: Boolean): Unit = {
+  protected def assertAsOfJoinCodegen(df: DataFrame, codegen: Boolean): Unit = {
     val sqlConf = spark.sessionState.conf
     val stagesOn = sqlConf.wholeStageEnabled &&
       sqlConf.codegenFactoryMode != CodegenObjectFactoryMode.NO_CODEGEN
@@ -198,7 +198,7 @@ class AsOfJoinSortMergeSQLSuite extends QueryTest
   }
 
   /** The value of `metric` in the one SortMergeAsOfJoinExec of `df`, read after `df` ran. */
-  private def asOfJoinMetric(df: DataFrame, metric: String): Long = {
+  protected def asOfJoinMetric(df: DataFrame, metric: String): Long = {
     val plan = df.queryExecution.executedPlan
     val joins = collect(plan) { case j: SortMergeAsOfJoinExec => j }
     assert(joins.length == 1, s"Expected one SortMergeAsOfJoinExec in plan:\n$plan")

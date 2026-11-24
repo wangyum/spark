@@ -30,7 +30,7 @@ abstract class RemoveRedundantProjectsSuiteBase
     with AdaptiveSparkPlanHelper {
   import testImplicits._
 
-  private def assertProjectExecCount(df: DataFrame, expected: Int): Unit = {
+  protected def assertProjectExecCount(df: DataFrame, expected: Int): Unit = {
     withClue(df.queryExecution) {
       val plan = df.queryExecution.executedPlan
       val actual = collectWithSubqueries(plan) { case p: ProjectExec => p }.size

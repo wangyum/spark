@@ -145,7 +145,7 @@ class StreamingV2ScanPushDownSuite extends StreamTest with BeforeAndAfter {
    * Checks that the last micro-batch evaluates the filters on `columns` once, apart from the
    * IsNotNull that the optimizer infers.
    */
-  private def assertEvaluatedOnce(columns: String*): StreamAction = AssertOnQuery { query =>
+  protected def assertEvaluatedOnce(columns: String*): StreamAction = AssertOnQuery { query =>
     val conditions = query.lastExecution.optimizedPlan.collect {
       case filter: Filter => filter.condition
     }.flatMap(splitConjunctivePredicates).filter { condition =>
@@ -205,7 +205,7 @@ class StreamingV2ScanPushDownSuite extends StreamTest with BeforeAndAfter {
   }
 
   /** Checks the output of the scan nodes of the last micro-batch. */
-  private def assertScanOutputs(columns: Seq[String]*): StreamAction = AssertOnQuery { query =>
+  protected def assertScanOutputs(columns: Seq[String]*): StreamAction = AssertOnQuery { query =>
     val outputs = query.lastExecution.executedPlan.collect {
       case scan: MicroBatchScanExec => scan.output.map(_.name)
     }

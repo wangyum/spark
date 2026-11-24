@@ -55,7 +55,7 @@ class QueryExecutionSuite extends SharedSparkSession {
   override protected def sparkConf =
     super.sparkConf.set(SQLConf.ADAPTIVE_MAX_SHUFFLE_HASH_JOIN_LOCAL_MAP_THRESHOLD.key, "0")
 
-  private def collectLambdaVariables(plan: LogicalPlan): Seq[NamedLambdaVariable] = {
+  protected def collectLambdaVariables(plan: LogicalPlan): Seq[NamedLambdaVariable] = {
     plan.collect {
       case node => node.expressions.flatMap(_.collect {
         case variable: NamedLambdaVariable => variable
@@ -63,7 +63,7 @@ class QueryExecutionSuite extends SharedSparkSession {
     }.flatten
   }
 
-  private def collectRegExpReplaceExpressions(plan: LogicalPlan): Seq[RegExpReplace] = {
+  protected def collectRegExpReplaceExpressions(plan: LogicalPlan): Seq[RegExpReplace] = {
     plan.collect {
       case node => node.expressions.flatMap(_.collect {
         case expression: RegExpReplace => expression

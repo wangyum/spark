@@ -83,7 +83,7 @@ class ArrowColumnarPythonUDFSuite extends SharedSparkSession {
   }
 
   /** Whether a ColumnarToRowExec converts the output of an ArrowEvalPythonExec. */
-  private def hasColumnarToRowAbove(plan: SparkPlan): Boolean =
+  protected def hasColumnarToRowAbove(plan: SparkPlan): Boolean =
     collectNodes[ColumnarToRowExec](plan).exists(
       _.find(_.isInstanceOf[ArrowEvalPythonExec]).isDefined)
 

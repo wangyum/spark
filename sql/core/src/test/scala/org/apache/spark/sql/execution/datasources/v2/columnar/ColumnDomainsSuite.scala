@@ -57,7 +57,7 @@ class ColumnDomainsSuite extends QueryTest with SharedSparkSession with Predicat
     predicates(expr(filter), schema)
   }
 
-  private def predicates(filter: Column, schema: StructType): Seq[Predicate] = {
+  protected def predicates(filter: Column, schema: StructType): Seq[Predicate] = {
     val df = spark.createDataFrame(Seq.empty[Row].asJava, schema)
     val condition = df.where(filter).queryExecution.analyzed.collectFirst {
       case Filter(condition, _) => condition

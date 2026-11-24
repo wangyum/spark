@@ -33,7 +33,7 @@ abstract class RemoveRedundantSortsSuiteBase
     with AdaptiveSparkPlanHelper {
   import testImplicits._
 
-  private def checkNumSorts(df: DataFrame, count: Int): Unit = {
+  protected def checkNumSorts(df: DataFrame, count: Int): Unit = {
     val plan = df.queryExecution.executedPlan
     assert(collectWithSubqueries(plan) { case s: SortExec => s }.length == count)
   }

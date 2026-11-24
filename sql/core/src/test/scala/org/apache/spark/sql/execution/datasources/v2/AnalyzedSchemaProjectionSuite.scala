@@ -962,7 +962,7 @@ class AnalyzedSchemaProjectionSuite extends SparkFunSuite with ExpressionEvalHel
   }
 
   /** Projects a captured struct field out of `current` and reports the ordinal it extracts. */
-  private def projectNested(captured: String, current: Seq[String]): Either[String, Int] = {
+  protected def projectNested(captured: String, current: Seq[String]): Either[String, Int] = {
     val currentType = StructType(current.map(n => StructField(n, IntegerType)))
     val capturedType = StructType(Seq(StructField(captured, IntegerType)))
     try {
@@ -989,7 +989,7 @@ class AnalyzedSchemaProjectionSuite extends SparkFunSuite with ExpressionEvalHel
     }
   }
 
-  private def nestedAuthority(captured: String, current: Seq[String]): Either[String, Int] = {
+  protected def nestedAuthority(captured: String, current: Seq[String]): Either[String, Int] = {
     val currentType = StructType(current.map(n => StructField(n, IntegerType)))
     ExtractValue
       .extractValue(

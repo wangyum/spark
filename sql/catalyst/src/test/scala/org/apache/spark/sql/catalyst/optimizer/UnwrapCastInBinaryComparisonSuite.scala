@@ -608,7 +608,7 @@ class UnwrapCastInBinaryComparisonSuite extends PlanTest with ExpressionEvalHelp
     }
   }
 
-  private def checkInAndInSet(in: In, expected: Expression): Unit = {
+  protected def checkInAndInSet(in: In, expected: Expression): Unit = {
     assertEquivalent(in, expected)
     val toInSet = (in: In) => InSet(in.value, HashSet() ++ in.list.map(_.eval()))
     val expectedInSet = expected match {

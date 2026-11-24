@@ -188,7 +188,7 @@ abstract class BroadcastJoinSuiteBase extends QueryTest
     }
   }
 
-  private def assertBroadcastJoin(df : Dataset[Row]) : Unit = {
+  protected def assertBroadcastJoin(df : Dataset[Row]) : Unit = {
     val df1 = Seq((1, "4"), (2, "2")).toDF("key", "value")
     val joined = df1.join(df, Seq("key"), "inner")
 
@@ -399,7 +399,7 @@ abstract class BroadcastJoinSuiteBase extends QueryTest
   private val bh = classOf[BroadcastHashJoinExec].getSimpleName
   private val bl = classOf[BroadcastNestedLoopJoinExec].getSimpleName
 
-  private def assertJoinBuildSide(sqlStr: String, joinMethod: String, buildSide: BuildSide): Any = {
+  protected def assertJoinBuildSide(sqlStr: String, joinMethod: String, buildSide: BuildSide): Any = {
     val executedPlan = stripAQEPlan(sql(sqlStr).queryExecution.executedPlan)
     executedPlan match {
       case b: BroadcastNestedLoopJoinExec =>

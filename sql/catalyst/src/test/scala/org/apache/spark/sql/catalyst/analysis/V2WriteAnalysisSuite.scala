@@ -1632,7 +1632,7 @@ abstract class V2WriteAnalysisSuiteBase extends AnalysisTest {
     assert(asserts.isEmpty, s"Must have no NOT NULL checks for col $colPath")
   }
 
-  private def findAsserts(plan: LogicalPlan, colPath: Seq[String]): Seq[AssertNotNull] = {
+  protected def findAsserts(plan: LogicalPlan, colPath: Seq[String]): Seq[AssertNotNull] = {
     val query = plan match {
       case command: V2WriteCommand => command.query
       case other => fail(s"Expected V2WriteCommand: $other")

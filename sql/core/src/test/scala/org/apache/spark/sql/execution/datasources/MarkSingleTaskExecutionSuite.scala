@@ -74,14 +74,14 @@ class MarkSingleTaskExecutionSuite extends QueryTest with SharedSparkSession
     }
   }
 
-  private def getFinalPhysicalPlan(df: org.apache.spark.sql.DataFrame): SparkPlan = {
+  protected def getFinalPhysicalPlan(df: org.apache.spark.sql.DataFrame): SparkPlan = {
     df.queryExecution.executedPlan match {
       case a: AdaptiveSparkPlanExec => a.finalPhysicalPlan
       case other => other
     }
   }
 
-  private def hasShuffle(plan: SparkPlan): Boolean =
+  protected def hasShuffle(plan: SparkPlan): Boolean =
     collectWithSubqueries(plan) { case s: ShuffleExchangeLike => s }.nonEmpty
 
   private def isMarked(plan: LogicalPlan): Boolean = {
@@ -103,7 +103,7 @@ class MarkSingleTaskExecutionSuite extends QueryTest with SharedSparkSession
       assert(!isMarked(plan), s"expected plan NOT to be marked:\n$plan")
     }
 
-  private def checkSinglePartition(
+  protected def checkSinglePartition(
       query: String,
       expected: Seq[Row],
       confs: Seq[(String, String)] = enabledConfs): Unit = withSQLConf(confs: _*) {

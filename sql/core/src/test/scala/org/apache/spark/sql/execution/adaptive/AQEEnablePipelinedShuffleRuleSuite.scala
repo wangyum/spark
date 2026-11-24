@@ -28,7 +28,7 @@ import org.apache.spark.sql.test.SharedSparkSession
 /** Plan-level coverage of the conservative AQE channel eligibility policy. */
 class AQEEnablePipelinedShuffleRuleSuite extends QueryTest with SharedSparkSession {
 
-  private def exchangesWithPipelined(plan: SparkPlan): Seq[Boolean] =
+  protected def exchangesWithPipelined(plan: SparkPlan): Seq[Boolean] =
     plan.collect { case s: ShuffleExchangeExec => s.pipelined }
 
   test("a regular sibling prevents a mixed pipelined job") {

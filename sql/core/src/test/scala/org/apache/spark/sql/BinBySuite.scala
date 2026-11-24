@@ -68,7 +68,7 @@ class BinBySuite extends QueryTest with SharedSparkSession {
     """SELECT TIMESTAMP '2024-01-01 00:00:00' AS start,
       |  TIMESTAMP '2024-01-01 00:10:00' AS end, 100.0D AS value""".stripMargin)
 
-  private def binByExecArgs(sqlText: String): String = {
+  protected def binByExecArgs(sqlText: String): String = {
     val plan = spark.sql(sqlText).queryExecution.executedPlan
     val binByExec = plan.collectFirst {
       case b: BinByExec => b

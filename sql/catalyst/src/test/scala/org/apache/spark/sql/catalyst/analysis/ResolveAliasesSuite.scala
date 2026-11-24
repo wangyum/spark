@@ -35,7 +35,7 @@ class ResolveAliasesSuite extends AnalysisTest {
   private lazy val t2 = LocalRelation("b".attr.long)
   private lazy val intAttr = AttributeReference("x", IntegerType)()
 
-  private def checkAliasName(plan: LogicalPlan, expected: String): Unit = {
+  protected def checkAliasName(plan: LogicalPlan, expected: String): Unit = {
     val analyzed = getAnalyzer.execute(plan)
     val actual = analyzed.find(_.isInstanceOf[Project]).get.asInstanceOf[Project]
       .projectList.head.asInstanceOf[Alias].name
@@ -46,7 +46,7 @@ class ResolveAliasesSuite extends AnalysisTest {
     checkAliasName(CatalystSqlParser.parsePlan(sql), expected)
   }
 
-  private def checkSubqueryAliasName(plan: LogicalPlan, expected: String): Unit = {
+  protected def checkSubqueryAliasName(plan: LogicalPlan, expected: String): Unit = {
     val analyzed = getAnalyzer.execute(plan)
     val subqueryExpression = new ArrayBuffer[SubqueryExpression]()
     analyzed.transformExpressions {

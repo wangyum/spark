@@ -245,7 +245,7 @@ abstract class RowLevelOperationCatalystRuntimeFilterSuiteBase
    */
   protected case class GroupFilter(scanSchema: String, groups: Seq[String])
 
-  private def assertGroupFilter(
+  protected def assertGroupFilter(
       filter: InSubqueryExec,
       expectedFilterPaths: Seq[Seq[String]],
       expectedFilter: GroupFilter): Unit = {
@@ -272,13 +272,13 @@ abstract class RowLevelOperationCatalystRuntimeFilterSuiteBase
       s"group filter must select the groups holding matching rows, got ${groups.mkString(", ")}")
   }
 
-  private def fieldPath(expr: Expression): Option[Seq[String]] = expr match {
+  protected def fieldPath(expr: Expression): Option[Seq[String]] = expr match {
     case attr: Attribute => Some(Seq(attr.name))
     case GetStructFieldObject(child, field) => fieldPath(child).map(_ :+ field.name)
     case _ => None
   }
 
-  private def fieldPaths(expr: Expression): Option[Seq[Seq[String]]] = expr match {
+  protected def fieldPaths(expr: Expression): Option[Seq[Seq[String]]] = expr match {
     case struct: CreateNamedStruct =>
       val paths = struct.valExprs.map(fieldPath)
       Option.when(paths.forall(_.isDefined))(paths.flatten)

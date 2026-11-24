@@ -535,7 +535,7 @@ class InferFiltersFromConstraintsSuite extends PlanTest {
     testRangePredicatePushDown(Inner)
   }
 
-  private def testRangePredicatePushDown(joinType: JoinType): Unit = {
+  protected def testRangePredicatePushDown(joinType: JoinType): Unit = {
     // Simulates: SELECT * FROM a JOIN b ON a.key = b.key AND b.v >= a.k AND b.v <= a.k + 10
     // WHERE a.k = 5
     // The constant binding a.k = 5 should be substituted into the range predicates, producing

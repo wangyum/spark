@@ -174,7 +174,7 @@ class ParquetRowIndexSuite extends SharedSparkSession {
     testRowIndexGeneration("row index generation", conf)
   }
 
-  private def testRowIndexGeneration(label: String, conf: RowIndexTestConf): Unit = {
+  protected def testRowIndexGeneration(label: String, conf: RowIndexTestConf): Unit = {
     test (s"$label - ${conf.desc}") {
       withSQLConf(conf.sqlConfs: _*) {
         withTempPath { path =>

@@ -36,7 +36,7 @@ class InlineTableNonFoldableExpressionsSuite
   extends QueryTest with SharedSparkSession with AdaptiveSparkPlanHelper {
   import testImplicits._
 
-  private def expandExecs(df: DataFrame): Seq[ExpandExec] =
+  protected def expandExecs(df: DataFrame): Seq[ExpandExec] =
     collect(df.queryExecution.executedPlan) { case e: ExpandExec => e }
 
   private def contextOf(query: String, fragment: String): ExpectedContext = {

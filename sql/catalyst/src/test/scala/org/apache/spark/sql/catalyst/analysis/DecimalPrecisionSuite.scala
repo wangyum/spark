@@ -54,7 +54,7 @@ class DecimalPrecisionSuite extends AnalysisTest with BeforeAndAfter {
     assert(analyzer.execute(plan).schema.fields(0).dataType === expectedType)
   }
 
-  private def checkComparison(expression: Expression, expectedType: DataType): Unit = {
+  protected def checkComparison(expression: Expression, expectedType: DataType): Unit = {
     val plan = Project(Alias(expression, "c")() :: Nil, relation)
     val comparison = analyzer.execute(plan).collect {
       case Project(Alias(e: BinaryComparison, _) :: Nil, _) => e

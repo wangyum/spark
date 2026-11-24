@@ -56,7 +56,7 @@ class UnionCodegenSuite extends SharedSparkSession with AdaptiveSparkPlanHelper 
       numPartitions: Int): DataFrame =
     spark.range(start, end, step, numPartitions).toDF("id")
 
-  private def wscgCount(df: DataFrame): Int =
+  protected def wscgCount(df: DataFrame): Int =
     df.queryExecution.executedPlan.collect {
       case s: WholeStageCodegenExec => s
     }.size
@@ -68,7 +68,7 @@ class UnionCodegenSuite extends SharedSparkSession with AdaptiveSparkPlanHelper 
    * Stricter than `codegenUnions` on purpose: this matches only a union that is the root of its own
    * codegen stage, which is the node whose tags and metrics the callers here inspect.
    */
-  private def fusedUnions(df: DataFrame): Seq[UnionExec] =
+  protected def fusedUnions(df: DataFrame): Seq[UnionExec] =
     collect(df.queryExecution.executedPlan) {
       case w: WholeStageCodegenExec if w.child.isInstanceOf[UnionExec] =>
         w.child.asInstanceOf[UnionExec]
@@ -87,7 +87,7 @@ class UnionCodegenSuite extends SharedSparkSession with AdaptiveSparkPlanHelper 
    * through AQE wrappers and query stages; `SparkPlan.collect` stops at them, since both are
    * `LeafExecNode`s.
    */
-  private def codegenUnions(df: DataFrame): Seq[UnionExec] = {
+  protected def codegenUnions(df: DataFrame): Seq[UnionExec] = {
     def participating(plan: SparkPlan): Seq[UnionExec] = plan match {
       case _: InputAdapter => Nil
       case u: UnionExec => u +: u.children.flatMap(participating)

@@ -588,7 +588,7 @@ class StreamingAggregationSuite extends StateStoreMetricsTest with Assertions {
    * The third thing it checks that we don't add an unnecessary shuffle in-between
    * `StateStoreRestoreExec` and `StateStoreSaveExec`.
    */
-  private def checkAggregationChain(
+  protected def checkAggregationChain(
       se: StreamExecution,
       expectedPartition: Int): Boolean = {
     val executedPlan = se.lastExecution.executedPlan

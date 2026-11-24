@@ -73,7 +73,7 @@ class ConvertToCatalystSuite extends PlanTest {
    * included -- the rule converts those too (`transformDownWithSubqueriesAndPruning`), while a
    * plain `collect` stops at the outer plan and would call a column placed inside one absent.
    */
-  private def paramColumns(plan: LogicalPlan): Seq[Alias] =
+  protected def paramColumns(plan: LogicalPlan): Seq[Alias] =
     plan.collectWithSubqueries { case Project(list, _) => list }.flatten.collect {
       case a: Alias if a.name.startsWith("_udf_param_") => a
     }
@@ -83,7 +83,7 @@ class ConvertToCatalystSuite extends PlanTest {
    * object directly skips them, and stranding a reference or widening a schema is exactly how this
    * rewrite would go wrong.
    */
-  private def convert(plan: LogicalPlan): LogicalPlan = {
+  protected def convert(plan: LogicalPlan): LogicalPlan = {
     val converted = ConvertToCatalyst(plan)
     // What the real Optimizer checks around every rule when `spark.sql.planChangeValidation` is on
     // (it defaults to `Utils.isTesting`) and what applying a rule object directly skips: dangling

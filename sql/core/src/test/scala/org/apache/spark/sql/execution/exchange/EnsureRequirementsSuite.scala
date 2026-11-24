@@ -3525,7 +3525,7 @@ class EnsureRequirementsSuite extends SharedSparkSession {
     }
   }
 
-  private def anyGpeEnabled(plan: SparkPlan): Boolean =
+  protected def anyGpeEnabled(plan: SparkPlan): Boolean =
     plan.collectFirst { case gpe: GroupPartitionsExec if gpe.enableSortedMerge => true }.isDefined
 
   /** A parent that requires `distribution` of its single `child` and no ordering. */
@@ -3535,7 +3535,7 @@ class EnsureRequirementsSuite extends SharedSparkSession {
       requiredChildDistribution = Seq(distribution),
       requiredChildOrdering = Seq(Seq.empty))
 
-  private def groupPartitionsNodes(plan: SparkPlan): Seq[GroupPartitionsExec] =
+  protected def groupPartitionsNodes(plan: SparkPlan): Seq[GroupPartitionsExec] =
     plan.collect { case g: GroupPartitionsExec => g }
 }
 

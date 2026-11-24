@@ -27,7 +27,7 @@ import org.apache.spark.sql.types.BooleanType
 class ReplaceNullWithFalseInPredicateEndToEndSuite extends SharedSparkSession {
   import testImplicits._
 
-  private def checkPlanIsEmptyLocalScan(df: DataFrame): Unit =
+  protected def checkPlanIsEmptyLocalScan(df: DataFrame): Unit =
     df.queryExecution.executedPlan match {
       case s: LocalTableScanExec => assert(s.rows.isEmpty)
       case p => fail(s"$p is not LocalTableScanExec")

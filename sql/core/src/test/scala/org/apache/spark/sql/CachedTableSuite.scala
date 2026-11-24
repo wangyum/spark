@@ -130,7 +130,7 @@ class CachedTableSuite extends SharedSparkSession
     maybeBlock.nonEmpty && isExpectLevel
   }
 
-  private def getNumInMemoryRelations(ds: Dataset[_]): Int = {
+  protected def getNumInMemoryRelations(ds: Dataset[_]): Int = {
     val plan = ds.queryExecution.withCachedData
     var sum = plan.collect { case _: InMemoryRelation => 1 }.sum
     plan.transformAllExpressions {
@@ -141,7 +141,7 @@ class CachedTableSuite extends SharedSparkSession
     sum
   }
 
-  private def getNumInMemoryTablesInSubquery(plan: SparkPlan): Int = {
+  protected def getNumInMemoryTablesInSubquery(plan: SparkPlan): Int = {
     plan.expressions.flatMap(_.collect {
       case sub: ExecSubqueryExpression => getNumInMemoryTablesRecursively(sub.plan)
     }).sum
@@ -599,7 +599,7 @@ class CachedTableSuite extends SharedSparkSession
   /**
    * Verifies that the plan for `df` contains `expected` number of Exchange operators.
    */
-  private def verifyNumExchanges(df: classic.DataFrame, expected: Int): Unit = {
+  protected def verifyNumExchanges(df: classic.DataFrame, expected: Int): Unit = {
     withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       df.collect()
     }

@@ -311,7 +311,7 @@ class AlwaysPersistedConfigsSuite extends SharedSparkSession {
     assert(analyzedSqlFunction(testFunctionName).properties.get(confName).get == expectedValue)
   }
 
-  private def analyzedSqlFunction(functionName: String): SQLFunction = {
+  protected def analyzedSqlFunction(functionName: String): SQLFunction = {
     val df = sql(s"select $functionName()")
     df.queryExecution.analyzed
       .asInstanceOf[Project]

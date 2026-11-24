@@ -52,7 +52,7 @@ class ExtractPythonUDFFromLambdaSuite extends QueryTest with SharedSparkSession 
   private def arrayDF = Seq(Seq(1, 2, 3)).toDF("values")
 
   /** All `PythonUDF`s that remain inside a lambda in the optimized plan. */
-  private def udfsInsideLambda(df: org.apache.spark.sql.DataFrame): Seq[PythonUDF] = {
+  protected def udfsInsideLambda(df: org.apache.spark.sql.DataFrame): Seq[PythonUDF] = {
     df.queryExecution.optimizedPlan.expressions.flatMap { e =>
       e.collect { case l: LambdaFunction => l }.flatMap { l =>
         l.collect { case u: PythonUDF => u }

@@ -548,7 +548,7 @@ class SparkSessionExtensionSuite extends PlanTest with AdaptiveSparkPlanHelper {
     }
   }
 
-  private def testInjectColumnar(enableAQE: Boolean): Unit = {
+  protected def testInjectColumnar(enableAQE: Boolean): Unit = {
     def collectPlanSteps(plan: SparkPlan): Seq[Int] = plan match {
       case a: AdaptiveSparkPlanExec =>
         assert(a.toString.startsWith("AdaptiveSparkPlan isFinalPlan=true"))
@@ -860,7 +860,7 @@ class SparkSessionExtensionSuite extends PlanTest with AdaptiveSparkPlanHelper {
    * covers the stamping itself by calling the rule directly, so it stays green if one of the
    * post-hook listings is dropped; these pin the post-hook stamping in each pipeline.
    */
-  private def checkInjectedUnionIsStamped(
+  protected def checkInjectedUnionIsStamped(
       extensions: Seq[SparkSessionExtensionsProvider], aqeEnabled: Boolean): Unit = {
     withSession(extensions) { session =>
       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, aqeEnabled)

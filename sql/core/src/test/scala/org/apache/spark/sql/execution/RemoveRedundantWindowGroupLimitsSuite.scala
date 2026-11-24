@@ -27,7 +27,7 @@ abstract class RemoveRedundantWindowGroupLimitsSuiteBase
     extends SharedSparkSession
     with AdaptiveSparkPlanHelper {
 
-  private def checkNumWindowGroupLimits(df: DataFrame, count: Int): Unit = {
+  protected def checkNumWindowGroupLimits(df: DataFrame, count: Int): Unit = {
     val plan = df.queryExecution.executedPlan
     assert(collectWithSubqueries(plan) { case exec: WindowGroupLimitExec => exec }.length == count)
   }
@@ -39,7 +39,7 @@ abstract class RemoveRedundantWindowGroupLimitsSuiteBase
     checkAnswer(df, result)
   }
 
-  private def unwrapCodegen(plan: SparkPlan): SparkPlan = plan match {
+  protected def unwrapCodegen(plan: SparkPlan): SparkPlan = plan match {
     case w: WholeStageCodegenExec => unwrapCodegen(w.child)
     case i: InputAdapter => unwrapCodegen(i.child)
     case other => other

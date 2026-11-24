@@ -1091,7 +1091,7 @@ class DataFrameAggregateSuite extends SharedSparkSession
     )
   }
 
-  private def assertNoExceptions(c: Column): Unit = {
+  protected def assertNoExceptions(c: Column): Unit = {
     for ((wholeStage, useObjectHashAgg) <-
          Seq((true, true), (true, false), (false, true), (false, false))) {
       withSQLConf(

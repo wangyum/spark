@@ -58,7 +58,7 @@ class CombineApproximatePercentilesSuite extends PlanTest {
     }
   }
 
-  private def percentileAggregates(aggregate: Aggregate): Seq[AggregateExpression] = {
+  protected def percentileAggregates(aggregate: Aggregate): Seq[AggregateExpression] = {
     aggregate.aggregateExpressions.flatMap(_.collect {
       case expression @ AggregateExpression(_: ApproximatePercentile, _, _, _, _) => expression
     })
@@ -74,7 +74,7 @@ class CombineApproximatePercentilesSuite extends PlanTest {
     })
   }
 
-  private def assertNotCombined(aggregate: Aggregate): Unit = {
+  protected def assertNotCombined(aggregate: Aggregate): Unit = {
     val expressions = percentileAggregates(aggregate)
     assert(expressions.map(_.resultId).distinct.size == expressions.size)
     assert(!aggregate.aggregateExpressions.exists(_.exists(_.isInstanceOf[GetArrayItem])))

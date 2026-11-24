@@ -1243,7 +1243,7 @@ class ArrowCachedBatchSerializerSuite extends QueryTest with SharedSparkSession 
 
   // Helper: cache a single-column DataFrame (row path) and return its ArrowCachedBatch stats.
   // Stats layout per column: [lowerBound(0), upperBound(1), nullCount(2), rowCount(3), size(4)].
-  private def cachedStats(df: org.apache.spark.sql.DataFrame)
+  protected def cachedStats(df: org.apache.spark.sql.DataFrame)
       : org.apache.spark.sql.catalyst.InternalRow = {
     df.count()  // trigger cache population
     val relation = df.queryExecution.executedPlan.collectFirst {
@@ -1262,7 +1262,7 @@ class ArrowCachedBatchSerializerSuite extends QueryTest with SharedSparkSession 
 
   // Helper: the InMemoryRelation behind a cached DataFrame, after populating the cache. The
   // DataFrame's queryExecution is memoized, so this must run before anything else forces it.
-  private def cachedRelation(df: org.apache.spark.sql.DataFrame): InMemoryRelation = {
+  protected def cachedRelation(df: org.apache.spark.sql.DataFrame): InMemoryRelation = {
     df.cache()
     df.count()
     df.queryExecution.executedPlan.collectFirst {

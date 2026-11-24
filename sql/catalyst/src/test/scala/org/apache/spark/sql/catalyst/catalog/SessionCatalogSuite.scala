@@ -867,7 +867,7 @@ abstract class SessionCatalogSuite extends AnalysisTest with Eventually {
     Project(projectList, CatalystSqlParser.parsePlan(metadata.viewText.get))
   }
 
-  private def stripViewDDLFromGetViewColumbByNameAndOrdinal(plan: LogicalPlan): LogicalPlan = {
+  protected def stripViewDDLFromGetViewColumbByNameAndOrdinal(plan: LogicalPlan): LogicalPlan = {
     plan.transformAllExpressions {
       case getViewColumnByNameAndOrdinal: GetViewColumnByNameAndOrdinal =>
         getViewColumnByNameAndOrdinal.copy(viewDDL = None)

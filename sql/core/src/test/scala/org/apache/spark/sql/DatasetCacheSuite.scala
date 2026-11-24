@@ -43,7 +43,7 @@ class DatasetCacheSuite extends SharedSparkSession
   /**
    * Asserts that a cached [[Dataset]] will be built using the given number of other cached results.
    */
-  private def assertCacheDependency(df: DataFrame, numOfCachesDependedUpon: Int = 1): Unit = {
+  protected def assertCacheDependency(df: DataFrame, numOfCachesDependedUpon: Int = 1): Unit = {
     val plan = df.queryExecution.withCachedData
     assert(plan.isInstanceOf[InMemoryRelation])
     val internalPlan = plan.asInstanceOf[InMemoryRelation].cacheBuilder.cachedPlan

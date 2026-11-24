@@ -115,7 +115,7 @@ class InlineTableParsingImprovementsSuite extends SharedSparkSession {
   /**
    * Traverse the expression and check for the presence of the given node type.
    */
-  private def traverseExpressionAndCheckForNodeType[T <: LogicalPlan](
+  protected def traverseExpressionAndCheckForNodeType[T <: LogicalPlan](
         expression: Expression, nodeType: Class[T]): Boolean = expression match {
     case scalarSubquery: ScalarSubquery => scalarSubquery.plan.exists(
       traversePlanAndCheckForNodeType(_, nodeType))

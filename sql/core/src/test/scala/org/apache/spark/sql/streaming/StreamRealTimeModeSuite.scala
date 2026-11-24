@@ -558,7 +558,7 @@ class StreamRealTimeModeWithManualClockSuite extends StreamRealTimeModeManualClo
   }
 
   /** Assert every shuffle exchange in the query's last executed plan is pipelined. */
-  private def assertAllExchangesPipelined(q: StreamExecution): Unit = {
+  protected def assertAllExchangesPipelined(q: StreamExecution): Unit = {
     val exchanges = q.lastExecution.executedPlan.collect { case s: ShuffleExchangeExec => s }
     assert(exchanges.nonEmpty, "expected at least one shuffle exchange in the plan")
     assert(exchanges.forall(_.pipelined),

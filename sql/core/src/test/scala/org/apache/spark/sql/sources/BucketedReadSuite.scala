@@ -103,7 +103,7 @@ abstract class BucketedReadSuite extends QueryTest with AdaptiveSparkPlanHelper 
     }
   }
 
-  private def getFileScan(plan: SparkPlan): FileSourceScanExec = {
+  protected def getFileScan(plan: SparkPlan): FileSourceScanExec = {
     val fileScan = collect(plan) { case f: FileSourceScanExec => f }
     assert(fileScan.nonEmpty, plan)
     fileScan.head
@@ -396,7 +396,7 @@ abstract class BucketedReadSuite extends QueryTest with AdaptiveSparkPlanHelper 
    * these 2 tables, and firstly make sure the answer is corrected, and then check if the shuffle
    * exists as user expected according to the `shuffleLeft` and `shuffleRight`.
    */
-  private def testBucketing(
+  protected def testBucketing(
       bucketedTableTestSpecLeft: BucketedTableTestSpec,
       bucketedTableTestSpecRight: BucketedTableTestSpec,
       joinType: String = "inner",

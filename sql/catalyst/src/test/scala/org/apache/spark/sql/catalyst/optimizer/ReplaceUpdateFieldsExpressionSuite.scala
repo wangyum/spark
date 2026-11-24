@@ -47,7 +47,7 @@ class ReplaceUpdateFieldsExpressionSuite extends PlanTest {
     }
   }
 
-  private def expressionNodeCount(nullable: Boolean, depth: Int): Int = {
+  protected def expressionNodeCount(nullable: Boolean, depth: Int): Int = {
     val nested = if (nullable) {
       $"nested".struct($"value".int)
     } else {

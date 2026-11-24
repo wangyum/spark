@@ -93,7 +93,7 @@ class AdaptiveQueryExecSuite
   override protected def sparkConf =
     super.sparkConf.set(SQLConf.ADAPTIVE_MAX_SHUFFLE_HASH_JOIN_LOCAL_MAP_THRESHOLD.key, "0")
 
-  private def runAdaptiveAndVerifyResult(query: String,
+  protected def runAdaptiveAndVerifyResult(query: String,
       skipCheckAnswer: Boolean = false): (SparkPlan, SparkPlan) = {
     var finalPlanCnt = 0
     var hasMetricsEvent = false
@@ -142,7 +142,7 @@ class AdaptiveQueryExecSuite
     (dfAdaptive.queryExecution.sparkPlan, adaptivePlan)
   }
 
-  private def findTopLevelBroadcastHashJoin(plan: SparkPlan): Seq[BroadcastHashJoinExec] = {
+  protected def findTopLevelBroadcastHashJoin(plan: SparkPlan): Seq[BroadcastHashJoinExec] = {
     collect(plan) {
       case j: BroadcastHashJoinExec => j
     }
@@ -154,69 +154,69 @@ class AdaptiveQueryExecSuite
     }
   }
 
-  private def findTopLevelSortMergeJoin(plan: SparkPlan): Seq[SortMergeJoinExec] = {
+  protected def findTopLevelSortMergeJoin(plan: SparkPlan): Seq[SortMergeJoinExec] = {
     collect(plan) {
       case j: SortMergeJoinExec => j
     }
   }
 
-  private def findTopLevelShuffledHashJoin(plan: SparkPlan): Seq[ShuffledHashJoinExec] = {
+  protected def findTopLevelShuffledHashJoin(plan: SparkPlan): Seq[ShuffledHashJoinExec] = {
     collect(plan) {
       case j: ShuffledHashJoinExec => j
     }
   }
 
-  private def findTopLevelBaseJoin(plan: SparkPlan): Seq[BaseJoinExec] = {
+  protected def findTopLevelBaseJoin(plan: SparkPlan): Seq[BaseJoinExec] = {
     collect(plan) {
       case j: BaseJoinExec => j
     }
   }
 
-  private def findTopLevelSort(plan: SparkPlan): Seq[SortExec] = {
+  protected def findTopLevelSort(plan: SparkPlan): Seq[SortExec] = {
     collect(plan) {
       case s: SortExec => s
     }
   }
 
-  private def findTopLevelAggregate(plan: SparkPlan): Seq[BaseAggregateExec] = {
+  protected def findTopLevelAggregate(plan: SparkPlan): Seq[BaseAggregateExec] = {
     collect(plan) {
       case agg: BaseAggregateExec => agg
     }
   }
 
-  private def findTopLevelLimit(plan: SparkPlan): Seq[CollectLimitExec] = {
+  protected def findTopLevelLimit(plan: SparkPlan): Seq[CollectLimitExec] = {
     collect(plan) {
       case l: CollectLimitExec => l
     }
   }
 
-  private def findTopLevelUnion(plan: SparkPlan): Seq[UnionExec] = {
+  protected def findTopLevelUnion(plan: SparkPlan): Seq[UnionExec] = {
     collect(plan) {
       case l: UnionExec => l
     }
   }
 
-  private def findReusedExchange(plan: SparkPlan): Seq[ReusedExchangeExec] = {
+  protected def findReusedExchange(plan: SparkPlan): Seq[ReusedExchangeExec] = {
     collectWithSubqueries(plan) {
       case ShuffleQueryStageExec(_, e: ReusedExchangeExec, _) => e
       case BroadcastQueryStageExec(_, e: ReusedExchangeExec, _) => e
     }
   }
 
-  private def findReusedSubquery(plan: SparkPlan): Seq[ReusedSubqueryExec] = {
+  protected def findReusedSubquery(plan: SparkPlan): Seq[ReusedSubqueryExec] = {
     collectWithSubqueries(plan) {
       case e: ReusedSubqueryExec => e
     }
   }
 
-  private def findInMemoryTable(plan: SparkPlan): Seq[InMemoryTableScanExec] = {
+  protected def findInMemoryTable(plan: SparkPlan): Seq[InMemoryTableScanExec] = {
     collect(plan) {
       case c: InMemoryTableScanExec
           if c.relation.cachedPlan.isInstanceOf[AdaptiveSparkPlanExec] => c
     }
   }
 
-  private def checkNumLocalShuffleReads(
+  protected def checkNumLocalShuffleReads(
       plan: SparkPlan, numShufflesWithoutLocalRead: Int = 0): Unit = {
     val numShuffles = collect(plan) {
       case s: ShuffleQueryStageExec => s
@@ -233,7 +233,7 @@ class AdaptiveQueryExecSuite
     assert(numShuffles === (numLocalReads.length + numShufflesWithoutLocalRead))
   }
 
-  private def checkInitialPartitionNum(df: Dataset[_], numPartition: Int): Unit = {
+  protected def checkInitialPartitionNum(df: Dataset[_], numPartition: Int): Unit = {
     // repartition obeys initialPartitionNum when adaptiveExecutionEnabled
     val plan = df.queryExecution.executedPlan
     assert(plan.isInstanceOf[AdaptiveSparkPlanExec])
@@ -2531,7 +2531,7 @@ class AdaptiveQueryExecSuite
     }
   }
 
-  private def testNoAqeInStatefulStreamingQuery(
+  protected def testNoAqeInStatefulStreamingQuery(
       outputMode: OutputMode)(fn: MemoryStream[Int] => DataFrame): Unit = {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",

@@ -62,7 +62,7 @@ class FullOuterJoinPartitioningSuite
     SQLConf.COALESCE_PARTITIONS_MAX_REDUCER_PARTITIONS_PER_TASK.key -> "3",
     SQLConf.SHUFFLE_PARTITIONS.key -> "10")
 
-  private def assertCoalescedToSeveralPartitions(plan: SparkPlan): Unit = {
+  protected def assertCoalescedToSeveralPartitions(plan: SparkPlan): Unit = {
     val reads = collect(plan) { case r: AQEShuffleReadExec => r }
     assert(reads.nonEmpty, plan)
     assert(reads.forall(r => (2 to 4).contains(r.outputPartitioning.numPartitions)), plan)
@@ -90,14 +90,14 @@ class FullOuterJoinPartitioningSuite
     }
   }
 
-  private def numShuffles(plan: SparkPlan): Int =
+  protected def numShuffles(plan: SparkPlan): Int =
     collect(plan) { case s: ShuffleExchangeExec => s }.size
 
-  private def fullOuterJoins(plan: SparkPlan): Seq[ShuffledJoin] =
+  protected def fullOuterJoins(plan: SparkPlan): Seq[ShuffledJoin] =
     collect(plan) { case j: ShuffledJoin if j.joinType == FullOuter => j }
 
   /** The members of a reported partitioning, each over the coalesced join keys. */
-  private def members(partitioning: Partitioning): Seq[Partitioning] = {
+  protected def members(partitioning: Partitioning): Seq[Partitioning] = {
     val ps = PartitioningCollection.flatten(partitioning)
     ps.foreach {
       case h: HashPartitioningLike =>

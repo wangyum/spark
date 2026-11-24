@@ -3239,7 +3239,7 @@ abstract class MergeIntoTableSuiteBase extends RowLevelOperationSuiteBase
     }
   }
 
-  private def findMergeExec(query: String): MergeRowsExec = {
+  protected def findMergeExec(query: String): MergeRowsExec = {
     val plan = executeAndKeepPlan {
       sql(query)
     }
@@ -3265,7 +3265,7 @@ abstract class MergeIntoTableSuiteBase extends RowLevelOperationSuiteBase
     assertNoLeftBroadcastOrReplication(plan)
   }
 
-  private def assertNoLeftBroadcastOrReplication(plan: SparkPlan): Unit = {
+  protected def assertNoLeftBroadcastOrReplication(plan: SparkPlan): Unit = {
     val joins = plan.collect {
       case j: BroadcastHashJoinExec if j.buildSide == BuildLeft => j
       case j: BroadcastNestedLoopJoinExec if j.buildSide == BuildLeft => j

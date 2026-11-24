@@ -66,7 +66,7 @@ class HigherOrderFunctionsSuite extends SparkFunSuite with ExpressionEvalHelper 
     LambdaFunction(function, Seq(lv1, lv2, lv3))
   }
 
-  private def validateBinding(
+  protected def validateBinding(
       e: Expression,
       argInfo: Seq[(DataType, Boolean)]): LambdaFunction = e match {
     case f: LambdaFunction =>

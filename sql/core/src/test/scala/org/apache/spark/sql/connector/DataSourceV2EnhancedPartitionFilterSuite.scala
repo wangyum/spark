@@ -730,7 +730,7 @@ class DataSourceV2EnhancedPartitionFilterSuite
     }
   }
 
-  private def assertTranslatableBeforeUntranslatableInPostScan(df: DataFrame): Unit = {
+  protected def assertTranslatableBeforeUntranslatableInPostScan(df: DataFrame): Unit = {
     val postScanFilterExec = df.queryExecution.executedPlan.collect {
       case f @ FilterExec(_, _) if f.exists(_.isInstanceOf[BatchScanExec]) => f
     }.headOption.getOrElse(fail("Expected a post-scan FilterExec above BatchScanExec"))
@@ -755,7 +755,7 @@ class DataSourceV2EnhancedPartitionFilterSuite
    * Collects pushed partition predicates from the plan when the scan is our
    * test in-memory scan.
    */
-  private def getPushedPartitionPredicates(
+  protected def getPushedPartitionPredicates(
       df: DataFrame): Seq[PartitionPredicate] = {
     val batchScan = stripAQEPlan(df.queryExecution.executedPlan).collectFirst {
       case b: BatchScanExec => b
@@ -825,7 +825,7 @@ class DataSourceV2EnhancedPartitionFilterSuite
    * Asserts that the scan reads exactly the given set of partition keys (single-partition
    * field tables use keyString() which is the partition value).
    */
-  private def assertScanReturnsPartitionKeys(
+  protected def assertScanReturnsPartitionKeys(
       df: DataFrame,
       expectedPartitionKeys: Set[String]): Unit = {
     val batchScan = df.queryExecution.executedPlan.collectFirst {

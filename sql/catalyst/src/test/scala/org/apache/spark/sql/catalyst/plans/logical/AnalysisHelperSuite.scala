@@ -30,7 +30,7 @@ class AnalysisHelperSuite extends SparkFunSuite {
       p
   }
 
-  private val exprFunction: PartialFunction[Expression, Expression] = {
+  protected val exprFunction: PartialFunction[Expression, Expression] = {
     case e: Literal =>
       invocationCount += 1
       Literal.TrueLiteral

@@ -37,26 +37,26 @@ class CollationAggregationSuite
 
   import testImplicits._
 
-  private def assertUsesHashAggregate(df: DataFrame): Unit = {
+  protected def assertUsesHashAggregate(df: DataFrame): Unit = {
     val plan = df.queryExecution.executedPlan
     assert(exists(plan)(_.isInstanceOf[HashAggregateExec]), plan.toString)
     assert(!exists(plan)(_.isInstanceOf[SortAggregateExec]), plan.toString)
   }
 
-  private def assertUsesObjectHashAggregate(df: DataFrame): Unit = {
+  protected def assertUsesObjectHashAggregate(df: DataFrame): Unit = {
     val plan = df.queryExecution.executedPlan
     assert(exists(plan)(_.isInstanceOf[ObjectHashAggregateExec]), plan.toString)
     assert(!exists(plan)(_.isInstanceOf[SortAggregateExec]), plan.toString)
   }
 
-  private def assertUsesSortAggregate(df: DataFrame): Unit = {
+  protected def assertUsesSortAggregate(df: DataFrame): Unit = {
     val plan = df.queryExecution.executedPlan
     assert(exists(plan)(_.isInstanceOf[SortAggregateExec]), plan.toString)
     assert(!exists(plan)(_.isInstanceOf[HashAggregateExec]), plan.toString)
     assert(!exists(plan)(_.isInstanceOf[ObjectHashAggregateExec]), plan.toString)
   }
 
-  private def generatedCode(df: DataFrame): String = {
+  protected def generatedCode(df: DataFrame): String = {
     flatMap(df.queryExecution.executedPlan) {
       case stage: WholeStageCodegenExec => Seq(stage.doCodeGen()._2.body)
       case _ => Nil

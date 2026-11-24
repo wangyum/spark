@@ -1651,7 +1651,7 @@ class DataSourceV2StrategySuite extends SharedSparkSession {
     assertInferredEvaluation(plan, evaluate)
   }
 
-  private def assertInferredEvaluation(plan: LogicalPlan, evaluate: Boolean): Unit = {
+  protected def assertInferredEvaluation(plan: LogicalPlan, evaluate: Boolean): Unit = {
     val scan = plan.collectFirst { case scan: DataSourceV2ScanRelation => scan }.get
     val physicalPlans = new DataSourceV2Strategy(spark).apply(plan)
     assert(physicalPlans.nonEmpty, s"expected DataSourceV2Strategy to plan:\n$plan")
@@ -2119,7 +2119,7 @@ class DataSourceV2StrategySuite extends SharedSparkSession {
     assert(v2ExprActual == v2Expr, "V2 expressions must match")
   }
 
-  private def checkCatalystConversion(
+  protected def checkCatalystConversion(
       v2Expr: V2Expression,
       catalystExpr: Expression): Unit = {
     val catalystExprActual = V2ExpressionUtils.toCatalyst(v2Expr).getOrElse {

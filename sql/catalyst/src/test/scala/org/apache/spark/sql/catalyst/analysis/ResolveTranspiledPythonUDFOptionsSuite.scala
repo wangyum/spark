@@ -38,7 +38,7 @@ class ResolveTranspiledPythonUDFOptionsSuite extends PlanTest {
       PythonEvalType.SQL_BATCHED_UDF, udfDeterministic = true)
 
   // Runs the rule on a Project that wraps the node, and returns the (possibly pruned) node.
-  private def prune(node: TranspiledPythonUDF, rel: LocalRelation): TranspiledPythonUDF = {
+  protected def prune(node: TranspiledPythonUDF, rel: LocalRelation): TranspiledPythonUDF = {
     val rewritten = ResolveTranspiledPythonUDFOptions(Project(Seq(Alias(node, "r")()), rel))
     rewritten.expressions.flatMap(_.collect { case t: TranspiledPythonUDF => t }).head
   }
