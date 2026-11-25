@@ -23,9 +23,9 @@ on:
   workflow_dispatch:
     inputs:
       class:
-        description: 'Benchmark class'
+        description: 'Benchmark class glob'
         required: true
-        default: '*'
+        default: '*LargeBinaryValueReadBenchmark'
       jdk:
         type: choice
         description: 'JDK version: 21 or 25'
@@ -59,7 +59,7 @@ on:
         type: boolean
         description: 'Generate TPC-DS data (required for TPC-DS benchmarks and all-benchmark runs)'
         required: true
-        default: true
+        default: false
       expected-cpu:
         type: string
         description: 'Expected CPU model (e.g. "AMD EPYC 7763"). If set, the job fails early when the runner CPU does not match.'
@@ -175,32 +175,53 @@ jobs:
       with:
         java-version: ${{ inputs.jdk }}
         coursier: cache
-    - name: Checkout parquet-java (apache/parquet-java#3990)
+    # Two parquet-java commits, installed under different versions so one runner can
+    # build both Spark trees against them. d6fb2c8cd is the parent of GH-3988;
+    # 165ea3897 is GH-3988 (PageReader.getTotalUncompressedSize).
+    - name: Checkout parquet-java without GH-3988
       uses: actions/checkout@v7
       with:
         repository: wangyum/parquet-java
-        ref: expose-pagereader-uncompressed-size
-        path: parquet-java-src
+        ref: d6fb2c8cd8dda3684c350b4016cc85905d31a8d5
+        path: parquet-nogh3988
+    - name: Checkout parquet-java with GH-3988
+      uses: actions/checkout@v7
+      with:
+        repository: wangyum/parquet-java
+        ref: 165ea3897b369f08e89bc5aaf746cd41997840ef
+        path: parquet-gh3988
     - name: Build Thrift (required by parquet-format-structures)
-      working-directory: parquet-java-src
+      working-directory: parquet-gh3988
       run: ./dev/ci-before_install.sh
-    - name: Build parquet-java snapshot in an isolated local repo
-      working-directory: parquet-java-src
+    - name: Build both parquet-java snapshots into the shared local repo
       run: |
-        # -pl lists every org.apache.parquet artifact Spark's pom.xml pins to ${parquet.version}
-        # (parquet-column, parquet-hadoop, parquet-avro); -am also-makes whatever those need
-        # transitively (parquet-common, parquet-encoding, parquet-format-structures,
-        # parquet-variant, parquet-jackson, parquet-generator, ...), however deep that goes.
-        ./mvnw -q -B -Dmaven.repo.local="${{ github.workspace }}/.m2-parquet-build" \
-          -pl parquet-avro,parquet-column,parquet-hadoop -am \
-          install -DskipTests -Dspotless.check.skip=true -Djapicmp.skip=true
-    - name: Merge the built parquet-java artifacts into the shared local repo
-      # Built in an isolated -Dmaven.repo.local above so any issue resolving parquet-java's
-      # own (unrelated) dependencies can't corrupt the ~/.m2/repository that Spark's build
-      # also reads from -- only the org.apache.parquet artifacts we just built are copied over.
-      run: |
-        mkdir -p ~/.m2/repository/org/apache/parquet
-        cp -r "${{ github.workspace }}/.m2-parquet-build/org/apache/parquet/." ~/.m2/repository/org/apache/parquet/
+        set -euo pipefail
+        build_parquet() {
+          local dir="$1"
+          local version="$2"
+          local repo="$3"
+          find "$dir" -name pom.xml -print0 \
+            | xargs -0 sed -i "s|<version>1.19.0-SNAPSHOT</version>|<version>${version}</version>|g"
+          (
+            cd "$dir"
+            # -pl lists every org.apache.parquet artifact Spark's pom.xml pins to ${parquet.version}
+            # (parquet-column, parquet-hadoop, parquet-avro); -am also-makes whatever those need
+            # transitively (parquet-common, parquet-encoding, parquet-format-structures,
+            # parquet-variant, parquet-jackson, parquet-generator, ...).
+            ./mvnw -q -B -Dmaven.repo.local="$repo" \
+              -pl parquet-avro,parquet-column,parquet-hadoop -am \
+              install -DskipTests -Dspotless.check.skip=true -Djapicmp.skip=true
+          )
+          mkdir -p ~/.m2/repository/org/apache/parquet
+          cp -r "${repo}/org/apache/parquet/." ~/.m2/repository/org/apache/parquet/
+        }
+        build_parquet parquet-nogh3988 1.19.0-nogh3988-SNAPSHOT "${{ github.workspace }}/.m2-parquet-nogh3988"
+        build_parquet parquet-gh3988 1.19.0-gh3988-SNAPSHOT "${{ github.workspace }}/.m2-parquet-gh3988"
+        # Drop the source trees and isolated repos so the later `find .` in spark-submit
+        # cannot put both parquet versions on the same classpath.
+        rm -rf parquet-nogh3988 parquet-gh3988 \
+          "${{ github.workspace }}/.m2-parquet-nogh3988" \
+          "${{ github.workspace }}/.m2-parquet-gh3988"
     - name: Cache TPC-DS generated data
       if: inputs.generate-tpcds
       id: cache-tpcds-sf-1
@@ -210,22 +231,51 @@ jobs:
           ./tpcds-sf-1
           ./tpcds-sf-1-text
         key: tpcds-${{ hashFiles('.github/workflows/benchmark.yml', 'sql/core/src/test/scala/org/apache/spark/sql/TPCDSSchema.scala') }}
-    - name: Run benchmarks
+    - name: Run baseline and GH-3988 benchmarks on this runner
       run: |
-        ./build/sbt -Pscala-${{ inputs.scala }} -Pyarn -Pkubernetes -Phive -Phive-thriftserver -Phadoop-cloud -Pkinesis-asl -Pcredential-aws -Pspark-ganglia-lgpl Test/package
-        # Make less noisy
-        cp conf/log4j2.properties.template conf/log4j2.properties
-        sed -i 's/rootLogger.level = info/rootLogger.level = warn/g' conf/log4j2.properties
-        # In benchmark, we use local as master so set driver memory only. Note that GitHub Actions has 7 GB memory limit.
-        bin/spark-submit \
-          --driver-memory 6g --class org.apache.spark.benchmark.Benchmarks \
-          --jars "`find . -name '*-SNAPSHOT-tests.jar' -o -name '*avro*-SNAPSHOT.jar' -o -name 'spark-*kafka-0-10*-SNAPSHOT.jar' | paste -sd ',' -`,`find ~/.cache/coursier -name 'curator-test-*.jar'`,`find ~/.cache/coursier \( -name 'kafka*.jar' -o -name 'metrics-core-2.2.0.jar' -o -name 'jopt-simple-*.jar' -o -name 'scala-java8-compat_*.jar' -o -name 'scala-logging_*.jar' -o -name 'jackson-dataformat-csv-*.jar' -o -name 'commons-pool2-*.jar' \) ! -name '*-sources.jar' ! -name '*-javadoc.jar' | paste -sd ',' -`" \
-          "`find . -name 'spark-core*-SNAPSHOT-tests.jar'`" \
-          "${{ inputs.class }}"
-        # To keep the directory structure and file permissions, tar them
-        # See also https://github.com/actions/upload-artifact#maintaining-file-permissions-and-case-sensitive-files
-        echo "Preparing the benchmark results:"
-        tar -cvf target/benchmark-results-${{ inputs.jdk }}-${{ inputs.scala }}.tar `git diff --name-only` `git ls-files --others --exclude=tpcds-sf-1 --exclude=tpcds-sf-1-text --exclude-standard`
+        set -euo pipefail
+        RESULT_DIR=/tmp/ab-results
+        mkdir -p "$RESULT_DIR"
+        run_one() {
+          local dir="$1"
+          local label="$2"
+          echo "========== ${label} =========="
+          (
+            cd "$dir"
+            export SPARK_HOME="$PWD"
+            ./build/sbt -Pscala-${{ inputs.scala }} -Pyarn -Pkubernetes -Phive -Phive-thriftserver -Phadoop-cloud -Pkinesis-asl -Pcredential-aws -Pspark-ganglia-lgpl Test/package
+            cp conf/log4j2.properties.template conf/log4j2.properties
+            sed -i 's/rootLogger.level = info/rootLogger.level = warn/g' conf/log4j2.properties
+            # In benchmark, we use local as master so set driver memory only. Note that GitHub Actions has 7 GB memory limit.
+            bin/spark-submit \
+              --driver-memory 6g --class org.apache.spark.benchmark.Benchmarks \
+              --jars "`find . -name '*-SNAPSHOT-tests.jar' -o -name '*avro*-SNAPSHOT.jar' -o -name 'spark-*kafka-0-10*-SNAPSHOT.jar' | paste -sd ',' -`,`find ~/.cache/coursier -name 'curator-test-*.jar'`,`find ~/.cache/coursier \( -name 'kafka*.jar' -o -name 'metrics-core-2.2.0.jar' -o -name 'jopt-simple-*.jar' -o -name 'scala-java8-compat_*.jar' -o -name 'scala-logging_*.jar' -o -name 'jackson-dataformat-csv-*.jar' -o -name 'commons-pool2-*.jar' \) ! -name '*-sources.jar' ! -name '*-javadoc.jar' | paste -sd ',' -`" \
+              "`find . -name 'spark-core*-SNAPSHOT-tests.jar'`" \
+              "${{ inputs.class }}"
+            mapfile -t result_files < <(find . -path ./target -prune -o -name 'LargeBinaryValueReadBenchmark-results.txt' -print)
+            if [ "${#result_files[@]}" -eq 0 ]; then
+              echo "No LargeBinaryValueReadBenchmark-results.txt produced for ${label}"
+              exit 1
+            fi
+            cp "${result_files[0]}" "${RESULT_DIR}/${label}-LargeBinaryValueReadBenchmark-results.txt"
+          )
+          # Free the build output before the other tree compiles. The runner disk is small.
+          find "$dir" -type d -name target -prune -exec rm -rf {} +
+        }
+        # Feature tree is this checkout (reader patch + parquet 1.19.0-gh3988-SNAPSHOT).
+        # Build it before fetching the baseline tree so `find .` cannot see the other build.
+        run_one "${{ github.workspace }}" feature
+        git fetch --depth=1 origin benchmark/parquet-uncompressed-size-baseline
+        git worktree add --detach /tmp/spark-baseline origin/benchmark/parquet-uncompressed-size-baseline
+        # Baseline tree has the same benchmark and no reader patch, pinned to 1.19.0-nogh3988-SNAPSHOT.
+        run_one /tmp/spark-baseline baseline
+        echo "========== COMPARISON (same runner) =========="
+        echo "----- feature: GH-3988 + reader patch, parquet 1.19.0-gh3988-SNAPSHOT -----"
+        cat "${RESULT_DIR}/feature-LargeBinaryValueReadBenchmark-results.txt"
+        echo "----- baseline: no reader patch, parquet 1.19.0-nogh3988-SNAPSHOT -----"
+        cat "${RESULT_DIR}/baseline-LargeBinaryValueReadBenchmark-results.txt"
+        mkdir -p "${{ github.workspace }}/target"
+        tar -C "$RESULT_DIR" -cvf "${{ github.workspace }}/target/benchmark-results-${{ inputs.jdk }}-${{ inputs.scala }}.tar" .
     - name: Create a pull request with the results
       if: ${{ inputs.create-commit && success() }}
       run: |
