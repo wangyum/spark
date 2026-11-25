@@ -310,7 +310,7 @@ for module in "${!MODULE_FILES[@]}"; do
   mkdir -p "$semanticdb_dir" "$classes_dir"
 
   all_files_list="$SCRATCH_DIR/${module_slug}.all_files.txt"
-  find "$module/src/test/scala" -name '*.scala' > "$all_files_list"
+  find "$SPARK_ROOT_DIR/$module/src/test/scala" -name '*.scala' > "$all_files_list"
   excluded_list="$SCRATCH_DIR/${module_slug}.excluded_files.txt"
   : > "$excluded_list"
 
@@ -405,6 +405,12 @@ for module in "${!MODULE_FILES[@]}"; do
     fi
   done < "$scalafix_log"
 done
+
+# The rule can emit more than one AST match for the same member (e.g. a
+# `case x: T =>` pattern is visited both as a Case and as the Pat.Typed
+# nested inside it), which produces duplicate diagnostics at the same
+# position. De-duplicate before filtering/reporting.
+sort -u -o "$FINDINGS_FILE" "$FINDINGS_FILE"
 
 # --------------------------------------------------------------------------
 # Step 5: keep only findings on added/modified lines, then report.

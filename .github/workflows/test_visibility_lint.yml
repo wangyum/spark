@@ -61,13 +61,13 @@ jobs:
           fetch-depth: 0
 
       - name: Install Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: zulu
-          java-version: 17
+          java-version: 21
 
       - name: Cache Maven local repository
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.m2/repository
           key: test-visibility-lint-maven-${{ hashFiles('**/pom.xml') }}
