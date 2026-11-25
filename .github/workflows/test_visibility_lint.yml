@@ -1,0 +1,103 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# Advisory CI gate for SPARK-54301-style violations: a `private` (or
+# method-nested) test Suite helper that pattern-matches/ascribes a
+# SparkPlan- or Expression-shaped type can't be overridden by downstream
+# subclasses (e.g. Apache Gluten's GlutenXxxSuite extends XxxSuiteBase),
+# forcing a full copy-paste of the test. See dev/lint-scala-test-visibility
+# for the full design notes and https://github.com/apache/spark/pull/52996
+# for the upstream precedent of widening these to `protected`.
+#
+# This workflow only looks at lines added/modified by the PR (see the
+# script for how), so the ~450 pre-existing violations elsewhere in the
+# tree never fail a PR that happens to touch one of those files.
+#
+# Intentionally kept small and separate from build_and_test.yml: it builds
+# only the Maven modules the PR actually touches, not the full matrix.
+name: Test visibility lint
+
+on:
+  pull_request:
+    paths:
+      - 'sql/catalyst/src/test/**'
+      - 'sql/core/src/test/**'
+      - 'sql/hive/src/test/**'
+      - 'connector/*/src/test/**'
+      - 'dev/lint-scala-test-visibility'
+      - 'dev/test-visibility-lint/**'
+      - '.github/workflows/test_visibility_lint.yml'
+
+concurrency:
+  group: test-visibility-lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test-visibility-lint:
+    name: Check new private test helpers over SparkPlan/Expression
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Spark repository
+        uses: actions/checkout@v7
+        with:
+          # Full history is needed to diff against the PR's merge base.
+          fetch-depth: 0
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 17
+
+      - name: Cache Maven local repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: test-visibility-lint-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            test-visibility-lint-maven-
+
+      - name: Determine touched modules
+        id: modules
+        run: |
+          set -e
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          modules="$(git diff --name-only "${base_sha}...HEAD" \
+            -- sql/catalyst/src/test sql/core/src/test sql/hive/src/test 'connector/*/src/test' \
+            | grep '\.scala$' \
+            | awk -F/ '
+                $1 == "sql" && ($2 == "catalyst" || $2 == "core" || $2 == "hive") { print $1"/"$2; next }
+                $1 == "connector" { print $1"/"$2 }
+              ' \
+            | sort -u | paste -sd, -)"
+          echo "modules=$modules" >> "$GITHUB_OUTPUT"
+          echo "Touched modules: $modules"
+
+      - name: Build touched modules
+        if: steps.modules.outputs.modules != ''
+        run: |
+          ./build/mvn -q -pl "${{ steps.modules.outputs.modules }}" -am install -DskipTests -Pscala-2.13
+
+      - name: Run test-visibility lint (advisory)
+        if: steps.modules.outputs.modules != ''
+        run: |
+          ./dev/lint-scala-test-visibility \
+            --base-ref="${{ github.event.pull_request.base.sha }}" \
+            --mode=advisory

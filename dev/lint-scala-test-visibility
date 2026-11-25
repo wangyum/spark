@@ -1,0 +1,443 @@
+#!/usr/bin/env bash
+
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+#
+# dev/lint-scala-test-visibility
+#
+# CI gate for SPARK-54301-style "private test helper over SparkPlan/Expression"
+# violations (see https://github.com/apache/spark/pull/52996): a `private` (or
+# method-nested) member of a test Suite that pattern-matches / type-ascribes /
+# isInstanceOf's a type whose supertype chain includes SparkPlan or Expression
+# cannot be overridden by a subclass (e.g. Gluten's `GlutenXxxSuite extends
+# XxxSuiteBase`), which forces full copy-paste of the test instead of
+# overriding just the plan-shape check.
+#
+# This script does NOT scan the whole repo (508 such cases already exist and
+# are out of scope for enforcement, see SPARK-54301 and its -followup). It
+# only looks at lines added or modified by the current diff against a base
+# ref, so pre-existing violations elsewhere in a touched file are never
+# flagged.
+#
+# How it works, at a high level:
+#   1. Diff the current HEAD against --base-ref, restricted to test source
+#      directories, to get the list of changed Scala test files and, for
+#      each, the set of added/modified line numbers.
+#   2. Group changed files by their containing Maven module (sql/catalyst,
+#      sql/core, sql/hive, connector/<name>).
+#   3. For each touched module, compile *all* of its Scala test sources with
+#      -Xplugin:semanticdb-scalac (full-module compilation is required for
+#      correct cross-file symbol resolution; scalac cannot type-check a test
+#      file in isolation from its sibling test-support classes).
+#   4. Run scalafix-cli with the PrivateTestHelperOverSparkPlan semantic rule
+#      (dev/test-visibility-lint/rule), scoped to only the changed files in
+#      that module.
+#   5. Keep only findings whose line falls inside an added/modified hunk from
+#      step 1, and report those as GitHub Actions annotations.
+#
+# Prerequisites: the modules being linted must already be built, i.e.
+#   ./build/mvn -pl <module> -am install -DskipTests
+# must have been run at least once, so that `target/<module-jar>.jar` and the
+# module's dependencies exist (in the reactor or in ~/.m2). This is normally
+# already true in CI, since the build step runs before the test step; see the
+# "real CI integration" note in the PR description / design doc for how a
+# production landing could reuse the build's own classpath instead of
+# re-deriving it here.
+#
+# Usage:
+#   dev/lint-scala-test-visibility [--base-ref=<ref>] [--mode=advisory|blocking]
+#                                  [--scratch-dir=<dir>] [--verbose]
+#
+set -u
+set -o pipefail
+
+SCRIPT_DIR="$( cd "$( dirname "$0" )" && pwd )"
+SPARK_ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$SPARK_ROOT_DIR"
+
+# --------------------------------------------------------------------------
+# Config
+# --------------------------------------------------------------------------
+
+# Rollout switch (SPARK-54301-followup CI gate): this is the ONLY line that
+# needs to change to flip the default enforcement level once the advisory
+# rollout has been observed to run clean against real PR traffic for a
+# while. `--mode` on the command line always takes precedence over this.
+DEFAULT_MODE="advisory"
+
+RULE_NAME="PrivateTestHelperOverSparkPlan"
+RULE_DIR="$SCRIPT_DIR/test-visibility-lint/rule"
+TOOLCHAIN_POM="$SCRIPT_DIR/test-visibility-lint/toolchain-pom.xml"
+
+SCALA_BINARY_VERSION="2.13.18"
+DEP_PLUGIN_GAV="org.apache.maven.plugins:maven-dependency-plugin:3.8.1"
+
+# Test-source directories in scope for this check. Connector modules are
+# globbed since there are many of them and the set changes over time.
+TARGET_PATHSPECS=(
+  "sql/catalyst/src/test"
+  "sql/core/src/test"
+  "sql/hive/src/test"
+  "connector/*/src/test"
+)
+
+BASE_REF="origin/master"
+MODE="$DEFAULT_MODE"
+SCRATCH_DIR=""
+KEEP_SCRATCH="false"
+VERBOSE="false"
+
+# --------------------------------------------------------------------------
+# Arg parsing
+# --------------------------------------------------------------------------
+
+for arg in "$@"; do
+  case "$arg" in
+    --base-ref=*) BASE_REF="${arg#--base-ref=}" ;;
+    --mode=*) MODE="${arg#--mode=}" ;;
+    --scratch-dir=*) SCRATCH_DIR="${arg#--scratch-dir=}" ;;
+    --keep-scratch) KEEP_SCRATCH="true" ;;
+    --verbose) VERBOSE="true" ;;
+    -h|--help)
+      sed -n '2,70p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$MODE" != "advisory" && "$MODE" != "blocking" ]]; then
+  echo "Invalid --mode: $MODE (expected 'advisory' or 'blocking')" >&2
+  exit 2
+fi
+
+if [[ -z "$SCRATCH_DIR" ]]; then
+  SCRATCH_DIR="$(mktemp -d /tmp/spark-test-visibility-lint.XXXXXX)"
+fi
+mkdir -p "$SCRATCH_DIR"
+
+cleanup() {
+  if [[ "$KEEP_SCRATCH" != "true" ]]; then
+    rm -rf "$SCRATCH_DIR"
+  else
+    echo "Scratch dir kept at: $SCRATCH_DIR" >&2
+  fi
+}
+trap cleanup EXIT
+
+log() { echo "[lint-scala-test-visibility] $*" >&2; }
+vlog() { if [[ "$VERBOSE" == "true" ]]; then echo "[lint-scala-test-visibility][verbose] $*" >&2; fi; }
+
+# --------------------------------------------------------------------------
+# Step 0: materialize the scalac + semanticdb-scalac + scalafix-cli toolchain
+# and compile the lint rule. Done once per run regardless of how many
+# modules are touched.
+# --------------------------------------------------------------------------
+
+TOOLCHAIN_LIBS_DIR="$SCRATCH_DIR/toolchain-libs"
+RULE_CLASSES_DIR="$SCRATCH_DIR/rule-classes"
+mkdir -p "$TOOLCHAIN_LIBS_DIR" "$RULE_CLASSES_DIR"
+
+log "Resolving scalac/semanticdb-scalac/scalafix-cli toolchain..."
+if ! mvn -q -f "$TOOLCHAIN_POM" \
+      "$DEP_PLUGIN_GAV:copy-dependencies" \
+      -DoutputDirectory="$TOOLCHAIN_LIBS_DIR" \
+      -DincludeScope=runtime \
+      > "$SCRATCH_DIR/toolchain-resolve.log" 2>&1; then
+  echo "::error title=test-visibility-lint toolchain resolve failed::Could not resolve the scalac/semanticdb-scalac/scalafix-cli toolchain used by dev/lint-scala-test-visibility. See $SCRATCH_DIR/toolchain-resolve.log" >&2
+  cat "$SCRATCH_DIR/toolchain-resolve.log" >&2
+  exit 1
+fi
+TOOLCHAIN_CP="$(find "$TOOLCHAIN_LIBS_DIR" -name '*.jar' | tr '\n' ':')"
+
+SEMANTICDB_PLUGIN_JAR="$(find "$TOOLCHAIN_LIBS_DIR" -name "semanticdb-scalac_${SCALA_BINARY_VERSION}-*.jar" | head -1)"
+if [[ -z "$SEMANTICDB_PLUGIN_JAR" ]]; then
+  echo "::error title=test-visibility-lint toolchain incomplete::semanticdb-scalac jar not found after resolving toolchain-pom.xml" >&2
+  exit 1
+fi
+
+log "Compiling $RULE_NAME rule..."
+find "$RULE_DIR" -name "*.scala" > "$SCRATCH_DIR/rule-sources.txt"
+if ! java -cp "$TOOLCHAIN_CP" scala.tools.nsc.Main \
+      -classpath "$TOOLCHAIN_CP" \
+      -d "$RULE_CLASSES_DIR" \
+      @"$SCRATCH_DIR/rule-sources.txt" \
+      > "$SCRATCH_DIR/rule-compile.log" 2>&1; then
+  echo "::error title=test-visibility-lint rule compile failed::Could not compile $RULE_DIR. See $SCRATCH_DIR/rule-compile.log" >&2
+  cat "$SCRATCH_DIR/rule-compile.log" >&2
+  exit 1
+fi
+cp -r "$RULE_DIR/META-INF" "$RULE_CLASSES_DIR/META-INF"
+
+# --------------------------------------------------------------------------
+# Step 1: compute the changed Scala test files + their changed line ranges.
+# --------------------------------------------------------------------------
+
+DIFF_RANGE="${BASE_REF}...HEAD"
+
+mapfile -t CHANGED_FILES < <(
+  git diff --no-renames --name-only --diff-filter=ACM "$DIFF_RANGE" -- "${TARGET_PATHSPECS[@]}" \
+    | grep '\.scala$' || true
+)
+
+if [[ "${#CHANGED_FILES[@]}" -eq 0 ]]; then
+  log "No changed Scala test files under the monitored directories; nothing to do."
+  exit 0
+fi
+
+log "Changed test files in scope (${#CHANGED_FILES[@]}):"
+for f in "${CHANGED_FILES[@]}"; do log "  $f"; done
+
+# changed_lines_<sanitized file> -> newline-separated list of changed line numbers
+declare -A CHANGED_LINES_FILE
+for f in "${CHANGED_FILES[@]}"; do
+  key="$(echo "$f" | tr '/.' '__')"
+  lines_file="$SCRATCH_DIR/changed_lines_$key.txt"
+  git diff --no-renames -U0 "$DIFF_RANGE" -- "$f" \
+    | awk '
+        /^@@/ {
+          # @@ -a,b +c,d @@  (b/d omitted when they equal 1)
+          match($0, /\+[0-9]+(,[0-9]+)?/)
+          spec = substr($0, RSTART+1, RLENGTH-1)
+          split(spec, parts, ",")
+          start = parts[1]
+          count = (length(parts) > 1) ? parts[2] : 1
+          for (i = 0; i < count; i++) print start + i
+        }
+      ' > "$lines_file"
+  CHANGED_LINES_FILE["$f"]="$lines_file"
+done
+
+# --------------------------------------------------------------------------
+# Step 2: group changed files by containing Maven module.
+# --------------------------------------------------------------------------
+
+module_for_path() {
+  local path="$1"
+  case "$path" in
+    sql/catalyst/*) echo "sql/catalyst" ;;
+    sql/core/*) echo "sql/core" ;;
+    sql/hive/*) echo "sql/hive" ;;
+    connector/*)
+      echo "connector/$(echo "$path" | cut -d/ -f2)"
+      ;;
+    *) echo "" ;;
+  esac
+}
+
+declare -A MODULE_FILES   # module -> space-separated list of changed files
+for f in "${CHANGED_FILES[@]}"; do
+  m="$(module_for_path "$f")"
+  if [[ -z "$m" ]]; then
+    vlog "Skipping $f: does not map to a known module"
+    continue
+  fi
+  MODULE_FILES["$m"]="${MODULE_FILES[$m]:-} $f"
+done
+
+# artifactId is the module's own <artifactId>, i.e. the first one that
+# appears after the </parent> close tag in its pom.xml.
+artifact_id_for_module() {
+  local module="$1"
+  awk '/<\/parent>/{p=1;next} p && /<artifactId>/{print; exit}' "$module/pom.xml" \
+    | sed -E 's/.*<artifactId>(.*)<\/artifactId>.*/\1/'
+}
+
+FINDINGS_FILE="$SCRATCH_DIR/findings.tsv"
+: > "$FINDINGS_FILE"
+TOOLING_PROBLEM="false"
+
+# --------------------------------------------------------------------------
+# Step 3+4: per module, compile test sources with semanticdb and run
+# scalafix-cli scoped to the changed files.
+# --------------------------------------------------------------------------
+
+for module in "${!MODULE_FILES[@]}"; do
+  log "=== Module: $module ==="
+  artifact_id="$(artifact_id_for_module "$module")"
+  if [[ -z "$artifact_id" ]]; then
+    echo "::warning title=test-visibility-lint::Could not determine artifactId for module $module; skipping" >&2
+    TOOLING_PROBLEM="true"
+    continue
+  fi
+  vlog "artifactId=$artifact_id"
+
+  module_jar="$(ls "$module"/target/"$artifact_id"-*.jar 2>/dev/null | grep -vE '(sources|javadoc|tests)\.jar$' | head -1 || true)"
+  if [[ -z "$module_jar" ]]; then
+    msg="Module $module has not been built (no target/$artifact_id-*.jar); run './build/mvn -pl $module -am install -DskipTests' first. Cannot check files in this module: ${MODULE_FILES[$module]}"
+    if [[ "$MODE" == "blocking" ]]; then
+      echo "::error title=test-visibility-lint tooling::$msg" >&2
+      TOOLING_PROBLEM="true"
+    else
+      echo "::warning title=test-visibility-lint tooling::$msg" >&2
+    fi
+    continue
+  fi
+
+  module_slug="$(echo "$module" | tr '/' '_')"
+  cp_file="$SCRATCH_DIR/${module_slug}.cp.txt"
+  if ! mvn -q -pl "$module" \
+        "$DEP_PLUGIN_GAV:build-classpath@generate-test-classpath" \
+        -Dmdep.outputFile="$cp_file" \
+        > "$SCRATCH_DIR/${module_slug}.cp.log" 2>&1; then
+    echo "::error title=test-visibility-lint tooling::Failed to resolve test classpath for module $module. See ${module_slug}.cp.log" >&2
+    cat "$SCRATCH_DIR/${module_slug}.cp.log" >&2
+    TOOLING_PROBLEM="true"
+    continue
+  fi
+  full_cp="$(cat "$cp_file"):$module_jar"
+
+  semanticdb_dir="$SCRATCH_DIR/semanticdb_${module_slug}"
+  classes_dir="$SCRATCH_DIR/classes_${module_slug}"
+  mkdir -p "$semanticdb_dir" "$classes_dir"
+
+  all_files_list="$SCRATCH_DIR/${module_slug}.all_files.txt"
+  find "$module/src/test/scala" -name '*.scala' > "$all_files_list"
+  excluded_list="$SCRATCH_DIR/${module_slug}.excluded_files.txt"
+  : > "$excluded_list"
+
+  # Full-module compilation is required for correct cross-file symbol
+  # resolution (a changed test file routinely refers to shared test-support
+  # classes elsewhere in the same module). A handful of unrelated files can
+  # fail to compile against an out-of-date installed module jar (main sources
+  # newer than the last `mvn install`); when that happens we drop exactly
+  # those files and retry, rather than failing the whole module, since the
+  # goal here is semanticdb for the *changed* files, not a green build. See
+  # the "faithful PoC vs real CI" notes in the PR description for why this
+  # retry loop would not be needed if this piggybacked on Spark's real build.
+  attempt=1
+  max_attempts=3
+  compile_ok="false"
+  while [[ $attempt -le $max_attempts ]]; do
+    compile_files_list="$SCRATCH_DIR/${module_slug}.compile_files.txt"
+    grep -vFf "$excluded_list" "$all_files_list" > "$compile_files_list" 2>/dev/null \
+      || cp "$all_files_list" "$compile_files_list"
+    rm -rf "$semanticdb_dir" "$classes_dir"
+    mkdir -p "$semanticdb_dir" "$classes_dir"
+    compile_log="$SCRATCH_DIR/${module_slug}.compile.attempt${attempt}.log"
+    if java -cp "$TOOLCHAIN_CP" scala.tools.nsc.Main \
+          -classpath "$full_cp" \
+          -Xplugin:"$SEMANTICDB_PLUGIN_JAR" \
+          -Xplugin-require:semanticdb \
+          -P:semanticdb:sourceroot:"$SPARK_ROOT_DIR" \
+          -P:semanticdb:targetroot:"$semanticdb_dir" \
+          -P:semanticdb:failures:warning \
+          -nowarn \
+          -d "$classes_dir" \
+          @"$compile_files_list" > "$compile_log" 2>&1; then
+      compile_ok="true"
+      break
+    fi
+    newly_failing="$(grep -oE "^$SPARK_ROOT_DIR/[^:]+\.scala" "$compile_log" | sort -u)"
+    if [[ -z "$newly_failing" ]]; then
+      vlog "Compile failed for $module with no attributable file (attempt $attempt); giving up"
+      break
+    fi
+    echo "$newly_failing" | sed "s#^$SPARK_ROOT_DIR/##" >> "$excluded_list"
+    attempt=$((attempt + 1))
+  done
+
+  if [[ "$compile_ok" != "true" ]]; then
+    echo "::error title=test-visibility-lint tooling::Could not get a clean semanticdb-producing compile for module $module after $max_attempts attempts. See $compile_log" >&2
+    TOOLING_PROBLEM="true"
+    continue
+  fi
+  if [[ -s "$excluded_list" ]]; then
+    vlog "Excluded $(wc -l < "$excluded_list" | tr -d ' ') pre-existing-broken file(s) from $module compile: $(tr '\n' ' ' < "$excluded_list")"
+  fi
+
+  # Build the --files list for scalafix: only the files that actually
+  # changed in this PR AND that we managed to compile.
+  scalafix_files=()
+  for f in ${MODULE_FILES[$module]}; do
+    abs_f="$SPARK_ROOT_DIR/$f"
+    if grep -qxF "$f" "$excluded_list" 2>/dev/null; then
+      echo "::warning file=$f,title=test-visibility-lint tooling::Could not compile this file as part of module $module (pre-existing, unrelated compile error against the currently-installed module jar); it was not checked by this run." >&2
+      TOOLING_PROBLEM="true"
+      continue
+    fi
+    scalafix_files+=("$abs_f")
+  done
+  if [[ "${#scalafix_files[@]}" -eq 0 ]]; then
+    continue
+  fi
+
+  scalafix_log="$SCRATCH_DIR/${module_slug}.scalafix.log"
+  java -cp "$TOOLCHAIN_CP:$RULE_CLASSES_DIR" scalafix.v1.Main \
+    --rules "$RULE_NAME" \
+    --classpath "$full_cp" \
+    --sourceroot "$SPARK_ROOT_DIR" \
+    --semanticdb-targetroots "$semanticdb_dir" \
+    --files "${scalafix_files[@]}" \
+    > "$scalafix_log" 2>&1
+  # scalafix-cli exits non-zero on lint findings; that is expected here, we
+  # parse its stdout below rather than relying on the exit code.
+
+  # Parse lines like:
+  #   /abs/path/File.scala:57:3: error: [Rule.diag] message text
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^([^:]+):([0-9]+):([0-9]+):\ (error|warning):\ \[([^]]+)\]\ (.*)$ ]]; then
+      abs_path="${BASH_REMATCH[1]}"
+      lineno="${BASH_REMATCH[2]}"
+      col="${BASH_REMATCH[3]}"
+      diag="${BASH_REMATCH[5]}"
+      msg="${BASH_REMATCH[6]}"
+      rel_path="${abs_path#$SPARK_ROOT_DIR/}"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$rel_path" "$lineno" "$col" "$diag" "$msg" >> "$FINDINGS_FILE"
+    fi
+  done < "$scalafix_log"
+done
+
+# --------------------------------------------------------------------------
+# Step 5: keep only findings on added/modified lines, then report.
+# --------------------------------------------------------------------------
+
+KEPT_COUNT=0
+while IFS=$'\t' read -r rel_path lineno col diag msg; do
+  [[ -z "${rel_path:-}" ]] && continue
+  lines_file="${CHANGED_LINES_FILE[$rel_path]:-}"
+  if [[ -z "$lines_file" ]] || ! grep -qxF "$lineno" "$lines_file" 2>/dev/null; then
+    vlog "Dropping pre-existing finding (not on a changed line): $rel_path:$lineno"
+    continue
+  fi
+  KEPT_COUNT=$((KEPT_COUNT + 1))
+  escaped_msg="$(echo "$msg" | sed -e 's/%/%25/g' -e 's/\r/%0D/g')"
+  title="New test-visibility violation ($diag)"
+  if [[ "$MODE" == "blocking" ]]; then
+    echo "::error file=$rel_path,line=$lineno,col=$col,title=$title::$escaped_msg"
+  else
+    echo "::warning file=$rel_path,line=$lineno,col=$col,title=$title::$escaped_msg"
+  fi
+done < "$FINDINGS_FILE"
+
+log "Done. $KEPT_COUNT new violation(s) on added/modified lines (mode=$MODE)."
+
+if [[ "$MODE" == "blocking" ]]; then
+  if [[ "$TOOLING_PROBLEM" == "true" ]]; then
+    log "Failing closed: a tooling error prevented some changed files from being fully checked (see ::error annotations above)."
+    exit 1
+  fi
+  if [[ "$KEPT_COUNT" -gt 0 ]]; then
+    exit 1
+  fi
+fi
+
+exit 0
