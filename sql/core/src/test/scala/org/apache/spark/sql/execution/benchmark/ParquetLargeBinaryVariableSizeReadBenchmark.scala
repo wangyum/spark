@@ -62,21 +62,24 @@ object ParquetLargeBinaryVariableSizeReadBenchmark extends SqlBasedBenchmark {
     SparkSession.builder().config(conf).getOrCreate()
   }
 
-  // rows=100, 5-20MB/row (avg ~12.5MB) keeps nominal decompressed data around ~1.25GB, well
-  // within a GitHub Actions runner's ~7GB memory limit, while each value is still large enough
-  // (well above parquet.page.size's 1MB target) that a single row becomes one oversized page --
-  // the shape that makes OnHeapColumnVector's doubling-and-copy dominate. The *varying* size
-  // (vs. a fixed value size) also matters: it's what this benchmark is actually about, since a
-  // uniform size can be pre-sized perfectly by any constant-capacity heuristic, whereas this
-  // fix relies on the column chunk's *average* bytes/value, which is only meaningful when sizes
-  // vary.
-  private val rows = 100
+  // All rows for this column land in a single vectorized read batch (far below the default
+  // 4096-row batch size), so OnHeapColumnVector's backing byte[] has to hold every row's bytes
+  // concatenated -- its doubling-and-copy peak scales with the FULL dataset size, not a single
+  // row. A first attempt at rows=100/5-20MB (nominal ~1.25GB) OOM'd the baseline pass on a 6g
+  // driver heap before it even finished growing (requested 871MB mid-growth) -- confirming the
+  // doubling behavior is expensive, but leaving no usable timing comparison. rows=40, 5-10MB/row
+  // (nominal ~300MB, worst-case ~600MB doubling peak) keeps well clear of that ceiling while
+  // each value is still far above parquet.page.size's 1MB target (one oversized page per row)
+  // and sizes still *vary* (5-10MB) -- the varying part matters because a uniform value size can
+  // be pre-sized perfectly by any constant-capacity heuristic, whereas this fix relies on the
+  // column chunk's *average* bytes/value, which is only meaningful when sizes vary.
+  private val rows = 40
   private val minMB = 5
-  private val maxMB = 20
+  private val maxMB = 10
 
   private def readBenchmark(): Unit = {
     val benchmark = new Benchmark(
-      s"Large Binary Read (variable 5-20MB/value, rows=$rows)", rows, output = output)
+      s"Large Binary Read (variable 5-10MB/value, rows=$rows)", rows, output = output)
 
     withTempPath { dir =>
       import spark.implicits._
