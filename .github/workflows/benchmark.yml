@@ -23,9 +23,9 @@ on:
   workflow_dispatch:
     inputs:
       class:
-        description: 'Benchmark class'
+        description: 'Benchmark class glob'
         required: true
-        default: '*'
+        default: '*ParquetLargeBinaryDecompressBenchmark'
       jdk:
         type: choice
         description: 'JDK version: 21 or 25'
@@ -59,7 +59,7 @@ on:
         type: boolean
         description: 'Generate TPC-DS data (required for TPC-DS benchmarks and all-benchmark runs)'
         required: true
-        default: true
+        default: false
       expected-cpu:
         type: string
         description: 'Expected CPU model (e.g. "AMD EPYC 7763"). If set, the job fails early when the runner CPU does not match.'
@@ -175,6 +175,54 @@ jobs:
       with:
         java-version: ${{ inputs.jdk }}
         coursier: cache
+    # Two parquet-java commits, installed under different versions so this runner can build
+    # the same Spark tree against each in turn: 4505186f7 is the direct parent of the GH-3996
+    # fix (35f28fe6c) on the apache/parquet-java commit graph, so this isolates exactly that
+    # one commit's effect with no other confounding changes.
+    - name: Checkout parquet-java baseline (before GH-3996 fix)
+      uses: actions/checkout@v7
+      with:
+        repository: wangyum/parquet-java
+        ref: 4505186f7045f7ca01f270d2cd0640f1e07e48a7
+        path: parquet-baseline
+    - name: Checkout parquet-java feature (GH-3996 fix)
+      uses: actions/checkout@v7
+      with:
+        repository: wangyum/parquet-java
+        ref: 35f28fe6cdf47379825bf7a1cb87f01a39a3f3b6
+        path: parquet-feature
+    - name: Build Thrift (required by parquet-format-structures)
+      working-directory: parquet-feature
+      run: ./dev/ci-before_install.sh
+    - name: Build both parquet-java snapshots into the shared local repo
+      run: |
+        set -euo pipefail
+        build_parquet() {
+          local dir="$1"
+          local version="$2"
+          local repo="$3"
+          find "$dir" -name pom.xml -print0 \
+            | xargs -0 sed -i "s|<version>1.19.0-SNAPSHOT</version>|<version>${version}</version>|g"
+          (
+            cd "$dir"
+            # -pl lists every org.apache.parquet artifact Spark's pom.xml pins to ${parquet.version}
+            # (parquet-column, parquet-hadoop, parquet-avro); -am also-makes whatever those need
+            # transitively (parquet-common, parquet-encoding, parquet-format-structures,
+            # parquet-variant, parquet-jackson, parquet-generator, ...).
+            ./mvnw -q -B -Dmaven.repo.local="$repo" \
+              -pl parquet-avro,parquet-column,parquet-hadoop -am \
+              install -DskipTests -Dspotless.check.skip=true -Djapicmp.skip=true
+          )
+          mkdir -p ~/.m2/repository/org/apache/parquet
+          cp -r "${repo}/org/apache/parquet/." ~/.m2/repository/org/apache/parquet/
+        }
+        build_parquet parquet-baseline 1.19.0-nogh3996-SNAPSHOT "${{ github.workspace }}/.m2-parquet-baseline"
+        build_parquet parquet-feature 1.19.0-gh3996-SNAPSHOT "${{ github.workspace }}/.m2-parquet-feature"
+        # Drop the source trees and isolated repos so the later `find .` in spark-submit
+        # cannot put both parquet versions on the same classpath.
+        rm -rf parquet-baseline parquet-feature \
+          "${{ github.workspace }}/.m2-parquet-baseline" \
+          "${{ github.workspace }}/.m2-parquet-feature"
     - name: Cache TPC-DS generated data
       if: inputs.generate-tpcds
       id: cache-tpcds-sf-1
@@ -184,22 +232,47 @@ jobs:
           ./tpcds-sf-1
           ./tpcds-sf-1-text
         key: tpcds-${{ hashFiles('.github/workflows/benchmark.yml', 'sql/core/src/test/scala/org/apache/spark/sql/TPCDSSchema.scala') }}
-    - name: Run benchmarks
+    - name: Run baseline and GH-3996 benchmarks on this runner
       run: |
-        ./build/sbt -Pscala-${{ inputs.scala }} -Pyarn -Pkubernetes -Phive -Phive-thriftserver -Phadoop-cloud -Pkinesis-asl -Pcredential-aws -Pspark-ganglia-lgpl Test/package
+        set -euo pipefail
         # Make less noisy
         cp conf/log4j2.properties.template conf/log4j2.properties
         sed -i 's/rootLogger.level = info/rootLogger.level = warn/g' conf/log4j2.properties
-        # In benchmark, we use local as master so set driver memory only. Note that GitHub Actions has 7 GB memory limit.
-        bin/spark-submit \
-          --driver-memory 6g --class org.apache.spark.benchmark.Benchmarks \
-          --jars "`find . -name '*-SNAPSHOT-tests.jar' -o -name '*avro*-SNAPSHOT.jar' -o -name 'spark-*kafka-0-10*-SNAPSHOT.jar' | paste -sd ',' -`,`find ~/.cache/coursier -name 'curator-test-*.jar'`,`find ~/.cache/coursier \( -name 'kafka*.jar' -o -name 'metrics-core-2.2.0.jar' -o -name 'jopt-simple-*.jar' -o -name 'scala-java8-compat_*.jar' -o -name 'scala-logging_*.jar' -o -name 'jackson-dataformat-csv-*.jar' -o -name 'commons-pool2-*.jar' \) ! -name '*-sources.jar' ! -name '*-javadoc.jar' | paste -sd ',' -`" \
-          "`find . -name 'spark-core*-SNAPSHOT-tests.jar'`" \
-          "${{ inputs.class }}"
+        RESULT_DIR=/tmp/ab-results
+        mkdir -p "$RESULT_DIR"
+        run_one() {
+          local version="$1"
+          local label="$2"
+          echo "========== ${label} (parquet.version=${version}) =========="
+          # Same Spark source tree for both passes -- GH-3996 is a parquet-hadoop-only fix, so
+          # unlike a Spark-source-level patch we only need to flip the pinned parquet.version
+          # and rebuild/relink against the matching jar already installed in ~/.m2 above.
+          sed -i "s|<parquet.version>.*</parquet.version>|<parquet.version>${version}</parquet.version>|" pom.xml
+          ./build/sbt -Pscala-${{ inputs.scala }} -Pyarn -Pkubernetes -Phive -Phive-thriftserver -Phadoop-cloud -Pkinesis-asl -Pcredential-aws -Pspark-ganglia-lgpl Test/package
+          # In benchmark, we use local as master so set driver memory only. Note that GitHub Actions has 7 GB memory limit.
+          bin/spark-submit \
+            --driver-memory 6g --class org.apache.spark.benchmark.Benchmarks \
+            --jars "`find . -name '*-SNAPSHOT-tests.jar' -o -name '*avro*-SNAPSHOT.jar' -o -name 'spark-*kafka-0-10*-SNAPSHOT.jar' | paste -sd ',' -`,`find ~/.cache/coursier -name 'curator-test-*.jar'`,`find ~/.cache/coursier \( -name 'kafka*.jar' -o -name 'metrics-core-2.2.0.jar' -o -name 'jopt-simple-*.jar' -o -name 'scala-java8-compat_*.jar' -o -name 'scala-logging_*.jar' -o -name 'jackson-dataformat-csv-*.jar' -o -name 'commons-pool2-*.jar' \) ! -name '*-sources.jar' ! -name '*-javadoc.jar' | paste -sd ',' -`" \
+            "`find . -name 'spark-core*-SNAPSHOT-tests.jar'`" \
+            "${{ inputs.class }}"
+          mapfile -t result_files < <(find . -path ./target -prune -o -name 'ParquetLargeBinaryDecompressBenchmark-results.txt' -print)
+          if [ "${#result_files[@]}" -eq 0 ]; then
+            echo "No ParquetLargeBinaryDecompressBenchmark-results.txt produced for ${label}"
+            exit 1
+          fi
+          cp "${result_files[0]}" "${RESULT_DIR}/${label}-ParquetLargeBinaryDecompressBenchmark-results.txt"
+        }
+        run_one 1.19.0-nogh3996-SNAPSHOT baseline
+        run_one 1.19.0-gh3996-SNAPSHOT feature
+        echo "========== COMPARISON (same runner, same Spark tree, parquet.version flipped) =========="
+        echo "----- baseline: before GH-3996 fix, parquet 1.19.0-nogh3996-SNAPSHOT -----"
+        cat "${RESULT_DIR}/baseline-ParquetLargeBinaryDecompressBenchmark-results.txt"
+        echo "----- feature: GH-3996 fix (apache/parquet-java#3997), parquet 1.19.0-gh3996-SNAPSHOT -----"
+        cat "${RESULT_DIR}/feature-ParquetLargeBinaryDecompressBenchmark-results.txt"
         # To keep the directory structure and file permissions, tar them
         # See also https://github.com/actions/upload-artifact#maintaining-file-permissions-and-case-sensitive-files
         echo "Preparing the benchmark results:"
-        tar -cvf target/benchmark-results-${{ inputs.jdk }}-${{ inputs.scala }}.tar `git diff --name-only` `git ls-files --others --exclude=tpcds-sf-1 --exclude=tpcds-sf-1-text --exclude-standard`
+        tar -C "$RESULT_DIR" -cvf target/benchmark-results-${{ inputs.jdk }}-${{ inputs.scala }}.tar .
     - name: Create a pull request with the results
       if: ${{ inputs.create-commit && success() }}
       run: |
