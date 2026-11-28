@@ -24,16 +24,23 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.datasources.parquet.ParquetCompressionCodec
 
 /**
- * Benchmark reading a Parquet binary column whose values are large (~1MB each, e.g. image
- * blobs) through Spark's vectorized reader, across UNCOMPRESSED/SNAPPY/LZ4_RAW.
+ * Benchmark reading a Parquet binary column whose values are large enough (~10MB each, e.g.
+ * image blobs) that a single value does not fit in one `parquet.page.size`-sized (1MB target)
+ * page, so each row lands in its own oversized page.
  *
- * Exercises apache/parquet-java#3996: `NonBlockedDecompressor` grows its scratch `ByteBuffer`
- * by 1.2x per call while `SnappyCodec`/`Lz4RawCodec` feed it in 4K (`io.file.buffer.size`)
- * chunks, so decompressing one large page triggers dozens of buffer reallocations and copies.
- * apache/parquet-java#3997 replaces that path with a single `DirectDecompressor` call per page,
- * backed by a reused buffer. The UNCOMPRESSED case is a control: it shares the same read path
- * minus decompression, so comparing deltas isolates how much of the win is decompression itself
- * versus general I/O/scan overhead.
+ * Exercises apache/parquet-java#3996 at the scale it was actually profiled at: `
+ * NonBlockedDecompressor` grows its scratch `ByteBuffer` by 1.2x per call while
+ * `SnappyCodec`/`Lz4RawCodec` feed it in 4K (`io.file.buffer.size`) chunks, so decompressing a
+ * single ~10MB page triggers ~40+ buffer reallocations and copies -- a CPU profile of this exact
+ * shape (5-20MB values) attributed ~13.7% of samples to this path before the fix. A smaller,
+ * near-page-size value (e.g. ~1MB, see LargeBinaryValueReadBenchmark) does not reproduce this,
+ * since it only needs a handful of reallocations and the per-query JVM/codegen startup cost
+ * dominates total time at that scale.
+ *
+ * apache/parquet-java#3997 replaces the growing-buffer path with a single `DirectDecompressor`
+ * call per page, backed by a reused buffer. The UNCOMPRESSED case is a control: it shares the
+ * same read path minus decompression, so comparing deltas isolates how much of the win is
+ * decompression itself versus general I/O/scan overhead.
  *
  * To run this benchmark:
  * {{{
@@ -59,8 +66,12 @@ object ParquetLargeBinaryDecompressBenchmark extends SqlBasedBenchmark {
     SparkSession.builder().config(conf).getOrCreate()
   }
 
-  private val rows = 2000
-  private val valueSizeBytes = 1024 * 1024
+  // 10MB/row keeps each value well above parquet.page.size (1MB target), so -- like the
+  // 5-20MB images this bug was originally profiled against -- every row becomes a single
+  // oversized page instead of fitting inside a normally-sized one. rows=400 keeps total
+  // per-codec data (~4GB) within the 7GB memory / disk budget of a GitHub Actions runner.
+  private val rows = 400
+  private val valueSizeBytes = 10 * 1024 * 1024
   private val codecs = Seq(
     ParquetCompressionCodec.UNCOMPRESSED,
     ParquetCompressionCodec.SNAPPY,
