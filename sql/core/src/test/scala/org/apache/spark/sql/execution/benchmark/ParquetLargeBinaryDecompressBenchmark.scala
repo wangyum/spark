@@ -66,12 +66,15 @@ object ParquetLargeBinaryDecompressBenchmark extends SqlBasedBenchmark {
     SparkSession.builder().config(conf).getOrCreate()
   }
 
-  // 10MB/row keeps each value well above parquet.page.size (1MB target), so -- like the
-  // 5-20MB images this bug was originally profiled against -- every row becomes a single
-  // oversized page instead of fitting inside a normally-sized one. rows=400 keeps total
-  // per-codec data (~4GB) within the 7GB memory / disk budget of a GitHub Actions runner.
-  private val rows = 400
-  private val valueSizeBytes = 10 * 1024 * 1024
+  // 8MB/row keeps each value well above parquet.page.size (1MB target), so -- like the 5-20MB
+  // images this bug was originally profiled against -- every row becomes a single oversized page
+  // instead of fitting inside a normally-sized one. rows=200 keeps total per-codec data (~1.6GB)
+  // comfortably within the ~6.4g direct-memory limit of a GitHub Actions runner; a first attempt
+  // at rows=400/10MB (~4GB nominal) OOM'd because the write side has this same unfixed
+  // growing-buffer bug (GH-3996 only covers the read path), which inflates direct-memory use
+  // well past the nominal data size.
+  private val rows = 200
+  private val valueSizeBytes = 8 * 1024 * 1024
   private val codecs = Seq(
     ParquetCompressionCodec.UNCOMPRESSED,
     ParquetCompressionCodec.SNAPPY,
@@ -100,6 +103,11 @@ object ParquetLargeBinaryDecompressBenchmark extends SqlBasedBenchmark {
 
       benchmark.run()
     }
+    // The write side has the same unfixed NonBlockedCompressor growing-buffer behavior (GH-3996
+    // only covers the read path), so direct buffers from writing one codec's dataset can still
+    // be pending cleanup when the next codec starts writing. Force a GC between codecs so this
+    // benchmark's own write step doesn't blow the runner's direct-memory limit.
+    System.gc()
   }
 
   override def runBenchmarkSuite(mainArgs: Array[String]): Unit = {
